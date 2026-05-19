@@ -11,6 +11,7 @@ they already have.
 
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
+- `/codex:implement` to have Codex implement a structured plan with per-task implementer and reviewer agents
 - `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
 
 ## Requirements
@@ -162,6 +163,40 @@ Ask Codex to redesign the database connection to be more resilient.
 - if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
 - follow-up rescue requests can continue the latest Codex task in the repo
 
+### `/codex:implement`
+
+Implements a structured plan through Codex subagent-driven development.
+
+By default, Claude acts as the controller and runs each task in sequence:
+
+1. a fresh Codex implementer makes the change and commits it
+2. a fresh Codex spec reviewer checks the result against the task
+3. a fresh Codex code quality reviewer checks the implementation
+4. Codex loops on reviewer feedback until the task is approved or blocked
+
+At the end, the command reports what was completed, bugs flagged, deviations from the plan, and suggested next steps.
+
+Use it when you have:
+
+- a written implementation plan with numbered tasks or a checklist
+- a plan file you want Codex to execute task by task
+- a longer coding effort where independent Codex reviewer passes are useful
+
+The plan can come from inline text, a file path, or the most recent plan-like content in the current Claude conversation. If no explicit plan is passed, the command asks you to confirm the plan it found before starting.
+
+It supports `--sequential`, `--single-shot`, `--background`, `--wait`, `--model <model|spark>`, and `--effort <none|minimal|low|medium|high|xhigh>`.
+
+Examples:
+
+```bash
+/codex:implement plans/auth-refresh.md
+/codex:implement --model gpt-5.4-mini --effort high plans/auth-refresh.md
+/codex:implement --single-shot implement the plan above
+```
+
+> [!NOTE]
+> The default sequential mode is write-capable and expects Codex to commit each completed task. It works best from a feature branch with a clean working tree.
+
 ### `/codex:status`
 
 Shows running and recent Codex jobs for the current repository.
@@ -233,6 +268,12 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 
 ```bash
 /codex:rescue investigate why the build is failing in CI
+```
+
+### Implement A Plan
+
+```bash
+/codex:implement plans/checkout-refactor.md
 ```
 
 ### Start Something Long-Running

@@ -1,7 +1,7 @@
 {
-  "name": "openai-codex",
+  "name": "patricks-plugins",
   "owner": {
-    "name": "OpenAI"
+    "name": "Patrick Yang"
   },
   "metadata": {
     "description": "Codex plugins to use in Claude Code for delegation and code review.",

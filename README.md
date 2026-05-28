@@ -159,7 +159,7 @@ Ask Codex to redesign the database connection to be more resilient.
 
 **Notes:**
 
-- if you do not pass `--model` or `--effort`, Codex chooses its own defaults.
+- if you do not pass `--model` or `--effort`, the plugin uses `gpt-5.5` with `high` reasoning effort.
 - if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
 - follow-up rescue requests can continue the latest Codex task in the repo
 
@@ -184,7 +184,7 @@ Use it when you have:
 
 The plan can come from inline text, a file path, or the most recent plan-like content in the current Claude conversation. If no explicit plan is passed, the command asks you to confirm the plan it found before starting.
 
-It supports `--sequential`, `--single-shot`, `--background`, `--wait`, `--model <model|spark>`, and `--effort <none|minimal|low|medium|high|xhigh>`.
+It supports `--sequential`, `--single-shot`, `--background`, `--wait`, `--model <model|spark>`, and `--effort <none|minimal|low|medium|high|xhigh>`. If omitted, the plugin uses `gpt-5.5` with `high` reasoning effort.
 
 Examples:
 
@@ -296,12 +296,9 @@ The Codex plugin wraps the [Codex app server](https://developers.openai.com/code
 
 ### Common Configurations
 
-If you want to change the default reasoning effort or the default model that gets used by the plugin, you can define that inside your user-level or project-level `config.toml`. For example to always use `gpt-5.4-mini` on `high` for a specific project you can add the following to a `.codex/config.toml` file at the root of the directory you started Claude in:
+The plugin passes `gpt-5.5` as the default model and `high` as the default reasoning effort for task-style Codex turns. Use `--model` or `--effort` on a plugin command to override that for one run.
 
-```toml
-model = "gpt-5.4-mini"
-model_reasoning_effort = "high"
-```
+> **Note:** these defaults are applied before Codex reads `config.toml`, so the `model` / `model_reasoning_effort` keys in your `.codex/config.toml` are only used if you also pass `--model` or `--effort` (or omit them and accept these defaults). To change the per-project *default* without flags, you'd need to edit the plugin's `DEFAULT_CODEX_MODEL` / `DEFAULT_CODEX_REASONING_EFFORT`.
 
 Your configuration will be picked up based on:
 

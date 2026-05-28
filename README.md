@@ -298,11 +298,7 @@ The Codex plugin wraps the [Codex app server](https://developers.openai.com/code
 
 The plugin passes `gpt-5.5` as the default model and `high` as the default reasoning effort for task-style Codex turns. Use `--model` or `--effort` on a plugin command to override that for one run.
 
-Other Codex settings still come from your user-level or project-level `config.toml`. For example:
-
-```toml
-model_provider = "openai"
-```
+> **Note:** these defaults are applied before Codex reads `config.toml`, so the `model` / `model_reasoning_effort` keys in your `.codex/config.toml` are only used if you also pass `--model` or `--effort` (or omit them and accept these defaults). To change the per-project *default* without flags, you'd need to edit the plugin's `DEFAULT_CODEX_MODEL` / `DEFAULT_CODEX_REASONING_EFFORT`.
 
 Your configuration will be picked up based on:
 

@@ -230,6 +230,8 @@ test("review accepts the quoted raw argument style for built-in base-branch revi
   assert.equal(result.status, 0);
   assert.match(result.stdout, /Reviewed changes against main/);
   assert.match(result.stdout, /No material issues found/);
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(state.lastThreadStart.model, "gpt-5.5");
 });
 
 test("adversarial review renders structured findings over app-server turn/start", () => {
@@ -625,6 +627,8 @@ test("task --fresh is treated as routing control and does not leak into the prom
   assert.equal(result.status, 0, result.stderr);
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(fakeState.lastTurnStart.prompt, "diagnose the flaky test");
+  assert.equal(fakeState.lastTurnStart.model, "gpt-5.5");
+  assert.equal(fakeState.lastTurnStart.effort, "high");
 });
 
 test("task forwards model selection and reasoning effort to app-server turn/start", () => {

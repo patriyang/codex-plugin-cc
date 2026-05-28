@@ -85,7 +85,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --wait --write --f
 
 - Use `--wait` (foreground) so the controller can react. The orchestration is inherently sequential.
 - Use `--fresh` so the implementer gets a clean Codex thread.
-- Forward `--model` and `--effort` only if the user passed them.
+- Forward `--model` and `--effort` only if the user passed them; otherwise the runtime uses `gpt-5.5` and `high`.
 - The prompt is the substituted template text. Pass it as a single positional argument (heredoc/quoting as needed).
 
 ### 3. Parse implementer report
@@ -94,7 +94,7 @@ Locate the `## Status` heading in Codex's output. Branch on value:
 
 - **NEEDS_CONTEXT** → The operator can unblock with a reply. If Codex listed discrete options, present them via `AskUserQuestion`; otherwise show the questions inline and collect answers. Re-dispatch step 2 with `{{TASK_CONTEXT}}` augmented (or with the operator's decision appended) and `--resume-last` so the implementer keeps its working context.
 - **BLOCKED** → The operator alone cannot unblock. Diagnose the specific reason Codex gave:
-  - Model/capacity issue → re-dispatch with `--effort high`, then escalate to a stronger model.
+  - Model/capacity issue → re-dispatch with `--effort xhigh`, then escalate to a stronger model.
   - Codex sandbox or permission denial → check the error, decide whether to grant access or re-scope. Surface to user if unsure.
   - Plan internally inconsistent or wrong → stop and surface to user.
   - Repeated failed attempts → break the task into smaller pieces or escalate.
@@ -217,7 +217,7 @@ Show the report. Propose next steps.
 - `--single-shot` → legacy one-Codex-agent mode.
 - `--sequential` → explicit SDD mode (also the default).
 - `--background` / `--wait` → forwarded to individual `task` invocations. Default is `--wait` for SDD (the orchestration is sequential).
-- `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run unless user clears.
+- `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run; omitted values default to `gpt-5.5` / `high`.
 - `--resume` / `--fresh` → ignored in SDD mode (the orchestrator picks per-step).
 
 ## Failure Modes

@@ -184,7 +184,7 @@ Use it when you have:
 
 The plan can come from inline text, a file path, or the most recent plan-like content in the current Claude conversation. If no explicit plan is passed, the command asks you to confirm the plan it found before starting.
 
-It supports `--sequential`, `--single-shot`, `--background`, `--wait`, `--model <model|spark>`, and `--effort <none|minimal|low|medium|high|xhigh>`. If omitted, the plugin uses `gpt-5.5` with `high` reasoning effort.
+It supports `--sequential`, `--single-shot`, `--background`, `--wait`, `--model <model|spark>`, and `--effort <none|minimal|low|medium|high|xhigh>`. If omitted, `/codex:implement` uses `gpt-5.5` with `medium` reasoning effort (lower than the plugin-wide `high` default, since the multi-agent flow runs many Codex passes per task); capacity blocks escalate to `high`.
 
 Examples:
 

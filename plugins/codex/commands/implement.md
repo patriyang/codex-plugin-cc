@@ -85,7 +85,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --wait --write --f
 
 - Use `--wait` (foreground) so the controller can react. The orchestration is inherently sequential.
 - Use `--fresh` so the implementer gets a clean Codex thread.
-- Forward `--model` and `--effort` only if the user passed them; otherwise the runtime uses `gpt-5.5` and `high`.
+- Forward `--model` only if the user passed it; otherwise the runtime uses `gpt-5.5`.
+- For `--effort`, use the user's value if they passed one; otherwise pass `--effort medium` explicitly. `/codex:implement` defaults to `medium` rather than the runtime default of `high`.
 - The prompt is the substituted template text. Pass it as a single positional argument (heredoc/quoting as needed).
 
 ### 3. Parse implementer report
@@ -94,7 +95,7 @@ Locate the `## Status` heading in Codex's output. Branch on value:
 
 - **NEEDS_CONTEXT** → The operator can unblock with a reply. If Codex listed discrete options, present them via `AskUserQuestion`; otherwise show the questions inline and collect answers. Re-dispatch step 2 with `{{TASK_CONTEXT}}` augmented (or with the operator's decision appended) and `--resume-last` so the implementer keeps its working context.
 - **BLOCKED** → The operator alone cannot unblock. Diagnose the specific reason Codex gave:
-  - Model/capacity issue → re-dispatch with `--effort xhigh`, then escalate to a stronger model.
+  - Model/capacity issue → re-dispatch one effort step above the run's current effort (the `medium` default escalates to `high`; a user-supplied effort steps up from there). If already at `xhigh`, skip the effort bump and escalate straight to a stronger model.
   - Codex sandbox or permission denial → check the error, decide whether to grant access or re-scope. Surface to user if unsure.
   - Plan internally inconsistent or wrong → stop and surface to user.
   - Repeated failed attempts → break the task into smaller pieces or escalate.
@@ -117,10 +118,10 @@ Load `${CLAUDE_PLUGIN_ROOT}/prompts/sdd-spec-reviewer.md`. Substitute:
 - `{{IMPLEMENTER_REPORT}}` — the full report from step 3
 - `{{COMMITS_RANGE}}` — from step 4
 
-Invoke Codex read-only:
+Invoke Codex read-only (same `--model`/`--effort` resolution as step 2 — default `--effort medium`):
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --wait --fresh "<filled prompt>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --wait --fresh [--model <m>] [--effort <e>] "<filled prompt>"
 ```
 
 (No `--write`. Spec reviewer must not edit code.)
@@ -138,10 +139,10 @@ Load `${CLAUDE_PLUGIN_ROOT}/prompts/sdd-code-quality-reviewer.md`. Substitute:
 - `{{IMPLEMENTER_SUMMARY}}` — the implementer's summary section
 - `{{COMMITS_RANGE}}` — from step 4 (or updated after fix iterations)
 
-Invoke read-only:
+Invoke read-only (same `--model`/`--effort` resolution as step 2 — default `--effort medium`):
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --wait --fresh "<filled prompt>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --wait --fresh [--model <m>] [--effort <e>] "<filled prompt>"
 ```
 
 ### 8. Parse code quality verdict
@@ -207,8 +208,10 @@ This is the aggregate of every implementer/reviewer report and is what Claude us
 If the user passed `--single-shot`, skip task extraction and the per-task loop. Instead, wrap the full plan in the legacy implementer prompt (asking for the four-section report: Accomplished / Bugs Flagged / Deviations From Plan / Next Steps) and invoke Codex once:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --wait --write --fresh "<wrapped plan>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --wait --write --fresh [--model <m>] [--effort <e>] "<wrapped plan>"
 ```
+
+(Same `--model`/`--effort` resolution as sequential mode — default `--effort medium` unless the user passed one.)
 
 Show the report. Propose next steps.
 
@@ -217,7 +220,7 @@ Show the report. Propose next steps.
 - `--single-shot` → legacy one-Codex-agent mode.
 - `--sequential` → explicit SDD mode (also the default).
 - `--background` / `--wait` → forwarded to individual `task` invocations. Default is `--wait` for SDD (the orchestration is sequential).
-- `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run; omitted values default to `gpt-5.5` / `high`.
+- `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run. If omitted, `--model` defaults to `gpt-5.5` and `--effort` defaults to `medium` (passed explicitly by this command, overriding the runtime's `high` default).
 - `--resume` / `--fresh` → ignored in SDD mode (the orchestrator picks per-step).
 
 ## Failure Modes

@@ -182,6 +182,14 @@ test("result and cancel commands are exposed as deterministic runtime entrypoint
   assert.match(resultHandling, /if Codex was never successfully invoked, do not generate a substitute answer at all/i);
 });
 
+test("review commands are invocable by controller agents", () => {
+  const review = read("commands/review.md");
+  const adversarialReview = read("commands/adversarial-review.md");
+
+  assert.doesNotMatch(review, /disable-model-invocation/);
+  assert.doesNotMatch(adversarialReview, /disable-model-invocation/);
+});
+
 test("internal docs use task terminology for rescue runs", () => {
   const runtimeSkill = read("skills/codex-cli-runtime/SKILL.md");
   const promptingSkill = read("skills/gpt-5-4-prompting/SKILL.md");

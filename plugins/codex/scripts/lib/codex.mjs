@@ -37,6 +37,7 @@
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
+import { resolveWorktreeWritableRoots } from "./git.mjs";
 import { binaryAvailable } from "./process.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
@@ -54,7 +55,7 @@ function cleanCodexStderr(stderr) {
 
 /** @returns {ThreadStartParams} */
 function buildThreadParams(cwd, options = {}) {
-  return {
+  const params = {
     cwd,
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
@@ -62,17 +63,31 @@ function buildThreadParams(cwd, options = {}) {
     serviceName: SERVICE_NAME,
     ephemeral: options.ephemeral ?? true
   };
+  if (options.writableRoots?.length > 0) {
+    params.config = {
+      ...(options.config ?? {}),
+      "sandbox_workspace_write.writable_roots": options.writableRoots
+    };
+  }
+  return params;
 }
 
 /** @returns {ThreadResumeParams} */
 function buildResumeParams(threadId, cwd, options = {}) {
-  return {
+  const params = {
     threadId,
     cwd,
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
     sandbox: options.sandbox ?? "read-only"
   };
+  if (options.writableRoots?.length > 0) {
+    params.config = {
+      ...(options.config ?? {}),
+      "sandbox_workspace_write.writable_roots": options.writableRoots
+    };
+  }
+  return params;
 }
 
 /** @returns {UserInput[]} */
@@ -968,13 +983,15 @@ export async function runAppServerTurn(cwd, options = {}) {
 
   return withAppServer(cwd, async (client) => {
     let threadId;
+    const writableRoots = options.sandbox === "workspace-write" ? resolveWorktreeWritableRoots(cwd) : undefined;
 
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
       const response = await resumeThread(client, options.resumeThreadId, cwd, {
         model: options.model,
         sandbox: options.sandbox,
-        ephemeral: false
+        ephemeral: false,
+        writableRoots
       });
       threadId = response.thread.id;
     } else {
@@ -983,7 +1000,8 @@ export async function runAppServerTurn(cwd, options = {}) {
         model: options.model,
         sandbox: options.sandbox,
         ephemeral: options.persistThread ? false : true,
-        threadName: options.persistThread ? options.threadName : options.threadName ?? null
+        threadName: options.persistThread ? options.threadName : options.threadName ?? null,
+        writableRoots
       });
       threadId = response.thread.id;
     }

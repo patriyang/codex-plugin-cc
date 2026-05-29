@@ -582,6 +582,68 @@ test("write task output focuses on the Codex result without generic follow-up hi
   assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
 });
 
+test("write task in linked worktree passes the git common dir as an extra writable root", () => {
+  const repo = makeTempDir();
+  const worktreeParent = makeTempDir();
+  const worktree = path.join(worktreeParent, "linked-worktree");
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+
+  try {
+    initGitRepo(repo);
+    fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+    run("git", ["add", "README.md"], { cwd: repo });
+    run("git", ["commit", "-m", "init"], { cwd: repo });
+    run("git", ["worktree", "add", "-b", "linked-runtime-test", worktree], { cwd: repo });
+
+    const result = run("node", [SCRIPT, "task", "--write", "fix the failing test"], {
+      cwd: worktree,
+      env: buildEnv(binDir)
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.deepEqual(state.lastThreadStart.config?.["sandbox_workspace_write.writable_roots"], [
+      fs.realpathSync(path.join(repo, ".git"))
+    ]);
+
+    const resume = run("node", [SCRIPT, "task", "--resume", "--write", "follow up"], {
+      cwd: worktree,
+      env: buildEnv(binDir)
+    });
+
+    assert.equal(resume.status, 0, resume.stderr);
+    const resumedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.deepEqual(resumedState.lastThreadResume.config?.["sandbox_workspace_write.writable_roots"], [
+      fs.realpathSync(path.join(repo, ".git"))
+    ]);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(worktreeParent, { recursive: true, force: true });
+  }
+});
+
+test("write task in normal checkout does not add writable root config", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "--write", "fix the failing test"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state.lastThreadStart.config, undefined);
+});
+
 test("task --resume acts like --resume-last without leaking the flag into the prompt", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

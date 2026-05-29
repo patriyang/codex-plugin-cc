@@ -3,8 +3,34 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { collectReviewContext, resolveReviewTarget } from "../plugins/codex/scripts/lib/git.mjs";
+import { collectReviewContext, resolveReviewTarget, resolveWorktreeWritableRoots } from "../plugins/codex/scripts/lib/git.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+
+test("resolveWorktreeWritableRoots returns the common git dir for linked worktrees only", () => {
+  const mainRepo = makeTempDir();
+  const worktreeParent = makeTempDir();
+  const worktree = path.join(worktreeParent, "linked-worktree");
+  const nonGitDir = makeTempDir();
+
+  try {
+    initGitRepo(mainRepo);
+    fs.writeFileSync(path.join(mainRepo, "app.js"), "console.log('v1');\n");
+    run("git", ["add", "app.js"], { cwd: mainRepo });
+    run("git", ["commit", "-m", "init"], { cwd: mainRepo });
+    run("git", ["worktree", "add", "-b", "linked-test", worktree], { cwd: mainRepo });
+
+    const roots = resolveWorktreeWritableRoots(worktree);
+
+    assert.equal(roots.length, 1);
+    assert.equal(fs.realpathSync(roots[0]), fs.realpathSync(path.join(mainRepo, ".git")));
+    assert.deepEqual(resolveWorktreeWritableRoots(mainRepo), []);
+    assert.deepEqual(resolveWorktreeWritableRoots(nonGitDir), []);
+  } finally {
+    fs.rmSync(mainRepo, { recursive: true, force: true });
+    fs.rmSync(worktreeParent, { recursive: true, force: true });
+    fs.rmSync(nonGitDir, { recursive: true, force: true });
+  }
+});
 
 test("resolveReviewTarget prefers working tree when repo is dirty", () => {
   const cwd = makeTempDir();

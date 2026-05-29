@@ -90,6 +90,26 @@ export function getRepoRoot(cwd) {
   return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
 }
 
+export function resolveWorktreeWritableRoots(cwd) {
+  const gitDir = git(cwd, ["rev-parse", "--git-dir"]);
+  if (gitDir.error || gitDir.status !== 0) {
+    return [];
+  }
+
+  const gitCommonDir = git(cwd, ["rev-parse", "--git-common-dir"]);
+  if (gitCommonDir.error || gitCommonDir.status !== 0) {
+    return [];
+  }
+
+  const absoluteGitDir = path.resolve(cwd, gitDir.stdout.trim());
+  const absoluteGitCommonDir = path.resolve(cwd, gitCommonDir.stdout.trim());
+  if (absoluteGitDir === absoluteGitCommonDir) {
+    return [];
+  }
+
+  return [absoluteGitCommonDir];
+}
+
 export function detectDefaultBranch(cwd) {
   const symbolic = git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
   if (symbolic.status === 0) {

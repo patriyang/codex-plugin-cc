@@ -82,6 +82,20 @@ test("fails when plugin source changes without version bumps", () => {
   assert.match(result.stderr, /\.claude-plugin\/marketplace\.json plugins\[codex\]\.version/);
 });
 
+test("fails when plugin source files are deleted without version bumps", () => {
+  const { base, root } = makeRepo();
+  fs.rmSync(path.join(root, "plugins/codex/scripts/codex-companion.mjs"));
+  commitAll(root, "delete plugin source");
+
+  const result = run("node", [SCRIPT, "--root", root, "--base", base], {
+    cwd: ROOT
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /plugins\/codex\/scripts\/codex-companion\.mjs/);
+  assert.match(result.stderr, /plugins\/codex\/\.claude-plugin\/plugin\.json version/);
+});
+
 test("does not require a version bump for manifest-only changes", () => {
   const { base, root } = makeRepo();
   writeVersionFiles(root, "1.0.1");

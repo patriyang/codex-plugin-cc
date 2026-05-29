@@ -71,7 +71,7 @@ function runGit(root, args) {
 }
 
 function changedFiles(root, base, head) {
-  return runGit(root, ["diff", "--name-only", "--diff-filter=ACMR", `${base}...${head}`])
+  return runGit(root, ["diff", "--name-only", "--diff-filter=ACMRD", `${base}...${head}`])
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);

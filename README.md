@@ -40,6 +40,8 @@ Reload plugins:
 /reload-plugins
 ```
 
+For existing installs, `/reload-plugins` only reloads local files. To pick up a newly published plugin version, run `/plugin marketplace update patricks-plugins`, then update or reinstall the `codex` plugin.
+
 Then run:
 
 ```bash

@@ -257,6 +257,51 @@ test("adversarial review renders structured findings over app-server turn/start"
   assert.match(result.stdout, /Missing empty-state guard/);
 });
 
+test("deep review renders structured findings over app-server turn/start", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+
+  const result = run("node", [SCRIPT, "deep-review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Deep Review/);
+  assert.match(result.stdout, /Missing empty-state guard/);
+});
+
+test("deep review sends the deep-review prompt covering all three dimensions", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+
+  const result = run("node", [SCRIPT, "deep-review", "focus on auth"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.match(state.lastTurnStart.prompt, /Correctness/);
+  assert.match(state.lastTurnStart.prompt, /Conciseness/);
+  assert.match(state.lastTurnStart.prompt, /Code quality/);
+  assert.match(state.lastTurnStart.prompt, /focus on auth/);
+});
+
 test("adversarial review accepts the same base-branch targeting as review", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

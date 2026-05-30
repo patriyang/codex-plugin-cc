@@ -11,6 +11,7 @@ they already have.
 
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
+- `/codex:deep-review` for a multi-dimensional review of correctness, conciseness, and code quality
 - `/codex:implement` to have Codex implement a structured plan with per-task implementer and reviewer agents
 - `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
 
@@ -122,6 +123,34 @@ Examples:
 /codex:adversarial-review
 /codex:adversarial-review --base main challenge whether this was the right caching and retry design
 /codex:adversarial-review --background look for race conditions and question the chosen approach
+```
+
+This command is read-only. It does not fix code.
+
+### `/codex:deep-review`
+
+Runs a **multi-dimensional** review that evaluates the change across three lenses in a single pass:
+
+- **correctness** — logic errors, edge cases, regressions, and data-safety issues
+- **conciseness** — reuse, simplification, and efficiency, the same intent as a `/simplify` pass
+- **code quality** — naming, readability, structure, and consistency with the surrounding code
+
+Each finding is tagged with its dimension (`[correctness]`, `[conciseness]`, or `[quality]`).
+
+It uses the same review target selection as `/codex:review`, including `--base <ref>` for branch review.
+It also supports `--wait` and `--background`. Like `/codex:adversarial-review`, it can take extra focus text after the flags.
+
+Use it when you want:
+
+- one thorough pass that covers defects, cleanup opportunities, and maintainability together
+- a pre-merge review that goes beyond correctness to flag code that could be simpler or clearer
+
+Examples:
+
+```bash
+/codex:deep-review
+/codex:deep-review --base main
+/codex:deep-review --background focus on the new caching layer
 ```
 
 This command is read-only. It does not fix code.

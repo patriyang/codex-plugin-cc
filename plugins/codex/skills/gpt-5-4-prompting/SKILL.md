@@ -31,7 +31,7 @@ When to add blocks:
 - Write-capable tasks: add `action_safety` so Codex stays narrow and avoids unrelated refactors.
 
 How to choose prompt shape:
-- Use built-in `review` or `adversarial-review` commands when the job is reviewing local git changes. Those prompts already carry the review contract.
+- Use built-in `review`, `adversarial-review`, or `deep-review` commands when the job is reviewing local git changes. Those prompts already carry the review contract.
 - Use `task` when the task is diagnosis, planning, research, or implementation and you need to control the prompt more directly.
 - Use `task --resume-last` for follow-up instructions on the same Codex thread. Send only the delta instruction instead of restating the whole prompt unless the direction changed materially.
 

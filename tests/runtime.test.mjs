@@ -160,6 +160,7 @@ test("review renders a no-findings result from app-server review/start", () => {
 test("task runs when the active provider does not require OpenAI login", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir, "provider-no-auth");
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
@@ -172,6 +173,8 @@ test("task runs when the active provider does not require OpenAI login", () => {
   });
 
   assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state.lastTurnStart.sandboxPolicy?.type, "readOnly");
   assert.match(result.stdout, /Handled the requested task/);
 });
 
@@ -604,6 +607,7 @@ test("write task in linked worktree passes the git common dir as an extra writab
 
     assert.equal(result.status, 0, result.stderr);
     const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(state.lastTurnStart.sandboxPolicy?.type, "workspaceWrite");
     assert.deepEqual(state.lastThreadStart.config?.["sandbox_workspace_write.writable_roots"], [
       fs.realpathSync(path.join(repo, ".git"))
     ]);
@@ -615,6 +619,7 @@ test("write task in linked worktree passes the git common dir as an extra writab
 
     assert.equal(resume.status, 0, resume.stderr);
     const resumedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(resumedState.lastTurnStart.sandboxPolicy?.type, "workspaceWrite");
     assert.deepEqual(resumedState.lastThreadResume.config?.["sandbox_workspace_write.writable_roots"], [
       fs.realpathSync(path.join(repo, ".git"))
     ]);
@@ -667,6 +672,7 @@ test("task --resume acts like --resume-last without leaking the flag into the pr
 
   assert.equal(result.status, 0, result.stderr);
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.sandboxPolicy?.type, "readOnly");
   assert.equal(fakeState.lastTurnStart.threadId, "thr_1");
   assert.equal(fakeState.lastTurnStart.prompt, "follow up");
 });

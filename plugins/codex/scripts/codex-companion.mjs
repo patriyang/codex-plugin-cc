@@ -79,6 +79,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
+      "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -256,6 +257,17 @@ function buildAdversarialReviewPrompt(context, focusText) {
   });
 }
 
+function buildDeepReviewPrompt(context, focusText) {
+  const template = loadPromptTemplate(ROOT_DIR, "deep-review");
+  return interpolateTemplate(template, {
+    REVIEW_KIND: "Deep Review",
+    TARGET_LABEL: context.target.label,
+    USER_FOCUS: focusText || "No extra focus provided.",
+    REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
+    REVIEW_INPUT: context.content
+  });
+}
+
 function ensureCodexAvailable(cwd) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
@@ -414,7 +426,10 @@ async function executeReviewRun(request) {
   }
 
   const context = collectReviewContext(request.cwd, target);
-  const prompt = buildAdversarialReviewPrompt(context, focusText);
+  const prompt =
+    reviewName === "Deep Review"
+      ? buildDeepReviewPrompt(context, focusText)
+      : buildAdversarialReviewPrompt(context, focusText);
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
@@ -536,9 +551,14 @@ async function executeTaskRun(request) {
   };
 }
 
+const REVIEW_KIND_BY_NAME = {
+  "Adversarial Review": "adversarial-review",
+  "Deep Review": "deep-review"
+};
+
 function buildReviewJobMetadata(reviewName, target) {
   return {
-    kind: reviewName === "Adversarial Review" ? "adversarial-review" : "review",
+    kind: REVIEW_KIND_BY_NAME[reviewName] ?? "review",
     title: reviewName === "Review" ? "Codex Review" : `Codex ${reviewName}`,
     summary: `${reviewName} ${target.label}`
   };
@@ -565,8 +585,8 @@ function renderQueuedTaskLaunch(payload) {
 }
 
 function getJobKindLabel(kind, jobClass) {
-  if (kind === "adversarial-review") {
-    return "adversarial-review";
+  if (kind === "adversarial-review" || kind === "deep-review") {
+    return kind;
   }
   return jobClass === "review" ? "review" : "rescue";
 }
@@ -1006,6 +1026,11 @@ async function main() {
     case "adversarial-review":
       await handleReviewCommand(argv, {
         reviewName: "Adversarial Review"
+      });
+      break;
+    case "deep-review":
+      await handleReviewCommand(argv, {
+        reviewName: "Deep Review"
       });
       break;
     case "task":

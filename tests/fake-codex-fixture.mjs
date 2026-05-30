@@ -175,7 +175,7 @@ function nativeReviewText(target) {
 }
 
 function structuredReviewPayload(prompt) {
-  if (prompt.includes("adversarial software review")) {
+  if (prompt.includes("adversarial software review") || prompt.includes("multi-dimensional software review")) {
     if (BEHAVIOR === "adversarial-clean") {
       return JSON.stringify({
         verdict: "approve",

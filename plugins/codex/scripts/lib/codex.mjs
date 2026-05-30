@@ -90,6 +90,31 @@ function buildResumeParams(threadId, cwd, options = {}) {
   return params;
 }
 
+function buildTurnSandboxPolicy(sandbox, writableRoots, resolvedSandbox) {
+  if (sandbox === "workspace-write") {
+    const base = resolvedSandbox?.type === "workspaceWrite" ? resolvedSandbox : null;
+    const roots = new Set([...(base?.writableRoots ?? []), ...(writableRoots ?? [])]);
+    return {
+      type: "workspaceWrite",
+      writableRoots: [...roots],
+      networkAccess: base?.networkAccess ?? false,
+      excludeTmpdirEnvVar: base?.excludeTmpdirEnvVar ?? false,
+      excludeSlashTmp: base?.excludeSlashTmp ?? false
+    };
+  }
+  if (sandbox === "read-only") {
+    const base = resolvedSandbox?.type === "readOnly" ? resolvedSandbox : null;
+    return {
+      type: "readOnly",
+      networkAccess: base?.networkAccess ?? false
+    };
+  }
+  if (sandbox === "danger-full-access") {
+    return { type: "dangerFullAccess" };
+  }
+  return null;
+}
+
 /** @returns {UserInput[]} */
 function buildTurnInput(prompt) {
   return [{ type: "text", text: prompt, text_elements: [] }];
@@ -983,6 +1008,7 @@ export async function runAppServerTurn(cwd, options = {}) {
 
   return withAppServer(cwd, async (client) => {
     let threadId;
+    let resolvedSandbox = null;
     const writableRoots = options.sandbox === "workspace-write" ? resolveWorktreeWritableRoots(cwd) : undefined;
 
     if (options.resumeThreadId) {
@@ -994,6 +1020,7 @@ export async function runAppServerTurn(cwd, options = {}) {
         writableRoots
       });
       threadId = response.thread.id;
+      resolvedSandbox = response.sandbox ?? null;
     } else {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
       const response = await startThread(client, cwd, {
@@ -1004,6 +1031,7 @@ export async function runAppServerTurn(cwd, options = {}) {
         writableRoots
       });
       threadId = response.thread.id;
+      resolvedSandbox = response.sandbox ?? null;
     }
 
     emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", {
@@ -1015,6 +1043,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       throw new Error("A prompt is required for this Codex run.");
     }
 
+    const sandboxPolicy = buildTurnSandboxPolicy(options.sandbox, writableRoots, resolvedSandbox);
     const turnState = await captureTurn(
       client,
       threadId,
@@ -1024,7 +1053,8 @@ export async function runAppServerTurn(cwd, options = {}) {
           input: buildTurnInput(prompt),
           model: options.model ?? null,
           effort: options.effort ?? null,
-          outputSchema: options.outputSchema ?? null
+          outputSchema: options.outputSchema ?? null,
+          sandboxPolicy
         }),
       { onProgress: options.onProgress }
     );

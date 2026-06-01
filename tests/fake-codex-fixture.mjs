@@ -586,8 +586,11 @@ rl.on("line", (line) => {
 
 export function buildEnv(binDir) {
   const sep = process.platform === "win32" ? ";" : ":";
-  return {
+  const env = {
     ...process.env,
     PATH: `${binDir}${sep}${process.env.PATH}`
   };
+  delete env.CLAUDE_PLUGIN_DATA;
+  delete env.CODEX_COMPANION_SESSION_ID;
+  return env;
 }

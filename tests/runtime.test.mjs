@@ -16,6 +16,9 @@ const SCRIPT = path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs");
 const STOP_HOOK = path.join(PLUGIN_ROOT, "scripts", "stop-review-gate-hook.mjs");
 const SESSION_HOOK = path.join(PLUGIN_ROOT, "scripts", "session-lifecycle-hook.mjs");
 
+delete process.env.CLAUDE_PLUGIN_DATA;
+delete process.env.CODEX_COMPANION_SESSION_ID;
+
 async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -1119,7 +1122,8 @@ test("status shows phases, hints, and the latest finished job", () => {
   );
 
   const result = run("node", [SCRIPT, "status"], {
-    cwd: workspace
+    cwd: workspace,
+    env: buildEnv(makeTempDir())
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -1263,7 +1267,8 @@ test("status preserves adversarial review kind labels", () => {
   );
 
   const result = run("node", [SCRIPT, "status"], {
-    cwd: workspace
+    cwd: workspace,
+    env: buildEnv(makeTempDir())
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -1386,7 +1391,8 @@ test("result returns the stored output for the latest finished job by default", 
   );
 
   const result = run("node", [SCRIPT, "result"], {
-    cwd: workspace
+    cwd: workspace,
+    env: buildEnv(makeTempDir())
   });
 
   assert.equal(result.status, 0, result.stderr);

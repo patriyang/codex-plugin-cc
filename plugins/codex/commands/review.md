@@ -1,7 +1,7 @@
 ---
 description: Run a Codex code review against local git state
 argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch]'
-allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
+allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*)
 ---
 
 Run a Codex review through the shared built-in reviewer.
@@ -15,20 +15,18 @@ Core constraint:
 - Your only job is to run the review and return Codex's output verbatim to the user.
 
 Execution mode rules:
-- If the raw arguments include `--wait`, do not ask. Run the review in the foreground.
-- If the raw arguments include `--background`, do not ask. Run the review in a Claude background task.
-- Otherwise, estimate the review size before asking:
+- If the raw arguments include `--wait`, run the review in the foreground.
+- If the raw arguments include `--background`, run the review in a Claude background task.
+- Otherwise, decide the mode yourself. Never ask the user; do not use `AskUserQuestion`. Estimate the review size first:
   - For working-tree review, start with `git status --short --untracked-files=all`.
   - For working-tree review, also inspect both `git diff --shortstat --cached` and `git diff --shortstat`.
   - For base-branch review, use `git diff --shortstat <base>...HEAD`.
   - Treat untracked files or directories as reviewable work even when `git diff --shortstat` is empty.
   - Only conclude there is nothing to review when the relevant working-tree status is empty or the explicit branch diff is empty.
-  - Recommend waiting only when the review is clearly tiny, roughly 1-2 files total and no sign of a broader directory-sized change.
-  - In every other case, including unclear size, recommend background.
+  - Choose the foreground only when the review is clearly tiny, roughly 1-2 files total and no sign of a broader directory-sized change.
+  - In every other case, including unclear size, choose the background.
   - When in doubt, run the review instead of declaring that there is nothing to review.
-- Then use `AskUserQuestion` exactly once with two options, putting the recommended option first and suffixing its label with `(Recommended)`:
-  - `Wait for results`
-  - `Run in background`
+- Tell the user which mode you chose and why in one short line, then proceed to that flow without waiting for confirmation. For example: "Sizable change, running the review in the background." or "Small change, running the review in the foreground."
 
 Argument handling:
 - Preserve the user's arguments exactly.

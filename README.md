@@ -13,7 +13,7 @@ they already have.
 - `/codex:adversarial-review` for a steerable challenge review
 - `/codex:deep-review` for a multi-dimensional review of correctness, conciseness, and code quality
 - `/codex:implement` to have Codex implement a structured plan with per-task implementer and reviewer agents
-- `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
+- `/codex:rescue`, `/codex:transfer`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work, hand off sessions, and manage background jobs
 
 ## Requirements
 
@@ -227,6 +227,21 @@ Examples:
 
 > [!NOTE]
 > The default sequential mode is write-capable. Codex edits files; Claude commits each completed task (Codex's sandbox cannot write the git index, especially in worktrees). It works best from a feature branch with a clean working tree.
+
+### `/codex:transfer`
+
+Creates a persistent Codex thread from the current Claude Code session and prints a `codex resume <session-id>` command.
+
+Use it when you started a debugging or implementation conversation in Claude Code and want to continue that same context directly in Codex.
+
+Examples:
+
+```bash
+/codex:transfer
+/codex:transfer --source ~/.claude/projects/-Users-me-repo/<session-id>.jsonl
+```
+
+The plugin's existing `SessionStart` hook supplies the current transcript path automatically; `--source` is available as a manual override. The transfer uses Codex's external-agent session importer, so it follows the same conversion rules as importing Claude history in the Codex App and creates visible turns that can be continued in the App or TUI. The source must be under `~/.claude/projects`, and older Codex versions that do not expose session import must be upgraded before using this command.
 
 ### `/codex:status`
 

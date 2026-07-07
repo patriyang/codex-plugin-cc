@@ -194,14 +194,13 @@ Ask Codex to redesign the database connection to be more resilient.
 - if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
 - follow-up rescue requests can continue the latest Codex task in the repo
 
-<<<<<<< HEAD
 ### `/codex:implement`
 
 Implements a structured plan through Codex subagent-driven development.
 
 By default, Claude acts as the controller and runs each task in sequence:
 
-1. a fresh Codex implementer makes the change and commits it
+1. a fresh Codex implementer makes the change; Claude (the controller) commits it
 2. a fresh Codex spec reviewer checks the result against the task
 3. a fresh Codex code quality reviewer checks the implementation
 4. Codex loops on reviewer feedback until the task is approved or blocked
@@ -227,7 +226,7 @@ Examples:
 ```
 
 > [!NOTE]
-> The default sequential mode is write-capable and expects Codex to commit each completed task. It works best from a feature branch with a clean working tree.
+> The default sequential mode is write-capable. Codex edits files; Claude commits each completed task (Codex's sandbox cannot write the git index, especially in worktrees). It works best from a feature branch with a clean working tree.
 
 ### `/codex:transfer`
 

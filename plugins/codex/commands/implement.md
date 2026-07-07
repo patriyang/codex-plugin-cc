@@ -37,7 +37,7 @@ If no plan-like content can be found anywhere, ask the user once what plan to im
 Before extracting tasks:
 1. Confirm Codex is ready by running `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status --json`. If the helper reports Codex is missing or unauthenticated, stop and tell the user to run `/codex:setup`.
 2. Confirm git is in a sane state: `git status --short`. If the working tree is dirty with unrelated changes, tell the user and ask whether to proceed.
-3. Confirm we are NOT on `main` / `master`. If we are, tell the user and ask before proceeding — Codex will be committing.
+3. Confirm we are NOT on `main` / `master`. If we are, tell the user and ask before proceeding — you (the controller) will be committing each task.
 
 ## Task Extraction
 
@@ -103,13 +103,25 @@ Locate the `## Status` heading in Codex's output. Branch on value:
 - **DONE_WITH_CONCERNS** → Read the concerns. If they affect correctness or scope, ask the user how to handle before proceeding. If observational, note them and proceed to step 4.
 - **DONE** → Proceed to step 4.
 
-### 4. Snapshot head SHA after implementation
+### 4. Commit the implementer's work (controller commits, not Codex)
+
+The Codex implementer leaves its changes in the working tree; it does **not** commit. Codex runs inside a sandbox that cannot write the git index — in a worktree specifically, `git commit` fails with `.git/worktrees/<name>/index.lock: Operation not permitted`. You (the controller) run outside that sandbox, so you commit.
+
+Check for changes:
 
 ```bash
+git status --porcelain
+```
+
+- If **empty** (the implementer produced no file changes) yet it reported `DONE` → treat as `BLOCKED`: the implementer did nothing. Re-dispatch step 2 with an explicit instruction to actually make the change.
+- Otherwise, commit the changes yourself:
+
+```bash
+git add -A && git commit -m "Task ${TASK_NUMBER}: ${TASK_NAME}"
 git rev-parse HEAD
 ```
 
-Record as `HEAD_SHA`. Set `COMMITS_RANGE = ${BASE_SHA}..${HEAD_SHA}`. If `BASE_SHA == HEAD_SHA`, the implementer claimed DONE without committing — treat as BLOCKED and re-dispatch with explicit instruction to commit.
+Record the new commit as `HEAD_SHA`. Set `COMMITS_RANGE = ${BASE_SHA}..${HEAD_SHA}` — this is what the reviewers examine.
 
 ### 5. Dispatch spec reviewer (fresh Codex thread)
 
@@ -130,7 +142,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --wait --fresh [--
 
 Locate `## Verdict` heading:
 - **SPEC_COMPLIANT** → proceed to step 7.
-- **ISSUES_FOUND** → Build a fix brief listing the issues. Re-dispatch implementer (step 2 again) with `{{REVIEWER_FEEDBACK}}` populated and `--resume-last` so the implementer keeps its working context. Then re-dispatch spec reviewer (step 5) — fresh thread each time so it does not anchor on prior judgments. Loop until SPEC_COMPLIANT or until the same issue recurs 3 times (then escalate to user).
+- **ISSUES_FOUND** → Build a fix brief listing the issues. Re-dispatch implementer (step 2 again) with `{{REVIEWER_FEEDBACK}}` populated and `--resume-last` so the implementer keeps its working context. After it returns, commit the fix yourself (step 4 — the implementer still does not commit) and update `HEAD_SHA` / `COMMITS_RANGE`. Then re-dispatch spec reviewer (step 5) — fresh thread each time so it does not anchor on prior judgments. Loop until SPEC_COMPLIANT or until the same issue recurs 3 times (then escalate to user).
 
 ### 7. Dispatch code quality reviewer (fresh Codex thread)
 
@@ -149,7 +161,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --wait --fresh [--
 
 Locate `## Verdict` heading:
 - **APPROVED** → mark task complete in TodoWrite, move to next task.
-- **CHANGES_REQUESTED** → Build a fix brief from `Issues — Critical` and `Issues — Important` (skip `Minor` unless they're easy). Re-dispatch implementer with `--resume-last`. Then re-dispatch code quality reviewer fresh. Loop until APPROVED or same issue recurs 3 times.
+- **CHANGES_REQUESTED** → Build a fix brief from `Issues — Critical` and `Issues — Important` (skip `Minor` unless they're easy). Re-dispatch implementer with `--resume-last`. After it returns, commit the fix yourself (step 4) and update `HEAD_SHA` / `COMMITS_RANGE`. Then re-dispatch code quality reviewer fresh. Loop until APPROVED or same issue recurs 3 times.
 
 Update TodoWrite as you go.
 
@@ -213,6 +225,13 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --wait --write --f
 
 (Same `--model`/`--effort` resolution as sequential mode — default `--effort medium` unless the user passed one.)
 
+The single-shot Codex agent leaves its changes uncommitted too (same sandbox limitation). After it returns, commit the working-tree changes yourself:
+
+```bash
+git status --porcelain   # if empty, Codex made no changes — report that instead of committing
+git add -A && git commit -m "<one-line summary of the plan>"
+```
+
 Show the report. Propose next steps.
 
 ## Argument and Flag Reference
@@ -227,6 +246,6 @@ Show the report. Propose next steps.
 
 - Codex missing/unauthenticated → tell user to run `/codex:setup`.
 - Plan unparseable → tell user, suggest `/superpowers:writing-plans`.
-- Implementer commits nothing → treated as BLOCKED, re-dispatched with explicit commit instruction.
+- Implementer produces no file changes → treated as BLOCKED, re-dispatched with explicit instruction to make the change. (The controller does the committing; Codex is not expected to commit.)
 - Review loop hits 3 strikes on the same issue → stop and surface to user with the full review history.
 - Codex output missing required headings → present what came back, tell the user the report was malformed, offer to re-run that step.

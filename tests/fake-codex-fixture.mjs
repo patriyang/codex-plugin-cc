@@ -589,7 +589,24 @@ rl.on("line", (line) => {
           }
         ];
 
-	        if (BEHAVIOR === "interruptible-slow-task") {
+	        if (BEHAVIOR === "hung-tool") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "inProgress"
+	              }
+	            }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+	        } else if (BEHAVIOR === "interruptible-slow-task") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          const timer = setTimeout(() => {
 	            if (!interruptibleTurns.has(turnId)) {
@@ -620,7 +637,9 @@ rl.on("line", (line) => {
 	        saveState(state);
 	        const pending = interruptibleTurns.get(message.params.turnId);
 	        if (pending) {
-	          clearTimeout(pending.timer);
+	          if (pending.timer) {
+	            clearTimeout(pending.timer);
+	          }
 	          interruptibleTurns.delete(message.params.turnId);
 	          send({
 	            method: "turn/completed",

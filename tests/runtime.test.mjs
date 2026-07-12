@@ -1152,6 +1152,65 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   assert.match(resultPayload.storedJob.rendered, /Handled the requested task/);
 });
 
+test("task watchdog interrupts a hung tool turn and fails the job instead of hanging", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "hung-tool");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "500"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the hung MCP tool"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    {
+      cwd: repo,
+      env
+    }
+  );
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.ok(Date.now() - startedAt < 10000);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.id, launchPayload.jobId);
+  assert.equal(waitedPayload.job.status, "failed");
+
+  const fakeState = await waitFor(() => {
+    if (!fs.existsSync(fakeStatePath)) {
+      return null;
+    }
+    const current = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    return current.lastInterrupt ? current : null;
+  });
+  assert.deepEqual(fakeState.lastInterrupt, {
+    threadId: waitedPayload.job.threadId,
+    turnId: waitedPayload.job.turnId
+  });
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.job.status, "failed");
+  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled/i);
+});
+
 test("review rejects focus text because it is native-review only", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

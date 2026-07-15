@@ -1164,7 +1164,8 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
 
   const env = {
     ...buildEnv(binDir),
-    CODEX_TURN_STALL_TIMEOUT_MS: "500"
+    CODEX_TURN_STALL_TIMEOUT_MS: "5000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "500"
   };
   const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the hung MCP tool"], {
     cwd: repo,
@@ -1208,7 +1209,70 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
   assert.equal(stored.status, 0, stored.stderr);
   const storedPayload = JSON.parse(stored.stdout);
   assert.equal(storedPayload.job.status, "failed");
-  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled/i);
+  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(tool-in-flight\)/i);
+  assert.match(storedPayload.storedJob.rendered, /codegraph_explore/i);
+});
+
+test("task watchdog lets idle reasoning exceed tool budget and stalls at turn backstop", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "idle-hung-turn");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "1500",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "300"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "think without tools"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    {
+      cwd: repo,
+      env
+    }
+  );
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.ok(elapsedMs >= 1000, `expected idle turn to survive past tool budget, elapsed ${elapsedMs}ms`);
+  assert.ok(elapsedMs < 10000);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.id, launchPayload.jobId);
+  assert.equal(waitedPayload.job.status, "failed");
+
+  const fakeState = await waitFor(() => {
+    if (!fs.existsSync(fakeStatePath)) {
+      return null;
+    }
+    const current = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    return current.lastInterrupt ? current : null;
+  });
+  assert.deepEqual(fakeState.lastInterrupt, {
+    threadId: waitedPayload.job.threadId,
+    turnId: waitedPayload.job.turnId
+  });
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.job.status, "failed");
+  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(idle\)/i);
 });
 
 test("review rejects focus text because it is native-review only", () => {

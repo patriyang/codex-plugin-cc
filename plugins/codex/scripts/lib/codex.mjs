@@ -55,7 +55,8 @@ const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
-const DEFAULT_TURN_STALL_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_TURN_STALL_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_TOOL_STALL_TIMEOUT_MS = 90 * 1000;
 const TURN_INTERRUPT_TIMEOUT_MS = 5000;
 
 function cleanCodexStderr(stderr) {
@@ -142,6 +143,17 @@ function resolveStallTimeoutMs(options = {}) {
     return envValue;
   }
   return DEFAULT_TURN_STALL_TIMEOUT_MS;
+}
+
+function resolveToolStallTimeoutMs(options = {}) {
+  if (options.toolStallTimeoutMs !== undefined) {
+    return Number(options.toolStallTimeoutMs);
+  }
+  const envValue = Number(process.env.CODEX_TOOL_STALL_TIMEOUT_MS);
+  if (Number.isFinite(envValue) && envValue >= 0) {
+    return envValue;
+  }
+  return DEFAULT_TOOL_STALL_TIMEOUT_MS;
 }
 
 function shorten(text, limit = 72) {
@@ -487,7 +499,7 @@ async function interruptTurnWithTimeout(client, threadId, turnId) {
   }
 }
 
-async function handleStall(state, client, stallTimeoutMs) {
+async function handleStall(state, client, stallTimeoutMs, stallMode) {
   if (state.completed) {
     return;
   }
@@ -495,7 +507,8 @@ async function handleStall(state, client, stallTimeoutMs) {
   state.stalled = true;
   const seconds = Math.round(stallTimeoutMs / 1000);
   const itemDetail = state.lastActiveItemLabel ? ` while "${state.lastActiveItemLabel}" was in flight` : "";
-  const message = `Codex turn stalled: no activity for ${seconds}s${itemDetail}. Interrupting and aborting the turn.`;
+  const modeDetail = stallMode === "tool" ? "tool-in-flight" : "idle";
+  const message = `Codex turn stalled (${modeDetail}): no activity for ${seconds}s${itemDetail}. Interrupting and aborting the turn.`;
   state.error = { message };
   emitLogEvent(state.onProgress, {
     message,
@@ -515,15 +528,20 @@ async function handleStall(state, client, stallTimeoutMs) {
   }
 }
 
-function bumpActivity(state, client, stallTimeoutMs) {
-  if (stallTimeoutMs <= 0 || !Number.isFinite(stallTimeoutMs) || state.completed) {
+function bumpActivity(state, client, stallTimeouts) {
+  const stallMode = state.lastActiveItemLabel ? "tool" : "idle";
+  const stallTimeoutMs = stallMode === "tool" ? stallTimeouts.tool : stallTimeouts.turn;
+  if (state.completed) {
     return;
   }
 
   clearActivityTimer(state);
+  if (stallTimeoutMs <= 0 || !Number.isFinite(stallTimeoutMs)) {
+    return;
+  }
   state.activityTimer = setTimeout(() => {
     state.activityTimer = null;
-    state.stallCleanup = handleStall(state, client, stallTimeoutMs);
+    state.stallCleanup = handleStall(state, client, stallTimeoutMs, stallMode);
   }, stallTimeoutMs);
   state.activityTimer.unref?.();
 }
@@ -622,7 +640,7 @@ function recordItem(state, item, lifecycle, threadId = null) {
   }
 }
 
-function applyTurnNotification(state, message) {
+function applyTurnNotification(state, message, onToolActivityChange = null) {
   // Turn already finalized (normal, inferred, or stalled) -- don't mutate the settled result.
   if (state.completed) {
     return;
@@ -666,6 +684,7 @@ function applyTurnNotification(state, message) {
         const update = describeStartedItem(state, message.params.item);
         if (isActiveToolItem(message.params.item)) {
           state.lastActiveItemLabel = update?.message ?? "active tool";
+          onToolActivityChange?.();
         }
         emitProgress(state.onProgress, update?.message, update?.phase ?? null);
       }
@@ -676,6 +695,7 @@ function applyTurnNotification(state, message) {
         const update = describeCompletedItem(state, message.params.item);
         if (isActiveToolItem(message.params.item)) {
           state.lastActiveItemLabel = null;
+          onToolActivityChange?.();
         }
         emitProgress(state.onProgress, update?.message, update?.phase ?? null);
       }
@@ -705,7 +725,11 @@ function applyTurnNotification(state, message) {
 async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
-  const stallTimeoutMs = resolveStallTimeoutMs(options);
+  const stallTimeouts = {
+    turn: resolveStallTimeoutMs(options),
+    tool: resolveToolStallTimeoutMs(options)
+  };
+  const rearmActivity = () => bumpActivity(state, client, stallTimeouts);
 
   client.setNotificationHandler((message) => {
     if (!state.turnId) {
@@ -714,8 +738,8 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     }
 
     if (message.method === "thread/started" || message.method === "thread/name/updated") {
-      bumpActivity(state, client, stallTimeoutMs);
-      applyTurnNotification(state, message);
+      bumpActivity(state, client, stallTimeouts);
+      applyTurnNotification(state, message, rearmActivity);
       return;
     }
 
@@ -726,8 +750,8 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
         return;
     }
 
-    bumpActivity(state, client, stallTimeoutMs);
-    applyTurnNotification(state, message);
+    bumpActivity(state, client, stallTimeouts);
+    applyTurnNotification(state, message, rearmActivity);
   });
 
   try {
@@ -736,15 +760,15 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     state.turnId = response.turn?.id ?? null;
     if (state.turnId) {
       state.threadTurnIds.set(state.threadId, state.turnId);
-      bumpActivity(state, client, stallTimeoutMs);
+      bumpActivity(state, client, stallTimeouts);
     }
     for (const message of state.bufferedNotifications) {
       if (message.method === "thread/started" || message.method === "thread/name/updated") {
-        bumpActivity(state, client, stallTimeoutMs);
-        applyTurnNotification(state, message);
+        bumpActivity(state, client, stallTimeouts);
+        applyTurnNotification(state, message, rearmActivity);
       } else if (belongsToTurn(state, message)) {
-        bumpActivity(state, client, stallTimeoutMs);
-        applyTurnNotification(state, message);
+        bumpActivity(state, client, stallTimeouts);
+        applyTurnNotification(state, message, rearmActivity);
       } else {
         if (previousHandler) {
           previousHandler(message);

@@ -57,6 +57,13 @@ const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_TURN_STALL_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_TOOL_STALL_TIMEOUT_MS = 90 * 1000;
+const DEFAULT_TOOL_MAX_INFLIGHT_MS = 5 * 60 * 1000;
+// Quick tools should answer fast and/or stream; a silent one past the tool budget is wedged,
+// and even a chatty one past the max-in-flight cap is looping. Long tools (shell commands,
+// subagent collaborations) can legitimately run long and silent, so they use the turn backstop
+// for inactivity and get no wall-clock cap.
+const QUICK_TOOL_TYPES = new Set(["mcpToolCall", "webSearch", "customToolCall", "dynamicToolCall"]);
+const LONG_TOOL_TYPES = new Set(["commandExecution", "collabAgentToolCall"]);
 const TURN_INTERRUPT_TIMEOUT_MS = 5000;
 
 function cleanCodexStderr(stderr) {
@@ -154,6 +161,17 @@ function resolveToolStallTimeoutMs(options = {}) {
     return envValue;
   }
   return DEFAULT_TOOL_STALL_TIMEOUT_MS;
+}
+
+function resolveToolMaxInFlightMs(options = {}) {
+  if (options.toolMaxInFlightMs !== undefined) {
+    return Number(options.toolMaxInFlightMs);
+  }
+  const envValue = Number(process.env.CODEX_TOOL_MAX_INFLIGHT_MS);
+  if (Number.isFinite(envValue) && envValue >= 0) {
+    return envValue;
+  }
+  return DEFAULT_TOOL_MAX_INFLIGHT_MS;
 }
 
 function shorten(text, limit = 72) {
@@ -395,9 +413,11 @@ function createTurnCaptureState(threadId, options = {}) {
     activeSubagentTurns: new Set(),
     completionTimer: null,
     activityTimer: null,
+    toolDeadlineTimer: null,
     stallCleanup: null,
     stalled: false,
     lastActiveItemLabel: null,
+    activeToolClass: null,
     lastAgentMessage: "",
     reviewText: "",
     reasoningSummary: [],
@@ -423,6 +443,30 @@ function clearActivityTimer(state) {
   }
 }
 
+function clearToolDeadlineTimer(state) {
+  if (state.toolDeadlineTimer) {
+    clearTimeout(state.toolDeadlineTimer);
+    state.toolDeadlineTimer = null;
+  }
+}
+
+// Wall-clock cap for the in-flight quick tool. Armed once when the tool starts and NOT rearmed by
+// activity, so a tool that stays alive by streaming forever still gets cut off. A no-op if a
+// deadline is already armed for the current tool, if the cap is disabled, or if the turn is done.
+function armToolDeadline(state, client, maxInFlightMs) {
+  if (state.toolDeadlineTimer || state.completed) {
+    return;
+  }
+  if (!(maxInFlightMs > 0) || !Number.isFinite(maxInFlightMs)) {
+    return;
+  }
+  state.toolDeadlineTimer = setTimeout(() => {
+    state.toolDeadlineTimer = null;
+    state.stallCleanup = handleStall(state, client, maxInFlightMs, "tool-max");
+  }, maxInFlightMs);
+  state.toolDeadlineTimer.unref?.();
+}
+
 function completeTurn(state, turn = null, options = {}) {
   if (state.completed) {
     return;
@@ -430,6 +474,7 @@ function completeTurn(state, turn = null, options = {}) {
 
   clearCompletionTimer(state);
   clearActivityTimer(state);
+  clearToolDeadlineTimer(state);
   state.completed = true;
 
   if (turn) {
@@ -474,15 +519,18 @@ function scheduleInferredCompletion(state) {
   state.completionTimer.unref?.();
 }
 
+function toolClass(item) {
+  if (QUICK_TOOL_TYPES.has(item?.type)) {
+    return "quick";
+  }
+  if (LONG_TOOL_TYPES.has(item?.type)) {
+    return "long";
+  }
+  return null;
+}
+
 function isActiveToolItem(item) {
-  return (
-    item?.type === "mcpToolCall" ||
-    item?.type === "commandExecution" ||
-    item?.type === "customToolCall" ||
-    item?.type === "dynamicToolCall" ||
-    item?.type === "collabAgentToolCall" ||
-    item?.type === "webSearch"
-  );
+  return toolClass(item) !== null;
 }
 
 function isFailedItemStatus(status) {
@@ -558,8 +606,12 @@ async function handleStall(state, client, stallTimeoutMs, stallMode) {
   state.stalled = true;
   const seconds = Math.round(stallTimeoutMs / 1000);
   const itemDetail = state.lastActiveItemLabel ? ` while "${state.lastActiveItemLabel}" was in flight` : "";
-  const modeDetail = stallMode === "tool" ? "tool-in-flight" : "idle";
-  const message = `Codex turn stalled (${modeDetail}): no activity for ${seconds}s${itemDetail}. Interrupting and aborting the turn.`;
+  const modeDetail = stallMode === "tool" ? "tool-in-flight" : stallMode === "tool-max" ? "tool-max-duration" : "idle";
+  const reason =
+    stallMode === "tool-max"
+      ? `in flight for ${seconds}s without completing (exceeded max tool duration)`
+      : `no activity for ${seconds}s`;
+  const message = `Codex turn stalled (${modeDetail}): ${reason}${itemDetail}. Interrupting and aborting the turn.`;
   state.error ??= { message };
   emitLogEvent(state.onProgress, {
     message,
@@ -580,21 +632,30 @@ async function handleStall(state, client, stallTimeoutMs, stallMode) {
 }
 
 function bumpActivity(state, client, stallTimeouts) {
-  const stallMode = state.lastActiveItemLabel ? "tool" : "idle";
-  const stallTimeoutMs = stallMode === "tool" ? stallTimeouts.tool : stallTimeouts.turn;
   if (state.completed) {
     return;
   }
 
+  // Only quick tools get the short inactivity budget; long tools (shell commands, subagent
+  // collaborations) can run long and silent, so they fall back to the generous turn backstop.
+  const stallMode = state.activeToolClass === "quick" ? "tool" : "idle";
+  const stallTimeoutMs = stallMode === "tool" ? stallTimeouts.tool : stallTimeouts.turn;
+
   clearActivityTimer(state);
-  if (stallTimeoutMs <= 0 || !Number.isFinite(stallTimeoutMs)) {
-    return;
+  if (stallTimeoutMs > 0 && Number.isFinite(stallTimeoutMs)) {
+    state.activityTimer = setTimeout(() => {
+      state.activityTimer = null;
+      state.stallCleanup = handleStall(state, client, stallTimeoutMs, stallMode);
+    }, stallTimeoutMs);
+    state.activityTimer.unref?.();
   }
-  state.activityTimer = setTimeout(() => {
-    state.activityTimer = null;
-    state.stallCleanup = handleStall(state, client, stallTimeoutMs, stallMode);
-  }, stallTimeoutMs);
-  state.activityTimer.unref?.();
+
+  // Wall-clock cap applies to quick tools only; a long tool clears any prior deadline.
+  if (state.activeToolClass === "quick") {
+    armToolDeadline(state, client, stallTimeouts.toolMaxInFlight);
+  } else {
+    clearToolDeadlineTimer(state);
+  }
 }
 
 function belongsToTurn(state, message) {
@@ -735,6 +796,7 @@ function applyTurnNotification(state, message, onToolActivityChange = null) {
         const update = describeStartedItem(state, message.params.item);
         if (isActiveToolItem(message.params.item)) {
           state.lastActiveItemLabel = update?.message ?? "active tool";
+          state.activeToolClass = toolClass(message.params.item);
           onToolActivityChange?.();
         }
         emitProgress(state.onProgress, update?.message, update?.phase ?? null);
@@ -747,6 +809,7 @@ function applyTurnNotification(state, message, onToolActivityChange = null) {
         if (isActiveToolItem(message.params.item)) {
           state.error ??= errorForFailedToolItem(message.params.item);
           state.lastActiveItemLabel = null;
+          state.activeToolClass = null;
           onToolActivityChange?.();
           scheduleInferredCompletion(state);
         }
@@ -756,6 +819,7 @@ function applyTurnNotification(state, message, onToolActivityChange = null) {
     case "error":
       if (state.lastActiveItemLabel) {
         state.lastActiveItemLabel = null;
+        state.activeToolClass = null;
         onToolActivityChange?.();
       }
       state.error ??= message.params.error;
@@ -785,7 +849,8 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   const previousHandler = client.notificationHandler;
   const stallTimeouts = {
     turn: resolveStallTimeoutMs(options),
-    tool: resolveToolStallTimeoutMs(options)
+    tool: resolveToolStallTimeoutMs(options),
+    toolMaxInFlight: resolveToolMaxInFlightMs(options)
   };
   const rearmActivity = () => bumpActivity(state, client, stallTimeouts);
 
@@ -847,6 +912,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   } finally {
     clearCompletionTimer(state);
     clearActivityTimer(state);
+    clearToolDeadlineTimer(state);
     client.setNotificationHandler(previousHandler ?? null);
   }
 }

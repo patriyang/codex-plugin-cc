@@ -1262,6 +1262,96 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
   assert.match(storedPayload.storedJob.rendered, /codegraph_explore/i);
 });
 
+test("task watchdog caps a quick tool that stays busy but never completes", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "busy-quick-tool");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "8000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "5000",
+    CODEX_TOOL_MAX_INFLIGHT_MS: "800"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "run the chatty tool"], { cwd: repo, env });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const elapsedMs = Date.now() - startedAt;
+  // Fires on the wall-clock cap (800ms) even though the tool streams activity every 150ms, so the
+  // inactivity budget (5000ms) never trips.
+  assert.ok(elapsedMs < 4500, `expected wall-clock cap to fire despite streaming, elapsed ${elapsedMs}ms`);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.status, "failed");
+
+  const fakeState = await waitFor(() => {
+    if (!fs.existsSync(fakeStatePath)) {
+      return null;
+    }
+    const current = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    return current.lastInterrupt ? current : null;
+  });
+  assert.ok(fakeState.lastInterrupt, "expected the capped tool turn to be interrupted");
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.job.status, "failed");
+  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(tool-max-duration\)/i);
+  assert.match(storedPayload.storedJob.rendered, /exceeded max tool duration/i);
+});
+
+test("task watchdog lets a silent long-running command ride the turn backstop instead of the tool budget", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "silent-long-tool");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "8000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "500",
+    CODEX_TOOL_MAX_INFLIGHT_MS: "500"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "run the long silent command"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const elapsedMs = Date.now() - startedAt;
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  // The command is silent for 1200ms — well past the 500ms quick-tool budget and the 500ms
+  // wall-clock cap — yet completes successfully because a long tool uses neither.
+  assert.equal(waitedPayload.job.status, "completed", waitedStatus.stdout);
+  assert.ok(elapsedMs >= 1000, `expected long tool to survive past the short budgets, elapsed ${elapsedMs}ms`);
+
+  assert.equal(fs.existsSync(fakeStatePath) && JSON.parse(fs.readFileSync(fakeStatePath, "utf8")).lastInterrupt ? true : false, false,
+    "a successful long command must not be interrupted");
+});
+
 test("task does not infer completion when a tool errors before the final answer", async () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

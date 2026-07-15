@@ -1432,6 +1432,38 @@ test("task does not infer success when a tool starts and hangs after the final a
   assert.match(storedPayload.storedJob.rendered, /Handled the requested task/i);
 });
 
+test("task does not let a top-level error over one of two tools infer success", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "overlapping-error-after-final-answer");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "8000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "800"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "two tools, one errors"], { cwd: repo, env });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const elapsedMs = Date.now() - startedAt;
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  // A top-level error with two overlapping tools must not clear the unrelated one or let inference
+  // finalize success; the still-hung tool's watchdog fails the turn instead.
+  assert.equal(waitedPayload.job.status, "failed", waitedStatus.stdout);
+  assert.ok(elapsedMs < 4500, `expected the remaining tool's watchdog to fire, elapsed ${elapsedMs}ms`);
+});
+
 test("task does not infer completion when a tool errors before the final answer", async () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

@@ -850,7 +850,11 @@ function applyTurnNotification(state, message, watchdog = null) {
       }
       break;
     case "error":
-      if (state.activeTools.size) {
+      // A top-level error carries no item id, so it can't be pinned to a specific tool. Only clear
+      // the in-flight marker when exactly one tool is active (the error must be about that one).
+      // With overlapping tools we can't attribute it, so leave them for their own watchdogs rather
+      // than dropping an unrelated tool's deadline or letting inference finish over a live tool.
+      if (state.activeTools.size === 1) {
         watchdog?.clearActiveTools();
       }
       state.error ??= message.params.error;

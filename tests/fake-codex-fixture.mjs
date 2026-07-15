@@ -807,6 +807,39 @@ rl.on("line", (line) => {
 	            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
 	          }, 1200);
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer });
+	        } else if (BEHAVIOR === "overlapping-error-after-final-answer") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          // Final answer, then two overlapping quick tools, then a top-level error. The error must
+	          // NOT drop the unrelated still-in-flight tool or let inference finish over it.
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "agentMessage", id: "msg_" + turnId, text: payload, phase: "final_answer" }
+	            }
+	          });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "mcpToolCall", id: "mcp_A_" + turnId, server: "codegraph", tool: "codegraph_explore", status: "inProgress" }
+	            }
+	          });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "mcpToolCall", id: "mcp_B_" + turnId, server: "docs", tool: "lookup", status: "inProgress" }
+	            }
+	          });
+	          send({
+	            method: "error",
+	            params: { threadId: thread.id, turnId, error: { message: "codegraph_explore failed" } }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
 	        } else if (BEHAVIOR === "hung-tool-after-final-answer") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          // Final answer arrives, THEN a quick tool starts and hangs. Inference must not finalize

@@ -1177,7 +1177,7 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
   const startedAt = Date.now();
   const waitedStatus = run(
     "node",
-    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
     {
       cwd: repo,
       env
@@ -1185,7 +1185,8 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
   );
 
   assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
-  assert.ok(Date.now() - startedAt < 10000);
+  const elapsedMs = Date.now() - startedAt;
+  assert.ok(elapsedMs < 4500, `expected tool budget to fire before turn budget, elapsed ${elapsedMs}ms`);
   const waitedPayload = JSON.parse(waitedStatus.stdout);
   assert.equal(waitedPayload.job.id, launchPayload.jobId);
   assert.equal(waitedPayload.job.status, "failed");

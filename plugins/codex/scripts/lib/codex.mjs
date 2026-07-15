@@ -480,7 +480,8 @@ function isActiveToolItem(item) {
     item?.type === "commandExecution" ||
     item?.type === "customToolCall" ||
     item?.type === "dynamicToolCall" ||
-    item?.type === "collabAgentToolCall"
+    item?.type === "collabAgentToolCall" ||
+    item?.type === "webSearch"
   );
 }
 
@@ -513,6 +514,9 @@ function labelForToolItem(item) {
   }
   if (item.type === "customToolCall" || item.type === "dynamicToolCall" || item.type === "collabAgentToolCall") {
     return item.tool ?? "tool";
+  }
+  if (item.type === "webSearch") {
+    return item.query ? `web search ${shorten(item.query, 96)}` : "web search";
   }
   return "tool";
 }
@@ -754,7 +758,7 @@ function applyTurnNotification(state, message, onToolActivityChange = null) {
         state.lastActiveItemLabel = null;
         onToolActivityChange?.();
       }
-      state.error = message.params.error;
+      state.error ??= message.params.error;
       emitProgress(state.onProgress, `Codex error: ${message.params.error.message}`, "failed");
       scheduleInferredCompletion(state);
       break;

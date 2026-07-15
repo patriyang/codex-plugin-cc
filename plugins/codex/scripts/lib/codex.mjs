@@ -696,13 +696,19 @@ function applyTurnNotification(state, message, onToolActivityChange = null) {
         if (isActiveToolItem(message.params.item)) {
           state.lastActiveItemLabel = null;
           onToolActivityChange?.();
+          scheduleInferredCompletion(state);
         }
         emitProgress(state.onProgress, update?.message, update?.phase ?? null);
       }
       break;
     case "error":
+      if (state.lastActiveItemLabel) {
+        state.lastActiveItemLabel = null;
+        onToolActivityChange?.();
+      }
       state.error = message.params.error;
       emitProgress(state.onProgress, `Codex error: ${message.params.error.message}`, "failed");
+      scheduleInferredCompletion(state);
       break;
     case "turn/completed":
       if ((message.params.threadId ?? null) !== state.threadId) {

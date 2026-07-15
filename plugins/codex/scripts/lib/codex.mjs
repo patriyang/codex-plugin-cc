@@ -27,7 +27,7 @@
  *   activityTimer: ReturnType<typeof setTimeout> | null,
  *   stallCleanup: Promise<void> | null,
  *   stalled: boolean,
- *   lastActiveItemLabel: string | null,
+ *   activeTools: Map<string, { threadId: string | null, itemId: string | null, toolClass: string, label: string, deadlineTimer: ReturnType<typeof setTimeout> | null }>,
  *   lastAgentMessage: string,
  *   reviewText: string,
  *   reasoningSummary: string[],
@@ -55,7 +55,15 @@ const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
-const DEFAULT_TURN_STALL_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_TURN_STALL_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_TOOL_STALL_TIMEOUT_MS = 90 * 1000;
+const DEFAULT_TOOL_MAX_INFLIGHT_MS = 5 * 60 * 1000;
+// Quick tools should answer fast and/or stream; a silent one past the tool budget is wedged,
+// and even a chatty one past the max-in-flight cap is looping. Long tools (shell commands,
+// subagent collaborations) can legitimately run long and silent, so they use the turn backstop
+// for inactivity and get no wall-clock cap.
+const QUICK_TOOL_TYPES = new Set(["mcpToolCall", "webSearch", "customToolCall", "dynamicToolCall"]);
+const LONG_TOOL_TYPES = new Set(["commandExecution", "collabAgentToolCall"]);
 const TURN_INTERRUPT_TIMEOUT_MS = 5000;
 
 function cleanCodexStderr(stderr) {
@@ -142,6 +150,28 @@ function resolveStallTimeoutMs(options = {}) {
     return envValue;
   }
   return DEFAULT_TURN_STALL_TIMEOUT_MS;
+}
+
+function resolveToolStallTimeoutMs(options = {}) {
+  if (options.toolStallTimeoutMs !== undefined) {
+    return Number(options.toolStallTimeoutMs);
+  }
+  const envValue = Number(process.env.CODEX_TOOL_STALL_TIMEOUT_MS);
+  if (Number.isFinite(envValue) && envValue >= 0) {
+    return envValue;
+  }
+  return DEFAULT_TOOL_STALL_TIMEOUT_MS;
+}
+
+function resolveToolMaxInFlightMs(options = {}) {
+  if (options.toolMaxInFlightMs !== undefined) {
+    return Number(options.toolMaxInFlightMs);
+  }
+  const envValue = Number(process.env.CODEX_TOOL_MAX_INFLIGHT_MS);
+  if (Number.isFinite(envValue) && envValue >= 0) {
+    return envValue;
+  }
+  return DEFAULT_TOOL_MAX_INFLIGHT_MS;
 }
 
 function shorten(text, limit = 72) {
@@ -385,7 +415,7 @@ function createTurnCaptureState(threadId, options = {}) {
     activityTimer: null,
     stallCleanup: null,
     stalled: false,
-    lastActiveItemLabel: null,
+    activeTools: new Map(),
     lastAgentMessage: "",
     reviewText: "",
     reasoningSummary: [],
@@ -411,6 +441,74 @@ function clearActivityTimer(state) {
   }
 }
 
+// Active tools are keyed by thread + item so overlapping main/subagent tool calls each keep their
+// own class, label, and wall-clock deadline instead of sharing one global slot.
+function activeToolKey(threadId, itemId) {
+  return `${threadId ?? "root"}:${itemId ?? "?"}`;
+}
+
+function hasActiveQuickTool(state) {
+  for (const tool of state.activeTools.values()) {
+    if (tool.toolClass === "quick") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function activeToolLabels(state) {
+  const labels = [];
+  for (const tool of state.activeTools.values()) {
+    if (tool.label) {
+      labels.push(tool.label);
+    }
+  }
+  return labels;
+}
+
+// Wall-clock cap for a single in-flight quick tool. Armed once when the tool starts and NOT rearmed
+// by activity, so a tool that stays alive by streaming forever still gets cut off. Long tools get no
+// cap.
+function trackToolStart(state, client, threadId, item, label, maxInFlightMs) {
+  const cls = toolClass(item);
+  if (!cls) {
+    return;
+  }
+  const key = activeToolKey(threadId, item?.id);
+  removeActiveTool(state, key);
+  const entry = { threadId: threadId ?? null, itemId: item?.id ?? null, toolClass: cls, label, deadlineTimer: null };
+  state.activeTools.set(key, entry);
+  if (cls === "quick" && !state.completed && maxInFlightMs > 0 && Number.isFinite(maxInFlightMs)) {
+    entry.deadlineTimer = setTimeout(() => {
+      entry.deadlineTimer = null;
+      state.stallCleanup = handleStall(state, client, maxInFlightMs, "tool-max", entry.label);
+    }, maxInFlightMs);
+    entry.deadlineTimer.unref?.();
+  }
+}
+
+function removeActiveTool(state, key) {
+  const entry = state.activeTools.get(key);
+  if (!entry) {
+    return;
+  }
+  if (entry.deadlineTimer) {
+    clearTimeout(entry.deadlineTimer);
+    entry.deadlineTimer = null;
+  }
+  state.activeTools.delete(key);
+}
+
+function clearActiveTools(state) {
+  for (const entry of state.activeTools.values()) {
+    if (entry.deadlineTimer) {
+      clearTimeout(entry.deadlineTimer);
+      entry.deadlineTimer = null;
+    }
+  }
+  state.activeTools.clear();
+}
+
 function completeTurn(state, turn = null, options = {}) {
   if (state.completed) {
     return;
@@ -418,6 +516,7 @@ function completeTurn(state, turn = null, options = {}) {
 
   clearCompletionTimer(state);
   clearActivityTimer(state);
+  clearActiveTools(state);
   state.completed = true;
 
   if (turn) {
@@ -444,7 +543,7 @@ function scheduleInferredCompletion(state) {
     return;
   }
 
-  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0 || state.activeTools.size > 0) {
     return;
   }
 
@@ -454,7 +553,7 @@ function scheduleInferredCompletion(state) {
     if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
       return;
     }
-    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0 || state.activeTools.size > 0) {
       return;
     }
     completeTurn(state, null, { inferred: true });
@@ -462,14 +561,68 @@ function scheduleInferredCompletion(state) {
   state.completionTimer.unref?.();
 }
 
+function toolClass(item) {
+  if (QUICK_TOOL_TYPES.has(item?.type)) {
+    return "quick";
+  }
+  if (LONG_TOOL_TYPES.has(item?.type)) {
+    return "long";
+  }
+  return null;
+}
+
 function isActiveToolItem(item) {
-  return (
-    item?.type === "mcpToolCall" ||
-    item?.type === "commandExecution" ||
-    item?.type === "customToolCall" ||
-    item?.type === "dynamicToolCall" ||
-    item?.type === "collabAgentToolCall"
-  );
+  return toolClass(item) !== null;
+}
+
+function isFailedItemStatus(status) {
+  return ["failed", "declined", "error", "errored", "cancelled", "canceled"].includes(String(status ?? "").toLowerCase());
+}
+
+function extractErrorMessage(value) {
+  if (typeof value === "string") {
+    return value.trim() || null;
+  }
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  for (const key of ["message", "detail", "errorMessage", "failureMessage", "stderr", "output", "aggregatedOutput"]) {
+    const message = extractErrorMessage(value[key]);
+    if (message) {
+      return message;
+    }
+  }
+  return null;
+}
+
+function labelForToolItem(item) {
+  if (item.type === "mcpToolCall") {
+    return [item.server, item.tool].filter(Boolean).join("/") || "MCP tool";
+  }
+  if (item.type === "commandExecution") {
+    return item.command ? `command ${shorten(item.command, 96)}` : "command";
+  }
+  if (item.type === "customToolCall" || item.type === "dynamicToolCall" || item.type === "collabAgentToolCall") {
+    return item.tool ?? "tool";
+  }
+  if (item.type === "webSearch") {
+    return item.query ? `web search ${shorten(item.query, 96)}` : "web search";
+  }
+  return "tool";
+}
+
+function errorForFailedToolItem(item) {
+  if (!isActiveToolItem(item) || !isFailedItemStatus(item.status)) {
+    return null;
+  }
+  const detail =
+    extractErrorMessage(item.error) ??
+    extractErrorMessage(item.failure) ??
+    extractErrorMessage(item.result) ??
+    extractErrorMessage(item);
+  return {
+    message: detail ?? `${labelForToolItem(item)} ${item.status}.`
+  };
 }
 
 async function interruptTurnWithTimeout(client, threadId, turnId) {
@@ -487,16 +640,22 @@ async function interruptTurnWithTimeout(client, threadId, turnId) {
   }
 }
 
-async function handleStall(state, client, stallTimeoutMs) {
+async function handleStall(state, client, stallTimeoutMs, stallMode, itemLabel = null) {
   if (state.completed) {
     return;
   }
 
   state.stalled = true;
   const seconds = Math.round(stallTimeoutMs / 1000);
-  const itemDetail = state.lastActiveItemLabel ? ` while "${state.lastActiveItemLabel}" was in flight` : "";
-  const message = `Codex turn stalled: no activity for ${seconds}s${itemDetail}. Interrupting and aborting the turn.`;
-  state.error = { message };
+  const labels = itemLabel ? [itemLabel] : activeToolLabels(state);
+  const itemDetail = labels.length ? ` while "${labels.join(", ")}" was in flight` : "";
+  const modeDetail = stallMode === "tool" ? "tool-in-flight" : stallMode === "tool-max" ? "tool-max-duration" : "idle";
+  const reason =
+    stallMode === "tool-max"
+      ? `in flight for ${seconds}s without completing (exceeded max tool duration)`
+      : `no activity for ${seconds}s`;
+  const message = `Codex turn stalled (${modeDetail}): ${reason}${itemDetail}. Interrupting and aborting the turn.`;
+  state.error ??= { message };
   emitLogEvent(state.onProgress, {
     message,
     stderrMessage: message,
@@ -515,17 +674,25 @@ async function handleStall(state, client, stallTimeoutMs) {
   }
 }
 
-function bumpActivity(state, client, stallTimeoutMs) {
-  if (stallTimeoutMs <= 0 || !Number.isFinite(stallTimeoutMs) || state.completed) {
+function bumpActivity(state, client, stallTimeouts) {
+  if (state.completed) {
     return;
   }
 
+  // A single global inactivity timer covers the whole turn. Use the short tool budget while any
+  // quick tool is in flight; otherwise (only long tools, or none) fall back to the generous turn
+  // backstop, since long tools (shell commands, subagent collaborations) can run long and silent.
+  const stallMode = hasActiveQuickTool(state) ? "tool" : "idle";
+  const stallTimeoutMs = stallMode === "tool" ? stallTimeouts.tool : stallTimeouts.turn;
+
   clearActivityTimer(state);
-  state.activityTimer = setTimeout(() => {
-    state.activityTimer = null;
-    state.stallCleanup = handleStall(state, client, stallTimeoutMs);
-  }, stallTimeoutMs);
-  state.activityTimer.unref?.();
+  if (stallTimeoutMs > 0 && Number.isFinite(stallTimeoutMs)) {
+    state.activityTimer = setTimeout(() => {
+      state.activityTimer = null;
+      state.stallCleanup = handleStall(state, client, stallTimeoutMs, stallMode);
+    }, stallTimeoutMs);
+    state.activityTimer.unref?.();
+  }
 }
 
 function belongsToTurn(state, message) {
@@ -622,7 +789,7 @@ function recordItem(state, item, lifecycle, threadId = null) {
   }
 }
 
-function applyTurnNotification(state, message) {
+function applyTurnNotification(state, message, watchdog = null) {
   // Turn already finalized (normal, inferred, or stalled) -- don't mutate the settled result.
   if (state.completed) {
     return;
@@ -665,7 +832,7 @@ function applyTurnNotification(state, message) {
       {
         const update = describeStartedItem(state, message.params.item);
         if (isActiveToolItem(message.params.item)) {
-          state.lastActiveItemLabel = update?.message ?? "active tool";
+          watchdog?.toolStarted(message.params.threadId ?? null, message.params.item, update?.message ?? "active tool");
         }
         emitProgress(state.onProgress, update?.message, update?.phase ?? null);
       }
@@ -675,14 +842,24 @@ function applyTurnNotification(state, message) {
       {
         const update = describeCompletedItem(state, message.params.item);
         if (isActiveToolItem(message.params.item)) {
-          state.lastActiveItemLabel = null;
+          state.error ??= errorForFailedToolItem(message.params.item);
+          watchdog?.toolEnded(message.params.threadId ?? null, message.params.item?.id);
+          scheduleInferredCompletion(state);
         }
         emitProgress(state.onProgress, update?.message, update?.phase ?? null);
       }
       break;
     case "error":
-      state.error = message.params.error;
+      // A top-level error carries no item id, so it can't be pinned to a specific tool. Only clear
+      // the in-flight marker when exactly one tool is active (the error must be about that one).
+      // With overlapping tools we can't attribute it, so leave them for their own watchdogs rather
+      // than dropping an unrelated tool's deadline or letting inference finish over a live tool.
+      if (state.activeTools.size === 1) {
+        watchdog?.clearActiveTools();
+      }
+      state.error ??= message.params.error;
       emitProgress(state.onProgress, `Codex error: ${message.params.error.message}`, "failed");
+      scheduleInferredCompletion(state);
       break;
     case "turn/completed":
       if ((message.params.threadId ?? null) !== state.threadId) {
@@ -705,7 +882,27 @@ function applyTurnNotification(state, message) {
 async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
-  const stallTimeoutMs = resolveStallTimeoutMs(options);
+  const stallTimeouts = {
+    turn: resolveStallTimeoutMs(options),
+    tool: resolveToolStallTimeoutMs(options),
+    toolMaxInFlight: resolveToolMaxInFlightMs(options)
+  };
+  const rearmActivity = () => bumpActivity(state, client, stallTimeouts);
+  const watchdog = {
+    rearm: rearmActivity,
+    toolStarted: (toolThreadId, item, label) => {
+      trackToolStart(state, client, toolThreadId, item, label, stallTimeouts.toolMaxInFlight);
+      rearmActivity();
+    },
+    toolEnded: (toolThreadId, itemId) => {
+      removeActiveTool(state, activeToolKey(toolThreadId, itemId));
+      rearmActivity();
+    },
+    clearActiveTools: () => {
+      clearActiveTools(state);
+      rearmActivity();
+    }
+  };
 
   client.setNotificationHandler((message) => {
     if (!state.turnId) {
@@ -714,8 +911,8 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     }
 
     if (message.method === "thread/started" || message.method === "thread/name/updated") {
-      bumpActivity(state, client, stallTimeoutMs);
-      applyTurnNotification(state, message);
+      bumpActivity(state, client, stallTimeouts);
+      applyTurnNotification(state, message, watchdog);
       return;
     }
 
@@ -726,8 +923,8 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
         return;
     }
 
-    bumpActivity(state, client, stallTimeoutMs);
-    applyTurnNotification(state, message);
+    bumpActivity(state, client, stallTimeouts);
+    applyTurnNotification(state, message, watchdog);
   });
 
   try {
@@ -736,15 +933,15 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     state.turnId = response.turn?.id ?? null;
     if (state.turnId) {
       state.threadTurnIds.set(state.threadId, state.turnId);
-      bumpActivity(state, client, stallTimeoutMs);
+      bumpActivity(state, client, stallTimeouts);
     }
     for (const message of state.bufferedNotifications) {
       if (message.method === "thread/started" || message.method === "thread/name/updated") {
-        bumpActivity(state, client, stallTimeoutMs);
-        applyTurnNotification(state, message);
+        bumpActivity(state, client, stallTimeouts);
+        applyTurnNotification(state, message, watchdog);
       } else if (belongsToTurn(state, message)) {
-        bumpActivity(state, client, stallTimeoutMs);
-        applyTurnNotification(state, message);
+        bumpActivity(state, client, stallTimeouts);
+        applyTurnNotification(state, message, watchdog);
       } else {
         if (previousHandler) {
           previousHandler(message);
@@ -765,6 +962,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   } finally {
     clearCompletionTimer(state);
     clearActivityTimer(state);
+    clearActiveTools(state);
     client.setNotificationHandler(previousHandler ?? null);
   }
 }

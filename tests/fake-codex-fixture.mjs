@@ -606,6 +606,290 @@ rl.on("line", (line) => {
 	            }
 	          });
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+	        } else if (BEHAVIOR === "errored-tool-after-final-answer") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "agentMessage", id: "msg_" + turnId, text: payload, phase: "final_answer" }
+	            }
+	          });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "inProgress"
+	              }
+	            }
+	          });
+	          send({
+	            method: "error",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              error: { message: "codegraph_explore failed before returning results" }
+	            }
+	          });
+	        } else if (BEHAVIOR === "errored-tool-completion-after-final-answer") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "agentMessage", id: "msg_" + turnId, text: payload, phase: "final_answer" }
+	            }
+	          });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "inProgress"
+	              }
+	            }
+	          });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "failed",
+	                error: { message: "codegraph_explore failed from item completion" }
+	              }
+	            }
+	          });
+	        } else if (BEHAVIOR === "errored-tool-before-final-answer") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "inProgress"
+	              }
+	            }
+	          });
+	          send({
+	            method: "error",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              error: { message: "codegraph_explore failed before returning results" }
+	            }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+	        } else if (BEHAVIOR === "errored-tool-completion-before-final-answer") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "inProgress"
+	              }
+	            }
+	          });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "failed",
+	                error: { message: "codegraph_explore failed from item completion" }
+	              }
+	            }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+	        } else if (BEHAVIOR === "busy-quick-tool") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "inProgress"
+	              }
+	            }
+	          });
+	          // Stream harmless activity forever so the inactivity budget keeps rearming; only the
+	          // wall-clock cap should cut this off.
+	          const interval = setInterval(() => {
+	            send({
+	              method: "item/completed",
+	              params: {
+	                threadId: thread.id,
+	                turnId,
+	                item: {
+	                  type: "reasoning",
+	                  id: "reasoning_" + turnId + "_" + Date.now(),
+	                  summary: [{ text: "still working" }],
+	                  content: []
+	                }
+	              }
+	            });
+	          }, 150);
+	          interval.unref?.();
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null, interval });
+	        } else if (BEHAVIOR === "silent-long-tool") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "commandExecution",
+	                id: "cmd_" + turnId,
+	                command: "npm test",
+	                status: "inProgress"
+	              }
+	            }
+	          });
+	          // Silent for longer than the short tool budget, then succeed: a long tool must ride the
+	          // generous turn backstop, not the quick-tool budget or the wall-clock cap.
+	          const timer = setTimeout(() => {
+	            if (!interruptibleTurns.has(turnId)) {
+	              return;
+	            }
+	            interruptibleTurns.delete(turnId);
+	            send({
+	              method: "item/completed",
+	              params: {
+	                threadId: thread.id,
+	                turnId,
+	                item: { type: "commandExecution", id: "cmd_" + turnId, command: "npm test", status: "completed" }
+	              }
+	            });
+	            for (const entry of items) {
+	              if (entry && entry.completed) {
+	                send({ method: "item/completed", params: { threadId: thread.id, turnId, item: entry.completed } });
+	              }
+	            }
+	            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
+	          }, 1200);
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer });
+	        } else if (BEHAVIOR === "overlapping-error-after-final-answer") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          // Final answer, then two overlapping quick tools, then a top-level error. The error must
+	          // NOT drop the unrelated still-in-flight tool or let inference finish over it.
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "agentMessage", id: "msg_" + turnId, text: payload, phase: "final_answer" }
+	            }
+	          });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "mcpToolCall", id: "mcp_A_" + turnId, server: "codegraph", tool: "codegraph_explore", status: "inProgress" }
+	            }
+	          });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "mcpToolCall", id: "mcp_B_" + turnId, server: "docs", tool: "lookup", status: "inProgress" }
+	            }
+	          });
+	          send({
+	            method: "error",
+	            params: { threadId: thread.id, turnId, error: { message: "codegraph_explore failed" } }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+	        } else if (BEHAVIOR === "hung-tool-after-final-answer") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          // Final answer arrives, THEN a quick tool starts and hangs. Inference must not finalize
+	          // success while that tool is still in flight; the watchdog should fail the turn.
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "agentMessage", id: "msg_" + turnId, text: payload, phase: "final_answer" }
+	            }
+	          });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "mcpToolCall", id: "mcp_" + turnId, server: "codegraph", tool: "codegraph_explore", status: "inProgress" }
+	            }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+	        } else if (BEHAVIOR === "overlapping-quick-tools") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          // Tool A stays in flight for the whole turn; tool B starts after it and completes. A's
+	          // wall-clock deadline must survive B's completion (regression: one global slot).
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "mcpToolCall", id: "mcp_A_" + turnId, server: "codegraph", tool: "codegraph_explore", status: "inProgress" }
+	            }
+	          });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "mcpToolCall", id: "mcp_B_" + turnId, server: "docs", tool: "lookup", status: "inProgress" }
+	            }
+	          });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "mcpToolCall", id: "mcp_B_" + turnId, server: "docs", tool: "lookup", status: "completed" }
+	            }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
 	        } else if (BEHAVIOR === "interruptible-slow-task") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          const timer = setTimeout(() => {
@@ -621,6 +905,22 @@ rl.on("line", (line) => {
 	            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
 	          }, 5000);
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer });
+	        } else if (BEHAVIOR === "idle-hung-turn") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "reasoning",
+	                id: "reasoning_" + turnId,
+	                summary: [{ text: "Thinking through the next step without running a tool." }],
+	                content: []
+	              }
+	            }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
 	        } else if (BEHAVIOR === "slow-task") {
 	          emitTurnCompletedLater(thread.id, turnId, items, 400);
 	        } else {
@@ -639,6 +939,9 @@ rl.on("line", (line) => {
 	        if (pending) {
 	          if (pending.timer) {
 	            clearTimeout(pending.timer);
+	          }
+	          if (pending.interval) {
+	            clearInterval(pending.interval);
 	          }
 	          interruptibleTurns.delete(message.params.turnId);
 	          send({

@@ -1073,6 +1073,54 @@ test("task can finish after subagent work even if the parent turn/completed even
   assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
 });
 
+test("task infers completion when a tool errors after the final answer", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "errored-tool-after-final-answer");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "review one last optional tool result"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_TURN_STALL_TIMEOUT_MS: "5000",
+      CODEX_TOOL_STALL_TIMEOUT_MS: "500"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
+  assert.match(result.stderr, /Codex error: codegraph_explore failed before returning results/);
+  assert.match(result.stderr, /Turn completion inferred after the main thread finished and subagent work drained\./);
+});
+
+test("task infers completion when a tool item completes with an error after the final answer", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "errored-tool-completion-after-final-answer");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "review one last optional tool result"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_TURN_STALL_TIMEOUT_MS: "5000",
+      CODEX_TOOL_STALL_TIMEOUT_MS: "500"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
+  assert.match(result.stderr, /Tool codegraph\/codegraph_explore failed\./);
+  assert.match(result.stderr, /Turn completion inferred after the main thread finished and subagent work drained\./);
+});
+
 test("task using the shared broker still completes when Codex spawns subagents", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -1164,7 +1212,8 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
 
   const env = {
     ...buildEnv(binDir),
-    CODEX_TURN_STALL_TIMEOUT_MS: "500"
+    CODEX_TURN_STALL_TIMEOUT_MS: "5000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "500"
   };
   const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the hung MCP tool"], {
     cwd: repo,
@@ -1176,7 +1225,7 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
   const startedAt = Date.now();
   const waitedStatus = run(
     "node",
-    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
     {
       cwd: repo,
       env
@@ -1184,7 +1233,8 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
   );
 
   assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
-  assert.ok(Date.now() - startedAt < 10000);
+  const elapsedMs = Date.now() - startedAt;
+  assert.ok(elapsedMs < 4500, `expected tool budget to fire before turn budget, elapsed ${elapsedMs}ms`);
   const waitedPayload = JSON.parse(waitedStatus.stdout);
   assert.equal(waitedPayload.job.id, launchPayload.jobId);
   assert.equal(waitedPayload.job.status, "failed");
@@ -1208,7 +1258,399 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
   assert.equal(stored.status, 0, stored.stderr);
   const storedPayload = JSON.parse(stored.stdout);
   assert.equal(storedPayload.job.status, "failed");
-  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled/i);
+  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(tool-in-flight\)/i);
+  assert.match(storedPayload.storedJob.rendered, /codegraph_explore/i);
+});
+
+test("task watchdog caps a quick tool that stays busy but never completes", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "busy-quick-tool");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "8000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "5000",
+    CODEX_TOOL_MAX_INFLIGHT_MS: "800"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "run the chatty tool"], { cwd: repo, env });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const elapsedMs = Date.now() - startedAt;
+  // Fires on the wall-clock cap (800ms) even though the tool streams activity every 150ms, so the
+  // inactivity budget (5000ms) never trips.
+  assert.ok(elapsedMs < 4500, `expected wall-clock cap to fire despite streaming, elapsed ${elapsedMs}ms`);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.status, "failed");
+
+  const fakeState = await waitFor(() => {
+    if (!fs.existsSync(fakeStatePath)) {
+      return null;
+    }
+    const current = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    return current.lastInterrupt ? current : null;
+  });
+  assert.ok(fakeState.lastInterrupt, "expected the capped tool turn to be interrupted");
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.job.status, "failed");
+  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(tool-max-duration\)/i);
+  assert.match(storedPayload.storedJob.rendered, /exceeded max tool duration/i);
+});
+
+test("task watchdog lets a silent long-running command ride the turn backstop instead of the tool budget", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "silent-long-tool");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "8000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "500",
+    CODEX_TOOL_MAX_INFLIGHT_MS: "500"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "run the long silent command"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const elapsedMs = Date.now() - startedAt;
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  // The command is silent for 1200ms — well past the 500ms quick-tool budget and the 500ms
+  // wall-clock cap — yet completes successfully because a long tool uses neither.
+  assert.equal(waitedPayload.job.status, "completed", waitedStatus.stdout);
+  assert.ok(elapsedMs >= 1000, `expected long tool to survive past the short budgets, elapsed ${elapsedMs}ms`);
+
+  assert.equal(fs.existsSync(fakeStatePath) && JSON.parse(fs.readFileSync(fakeStatePath, "utf8")).lastInterrupt ? true : false, false,
+    "a successful long command must not be interrupted");
+});
+
+test("task watchdog keeps a per-tool deadline when an overlapping tool completes", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "overlapping-quick-tools");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "8000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "5000",
+    CODEX_TOOL_MAX_INFLIGHT_MS: "800"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "run two overlapping tools"], { cwd: repo, env });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const elapsedMs = Date.now() - startedAt;
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.status, "failed");
+  // Tool A's 800ms wall-clock cap must fire even though tool B completed first. If B's completion
+  // had cleared A's deadline (the single-slot regression), A would instead ride the 5000ms tool
+  // inactivity budget and report tool-in-flight, not tool-max.
+  assert.ok(elapsedMs < 4500, `expected A's wall-clock cap to fire despite B completing, elapsed ${elapsedMs}ms`);
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(tool-max-duration\)/i);
+  assert.match(storedPayload.storedJob.rendered, /codegraph_explore/i);
+  assert.ok(fs.existsSync(fakeStatePath), "expected fake state to record the interrupt");
+});
+
+test("task does not infer success when a tool starts and hangs after the final answer", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "hung-tool-after-final-answer");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "8000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "800"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "answer then hang on a tool"], { cwd: repo, env });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const elapsedMs = Date.now() - startedAt;
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  // A tool that starts after the final answer must block inferred completion; the turn fails via
+  // the watchdog instead of racing to an inferred success.
+  assert.equal(waitedPayload.job.status, "failed", waitedStatus.stdout);
+  assert.ok(elapsedMs < 4500, `expected the tool budget to fire, elapsed ${elapsedMs}ms`);
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  // The final answer was captured (so inference *could* have fired), yet the turn still failed
+  // because the hung tool kept it from draining — that is the regression this guards.
+  assert.equal(storedPayload.storedJob.status, "failed");
+  assert.match(storedPayload.storedJob.rendered, /Handled the requested task/i);
+});
+
+test("task does not let a top-level error over one of two tools infer success", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "overlapping-error-after-final-answer");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "8000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "800"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "two tools, one errors"], { cwd: repo, env });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const elapsedMs = Date.now() - startedAt;
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  // A top-level error with two overlapping tools must not clear the unrelated one or let inference
+  // finalize success; the still-hung tool's watchdog fails the turn instead.
+  assert.equal(waitedPayload.job.status, "failed", waitedStatus.stdout);
+  assert.ok(elapsedMs < 4500, `expected the remaining tool's watchdog to fire, elapsed ${elapsedMs}ms`);
+});
+
+test("task does not infer completion when a tool errors before the final answer", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "errored-tool-before-final-answer");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "1000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "300"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "try a tool before answering"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    {
+      cwd: repo,
+      env
+    }
+  );
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.ok(elapsedMs >= 700, `expected idle backstop after errored tool, elapsed ${elapsedMs}ms`);
+  assert.ok(elapsedMs < 10000);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.id, launchPayload.jobId);
+  assert.equal(waitedPayload.job.status, "failed");
+
+  const fakeState = await waitFor(() => {
+    if (!fs.existsSync(fakeStatePath)) {
+      return null;
+    }
+    const current = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    return current.lastInterrupt ? current : null;
+  });
+  assert.deepEqual(fakeState.lastInterrupt, {
+    threadId: waitedPayload.job.threadId,
+    turnId: waitedPayload.job.turnId
+  });
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.job.status, "failed");
+  assert.match(storedPayload.storedJob.rendered, /codegraph_explore failed before returning results/i);
+  assert.doesNotMatch(storedPayload.storedJob.rendered, /while ".*codegraph_explore.*" was in flight/i);
+});
+
+test("task surfaces a failed tool item when completion errors before the final answer", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "errored-tool-completion-before-final-answer");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "1000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "300"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "try a tool before answering"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    {
+      cwd: repo,
+      env
+    }
+  );
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.ok(elapsedMs >= 700, `expected idle backstop after errored tool item, elapsed ${elapsedMs}ms`);
+  assert.ok(elapsedMs < 10000);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.id, launchPayload.jobId);
+  assert.equal(waitedPayload.job.status, "failed");
+
+  const fakeState = await waitFor(() => {
+    if (!fs.existsSync(fakeStatePath)) {
+      return null;
+    }
+    const current = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    return current.lastInterrupt ? current : null;
+  });
+  assert.deepEqual(fakeState.lastInterrupt, {
+    threadId: waitedPayload.job.threadId,
+    turnId: waitedPayload.job.turnId
+  });
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.job.status, "failed");
+  assert.match(storedPayload.storedJob.rendered, /codegraph_explore failed from item completion/i);
+  assert.doesNotMatch(storedPayload.storedJob.rendered, /Codex turn stalled \(tool-in-flight\)/i);
+  assert.doesNotMatch(storedPayload.storedJob.rendered, /while ".*codegraph_explore.*" was in flight/i);
+});
+
+test("task watchdog lets idle reasoning exceed tool budget and stalls at turn backstop", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "idle-hung-turn");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "1500",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "300"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "think without tools"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    {
+      cwd: repo,
+      env
+    }
+  );
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.ok(elapsedMs >= 1000, `expected idle turn to survive past tool budget, elapsed ${elapsedMs}ms`);
+  assert.ok(elapsedMs < 10000);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.id, launchPayload.jobId);
+  assert.equal(waitedPayload.job.status, "failed");
+
+  const fakeState = await waitFor(() => {
+    if (!fs.existsSync(fakeStatePath)) {
+      return null;
+    }
+    const current = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    return current.lastInterrupt ? current : null;
+  });
+  assert.deepEqual(fakeState.lastInterrupt, {
+    threadId: waitedPayload.job.threadId,
+    turnId: waitedPayload.job.turnId
+  });
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.job.status, "failed");
+  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(idle\)/i);
 });
 
 test("review rejects focus text because it is native-review only", () => {

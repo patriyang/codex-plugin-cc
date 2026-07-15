@@ -543,7 +543,7 @@ function scheduleInferredCompletion(state) {
     return;
   }
 
-  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0 || state.activeTools.size > 0) {
     return;
   }
 
@@ -553,7 +553,7 @@ function scheduleInferredCompletion(state) {
     if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
       return;
     }
-    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0 || state.activeTools.size > 0) {
       return;
     }
     completeTurn(state, null, { inferred: true });

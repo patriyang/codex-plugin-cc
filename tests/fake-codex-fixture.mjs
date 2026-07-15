@@ -638,6 +638,45 @@ rl.on("line", (line) => {
 	              error: { message: "codegraph_explore failed before returning results" }
 	            }
 	          });
+	        } else if (BEHAVIOR === "errored-tool-completion-after-final-answer") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "agentMessage", id: "msg_" + turnId, text: payload, phase: "final_answer" }
+	            }
+	          });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "inProgress"
+	              }
+	            }
+	          });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "failed",
+	                error: { message: "codegraph_explore failed from item completion" }
+	              }
+	            }
+	          });
 	        } else if (BEHAVIOR === "errored-tool-before-final-answer") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          send({
@@ -660,6 +699,38 @@ rl.on("line", (line) => {
 	              threadId: thread.id,
 	              turnId,
 	              error: { message: "codegraph_explore failed before returning results" }
+	            }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+	        } else if (BEHAVIOR === "errored-tool-completion-before-final-answer") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "inProgress"
+	              }
+	            }
+	          });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "failed",
+	                error: { message: "codegraph_explore failed from item completion" }
+	              }
 	            }
 	          });
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });

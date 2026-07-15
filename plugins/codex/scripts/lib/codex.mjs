@@ -484,6 +484,53 @@ function isActiveToolItem(item) {
   );
 }
 
+function isFailedItemStatus(status) {
+  return ["failed", "declined", "error", "errored", "cancelled", "canceled"].includes(String(status ?? "").toLowerCase());
+}
+
+function extractErrorMessage(value) {
+  if (typeof value === "string") {
+    return value.trim() || null;
+  }
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  for (const key of ["message", "detail", "errorMessage", "failureMessage", "stderr", "output", "aggregatedOutput"]) {
+    const message = extractErrorMessage(value[key]);
+    if (message) {
+      return message;
+    }
+  }
+  return null;
+}
+
+function labelForToolItem(item) {
+  if (item.type === "mcpToolCall") {
+    return [item.server, item.tool].filter(Boolean).join("/") || "MCP tool";
+  }
+  if (item.type === "commandExecution") {
+    return item.command ? `command ${shorten(item.command, 96)}` : "command";
+  }
+  if (item.type === "customToolCall" || item.type === "dynamicToolCall" || item.type === "collabAgentToolCall") {
+    return item.tool ?? "tool";
+  }
+  return "tool";
+}
+
+function errorForFailedToolItem(item) {
+  if (!isActiveToolItem(item) || !isFailedItemStatus(item.status)) {
+    return null;
+  }
+  const detail =
+    extractErrorMessage(item.error) ??
+    extractErrorMessage(item.failure) ??
+    extractErrorMessage(item.result) ??
+    extractErrorMessage(item);
+  return {
+    message: detail ?? `${labelForToolItem(item)} ${item.status}.`
+  };
+}
+
 async function interruptTurnWithTimeout(client, threadId, turnId) {
   let timer = null;
   const timeout = new Promise((resolve) => {
@@ -509,7 +556,7 @@ async function handleStall(state, client, stallTimeoutMs, stallMode) {
   const itemDetail = state.lastActiveItemLabel ? ` while "${state.lastActiveItemLabel}" was in flight` : "";
   const modeDetail = stallMode === "tool" ? "tool-in-flight" : "idle";
   const message = `Codex turn stalled (${modeDetail}): no activity for ${seconds}s${itemDetail}. Interrupting and aborting the turn.`;
-  state.error = { message };
+  state.error ??= { message };
   emitLogEvent(state.onProgress, {
     message,
     stderrMessage: message,
@@ -694,6 +741,7 @@ function applyTurnNotification(state, message, onToolActivityChange = null) {
       {
         const update = describeCompletedItem(state, message.params.item);
         if (isActiveToolItem(message.params.item)) {
+          state.error ??= errorForFailedToolItem(message.params.item);
           state.lastActiveItemLabel = null;
           onToolActivityChange?.();
           scheduleInferredCompletion(state);

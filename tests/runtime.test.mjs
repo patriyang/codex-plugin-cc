@@ -1097,6 +1097,30 @@ test("task infers completion when a tool errors after the final answer", () => {
   assert.match(result.stderr, /Turn completion inferred after the main thread finished and subagent work drained\./);
 });
 
+test("task infers completion when a tool item completes with an error after the final answer", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "errored-tool-completion-after-final-answer");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "review one last optional tool result"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_TURN_STALL_TIMEOUT_MS: "5000",
+      CODEX_TOOL_STALL_TIMEOUT_MS: "500"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
+  assert.match(result.stderr, /Tool codegraph\/codegraph_explore failed\./);
+  assert.match(result.stderr, /Turn completion inferred after the main thread finished and subagent work drained\./);
+});
+
 test("task using the shared broker still completes when Codex spawns subagents", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -1297,7 +1321,71 @@ test("task does not infer completion when a tool errors before the final answer"
   assert.equal(stored.status, 0, stored.stderr);
   const storedPayload = JSON.parse(stored.stdout);
   assert.equal(storedPayload.job.status, "failed");
-  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(idle\)/i);
+  assert.match(storedPayload.storedJob.rendered, /codegraph_explore failed before returning results/i);
+  assert.doesNotMatch(storedPayload.storedJob.rendered, /while ".*codegraph_explore.*" was in flight/i);
+});
+
+test("task surfaces a failed tool item when completion errors before the final answer", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "errored-tool-completion-before-final-answer");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "1000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "300"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "try a tool before answering"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    {
+      cwd: repo,
+      env
+    }
+  );
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.ok(elapsedMs >= 700, `expected idle backstop after errored tool item, elapsed ${elapsedMs}ms`);
+  assert.ok(elapsedMs < 10000);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.id, launchPayload.jobId);
+  assert.equal(waitedPayload.job.status, "failed");
+
+  const fakeState = await waitFor(() => {
+    if (!fs.existsSync(fakeStatePath)) {
+      return null;
+    }
+    const current = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    return current.lastInterrupt ? current : null;
+  });
+  assert.deepEqual(fakeState.lastInterrupt, {
+    threadId: waitedPayload.job.threadId,
+    turnId: waitedPayload.job.turnId
+  });
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.job.status, "failed");
+  assert.match(storedPayload.storedJob.rendered, /codegraph_explore failed from item completion/i);
+  assert.doesNotMatch(storedPayload.storedJob.rendered, /Codex turn stalled \(tool-in-flight\)/i);
   assert.doesNotMatch(storedPayload.storedJob.rendered, /while ".*codegraph_explore.*" was in flight/i);
 });
 

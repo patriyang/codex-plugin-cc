@@ -807,6 +807,35 @@ rl.on("line", (line) => {
 	            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
 	          }, 1200);
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer });
+	        } else if (BEHAVIOR === "overlapping-quick-tools") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          // Tool A stays in flight for the whole turn; tool B starts after it and completes. A's
+	          // wall-clock deadline must survive B's completion (regression: one global slot).
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "mcpToolCall", id: "mcp_A_" + turnId, server: "codegraph", tool: "codegraph_explore", status: "inProgress" }
+	            }
+	          });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "mcpToolCall", id: "mcp_B_" + turnId, server: "docs", tool: "lookup", status: "inProgress" }
+	            }
+	          });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "mcpToolCall", id: "mcp_B_" + turnId, server: "docs", tool: "lookup", status: "completed" }
+	            }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
 	        } else if (BEHAVIOR === "interruptible-slow-task") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          const timer = setTimeout(() => {

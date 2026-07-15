@@ -1352,6 +1352,47 @@ test("task watchdog lets a silent long-running command ride the turn backstop in
     "a successful long command must not be interrupted");
 });
 
+test("task watchdog keeps a per-tool deadline when an overlapping tool completes", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "overlapping-quick-tools");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "8000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "5000",
+    CODEX_TOOL_MAX_INFLIGHT_MS: "800"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "run two overlapping tools"], { cwd: repo, env });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const startedAt = Date.now();
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const elapsedMs = Date.now() - startedAt;
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.status, "failed");
+  // Tool A's 800ms wall-clock cap must fire even though tool B completed first. If B's completion
+  // had cleared A's deadline (the single-slot regression), A would instead ride the 5000ms tool
+  // inactivity budget and report tool-in-flight, not tool-max.
+  assert.ok(elapsedMs < 4500, `expected A's wall-clock cap to fire despite B completing, elapsed ${elapsedMs}ms`);
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(tool-max-duration\)/i);
+  assert.match(storedPayload.storedJob.rendered, /codegraph_explore/i);
+  assert.ok(fs.existsSync(fakeStatePath), "expected fake state to record the interrupt");
+});
+
 test("task does not infer completion when a tool errors before the final answer", async () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

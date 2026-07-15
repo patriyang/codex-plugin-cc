@@ -27,7 +27,7 @@
  *   activityTimer: ReturnType<typeof setTimeout> | null,
  *   stallCleanup: Promise<void> | null,
  *   stalled: boolean,
- *   lastActiveItemLabel: string | null,
+ *   activeTools: Map<string, { threadId: string | null, itemId: string | null, toolClass: string, label: string, deadlineTimer: ReturnType<typeof setTimeout> | null }>,
  *   lastAgentMessage: string,
  *   reviewText: string,
  *   reasoningSummary: string[],
@@ -413,11 +413,9 @@ function createTurnCaptureState(threadId, options = {}) {
     activeSubagentTurns: new Set(),
     completionTimer: null,
     activityTimer: null,
-    toolDeadlineTimer: null,
     stallCleanup: null,
     stalled: false,
-    lastActiveItemLabel: null,
-    activeToolClass: null,
+    activeTools: new Map(),
     lastAgentMessage: "",
     reviewText: "",
     reasoningSummary: [],
@@ -443,28 +441,72 @@ function clearActivityTimer(state) {
   }
 }
 
-function clearToolDeadlineTimer(state) {
-  if (state.toolDeadlineTimer) {
-    clearTimeout(state.toolDeadlineTimer);
-    state.toolDeadlineTimer = null;
+// Active tools are keyed by thread + item so overlapping main/subagent tool calls each keep their
+// own class, label, and wall-clock deadline instead of sharing one global slot.
+function activeToolKey(threadId, itemId) {
+  return `${threadId ?? "root"}:${itemId ?? "?"}`;
+}
+
+function hasActiveQuickTool(state) {
+  for (const tool of state.activeTools.values()) {
+    if (tool.toolClass === "quick") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function activeToolLabels(state) {
+  const labels = [];
+  for (const tool of state.activeTools.values()) {
+    if (tool.label) {
+      labels.push(tool.label);
+    }
+  }
+  return labels;
+}
+
+// Wall-clock cap for a single in-flight quick tool. Armed once when the tool starts and NOT rearmed
+// by activity, so a tool that stays alive by streaming forever still gets cut off. Long tools get no
+// cap.
+function trackToolStart(state, client, threadId, item, label, maxInFlightMs) {
+  const cls = toolClass(item);
+  if (!cls) {
+    return;
+  }
+  const key = activeToolKey(threadId, item?.id);
+  removeActiveTool(state, key);
+  const entry = { threadId: threadId ?? null, itemId: item?.id ?? null, toolClass: cls, label, deadlineTimer: null };
+  state.activeTools.set(key, entry);
+  if (cls === "quick" && !state.completed && maxInFlightMs > 0 && Number.isFinite(maxInFlightMs)) {
+    entry.deadlineTimer = setTimeout(() => {
+      entry.deadlineTimer = null;
+      state.stallCleanup = handleStall(state, client, maxInFlightMs, "tool-max", entry.label);
+    }, maxInFlightMs);
+    entry.deadlineTimer.unref?.();
   }
 }
 
-// Wall-clock cap for the in-flight quick tool. Armed once when the tool starts and NOT rearmed by
-// activity, so a tool that stays alive by streaming forever still gets cut off. A no-op if a
-// deadline is already armed for the current tool, if the cap is disabled, or if the turn is done.
-function armToolDeadline(state, client, maxInFlightMs) {
-  if (state.toolDeadlineTimer || state.completed) {
+function removeActiveTool(state, key) {
+  const entry = state.activeTools.get(key);
+  if (!entry) {
     return;
   }
-  if (!(maxInFlightMs > 0) || !Number.isFinite(maxInFlightMs)) {
-    return;
+  if (entry.deadlineTimer) {
+    clearTimeout(entry.deadlineTimer);
+    entry.deadlineTimer = null;
   }
-  state.toolDeadlineTimer = setTimeout(() => {
-    state.toolDeadlineTimer = null;
-    state.stallCleanup = handleStall(state, client, maxInFlightMs, "tool-max");
-  }, maxInFlightMs);
-  state.toolDeadlineTimer.unref?.();
+  state.activeTools.delete(key);
+}
+
+function clearActiveTools(state) {
+  for (const entry of state.activeTools.values()) {
+    if (entry.deadlineTimer) {
+      clearTimeout(entry.deadlineTimer);
+      entry.deadlineTimer = null;
+    }
+  }
+  state.activeTools.clear();
 }
 
 function completeTurn(state, turn = null, options = {}) {
@@ -474,7 +516,7 @@ function completeTurn(state, turn = null, options = {}) {
 
   clearCompletionTimer(state);
   clearActivityTimer(state);
-  clearToolDeadlineTimer(state);
+  clearActiveTools(state);
   state.completed = true;
 
   if (turn) {
@@ -598,14 +640,15 @@ async function interruptTurnWithTimeout(client, threadId, turnId) {
   }
 }
 
-async function handleStall(state, client, stallTimeoutMs, stallMode) {
+async function handleStall(state, client, stallTimeoutMs, stallMode, itemLabel = null) {
   if (state.completed) {
     return;
   }
 
   state.stalled = true;
   const seconds = Math.round(stallTimeoutMs / 1000);
-  const itemDetail = state.lastActiveItemLabel ? ` while "${state.lastActiveItemLabel}" was in flight` : "";
+  const labels = itemLabel ? [itemLabel] : activeToolLabels(state);
+  const itemDetail = labels.length ? ` while "${labels.join(", ")}" was in flight` : "";
   const modeDetail = stallMode === "tool" ? "tool-in-flight" : stallMode === "tool-max" ? "tool-max-duration" : "idle";
   const reason =
     stallMode === "tool-max"
@@ -636,9 +679,10 @@ function bumpActivity(state, client, stallTimeouts) {
     return;
   }
 
-  // Only quick tools get the short inactivity budget; long tools (shell commands, subagent
-  // collaborations) can run long and silent, so they fall back to the generous turn backstop.
-  const stallMode = state.activeToolClass === "quick" ? "tool" : "idle";
+  // A single global inactivity timer covers the whole turn. Use the short tool budget while any
+  // quick tool is in flight; otherwise (only long tools, or none) fall back to the generous turn
+  // backstop, since long tools (shell commands, subagent collaborations) can run long and silent.
+  const stallMode = hasActiveQuickTool(state) ? "tool" : "idle";
   const stallTimeoutMs = stallMode === "tool" ? stallTimeouts.tool : stallTimeouts.turn;
 
   clearActivityTimer(state);
@@ -648,13 +692,6 @@ function bumpActivity(state, client, stallTimeouts) {
       state.stallCleanup = handleStall(state, client, stallTimeoutMs, stallMode);
     }, stallTimeoutMs);
     state.activityTimer.unref?.();
-  }
-
-  // Wall-clock cap applies to quick tools only; a long tool clears any prior deadline.
-  if (state.activeToolClass === "quick") {
-    armToolDeadline(state, client, stallTimeouts.toolMaxInFlight);
-  } else {
-    clearToolDeadlineTimer(state);
   }
 }
 
@@ -752,7 +789,7 @@ function recordItem(state, item, lifecycle, threadId = null) {
   }
 }
 
-function applyTurnNotification(state, message, onToolActivityChange = null) {
+function applyTurnNotification(state, message, watchdog = null) {
   // Turn already finalized (normal, inferred, or stalled) -- don't mutate the settled result.
   if (state.completed) {
     return;
@@ -795,9 +832,7 @@ function applyTurnNotification(state, message, onToolActivityChange = null) {
       {
         const update = describeStartedItem(state, message.params.item);
         if (isActiveToolItem(message.params.item)) {
-          state.lastActiveItemLabel = update?.message ?? "active tool";
-          state.activeToolClass = toolClass(message.params.item);
-          onToolActivityChange?.();
+          watchdog?.toolStarted(message.params.threadId ?? null, message.params.item, update?.message ?? "active tool");
         }
         emitProgress(state.onProgress, update?.message, update?.phase ?? null);
       }
@@ -808,19 +843,15 @@ function applyTurnNotification(state, message, onToolActivityChange = null) {
         const update = describeCompletedItem(state, message.params.item);
         if (isActiveToolItem(message.params.item)) {
           state.error ??= errorForFailedToolItem(message.params.item);
-          state.lastActiveItemLabel = null;
-          state.activeToolClass = null;
-          onToolActivityChange?.();
+          watchdog?.toolEnded(message.params.threadId ?? null, message.params.item?.id);
           scheduleInferredCompletion(state);
         }
         emitProgress(state.onProgress, update?.message, update?.phase ?? null);
       }
       break;
     case "error":
-      if (state.lastActiveItemLabel) {
-        state.lastActiveItemLabel = null;
-        state.activeToolClass = null;
-        onToolActivityChange?.();
+      if (state.activeTools.size) {
+        watchdog?.clearActiveTools();
       }
       state.error ??= message.params.error;
       emitProgress(state.onProgress, `Codex error: ${message.params.error.message}`, "failed");
@@ -853,6 +884,21 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     toolMaxInFlight: resolveToolMaxInFlightMs(options)
   };
   const rearmActivity = () => bumpActivity(state, client, stallTimeouts);
+  const watchdog = {
+    rearm: rearmActivity,
+    toolStarted: (toolThreadId, item, label) => {
+      trackToolStart(state, client, toolThreadId, item, label, stallTimeouts.toolMaxInFlight);
+      rearmActivity();
+    },
+    toolEnded: (toolThreadId, itemId) => {
+      removeActiveTool(state, activeToolKey(toolThreadId, itemId));
+      rearmActivity();
+    },
+    clearActiveTools: () => {
+      clearActiveTools(state);
+      rearmActivity();
+    }
+  };
 
   client.setNotificationHandler((message) => {
     if (!state.turnId) {
@@ -862,7 +908,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
 
     if (message.method === "thread/started" || message.method === "thread/name/updated") {
       bumpActivity(state, client, stallTimeouts);
-      applyTurnNotification(state, message, rearmActivity);
+      applyTurnNotification(state, message, watchdog);
       return;
     }
 
@@ -874,7 +920,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     }
 
     bumpActivity(state, client, stallTimeouts);
-    applyTurnNotification(state, message, rearmActivity);
+    applyTurnNotification(state, message, watchdog);
   });
 
   try {
@@ -888,10 +934,10 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     for (const message of state.bufferedNotifications) {
       if (message.method === "thread/started" || message.method === "thread/name/updated") {
         bumpActivity(state, client, stallTimeouts);
-        applyTurnNotification(state, message, rearmActivity);
+        applyTurnNotification(state, message, watchdog);
       } else if (belongsToTurn(state, message)) {
         bumpActivity(state, client, stallTimeouts);
-        applyTurnNotification(state, message, rearmActivity);
+        applyTurnNotification(state, message, watchdog);
       } else {
         if (previousHandler) {
           previousHandler(message);
@@ -912,7 +958,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   } finally {
     clearCompletionTimer(state);
     clearActivityTimer(state);
-    clearToolDeadlineTimer(state);
+    clearActiveTools(state);
     client.setNotificationHandler(previousHandler ?? null);
   }
 }

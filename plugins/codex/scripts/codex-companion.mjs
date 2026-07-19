@@ -436,6 +436,7 @@ async function executeReviewRun(request) {
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
+    effort: request.effort ?? null,
     sandbox: "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
@@ -744,7 +745,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd"],
+    valueOptions: ["base", "scope", "model", "effort", "cwd"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
@@ -758,7 +759,9 @@ async function handleReviewCommand(argv, config) {
     base: options.base,
     scope: options.scope
   });
-  const model = resolveRequestedModel(options.model);
+  const model =
+    normalizeRequestedModel(options.model) ?? config.defaultModel ?? DEFAULT_CODEX_MODEL;
+  const effort = normalizeReasoningEffort(options.effort) ?? config.defaultEffort ?? null;
 
   config.validateRequest?.(target, focusText);
   const metadata = buildReviewJobMetadata(config.reviewName, target);
@@ -778,6 +781,7 @@ async function handleReviewCommand(argv, config) {
         base: options.base,
         scope: options.scope,
         model,
+        effort,
         focusText,
         reviewName: config.reviewName,
         onProgress: progress
@@ -1085,7 +1089,9 @@ async function main() {
       break;
     case "deep-review":
       await handleReviewCommand(argv, {
-        reviewName: "Deep Review"
+        reviewName: "Deep Review",
+        defaultModel: "gpt-5.6-sol",
+        defaultEffort: "medium"
       });
       break;
     case "task":

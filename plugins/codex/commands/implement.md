@@ -89,8 +89,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROO
 - Use `--wait` (foreground) so the controller can react. The orchestration is inherently sequential.
 - Use `--fresh` so the implementer gets a clean Codex thread.
 - Use `--json` and parse the returned JSON: read `.rawOutput` for the report body (the `## Status` section step 3 inspects) and record `.threadId` as `IMPLEMENTER_THREAD_ID` for this task — it stays fixed for the whole task's fix loop.
-- Forward `--model` only if the user passed it; otherwise the runtime uses `gpt-5.5`.
-- For `--effort`, use the user's value if they passed one; otherwise pass `--effort medium` explicitly. `/codex:implement` defaults to `medium` rather than the runtime default of `high`.
+- For `--model`, use the user's value if they passed one; otherwise pass `--model gpt-5.6-luna` explicitly. `/codex:implement` defaults to `gpt-5.6-luna` rather than the runtime default of `gpt-5.5`.
+- For `--effort`, use the user's value if they passed one; otherwise pass `--effort xhigh` explicitly. `/codex:implement` defaults to `xhigh` rather than the runtime default of `high`.
 - The prompt is the substituted template text. Pass it as a single positional argument (heredoc/quoting as needed).
 
 ### 3. Parse implementer report
@@ -99,7 +99,7 @@ The report body is the `.rawOutput` field of the JSON payload from step 2. Locat
 
 - **NEEDS_CONTEXT** → The operator can unblock with a reply. If Codex listed discrete options, present them via `AskUserQuestion`; otherwise show the questions inline and collect answers. Re-dispatch step 2 with `{{TASK_CONTEXT}}` augmented (or with the operator's decision appended) and `--resume-id "${IMPLEMENTER_THREAD_ID}"` so the implementer keeps its working context.
 - **BLOCKED** → The operator alone cannot unblock. Diagnose the specific reason Codex gave:
-  - Model/capacity issue → re-dispatch one effort step above the run's current effort (the `medium` default escalates to `high`; a user-supplied effort steps up from there). If already at `xhigh`, skip the effort bump and escalate straight to a stronger model.
+  - Model/capacity issue → re-dispatch one effort step above the run's current effort. The `xhigh` default is already the top step, so skip the effort bump and escalate straight to a stronger model; a lower user-supplied effort steps up one level first.
   - Codex sandbox or permission denial → check the error, decide whether to grant access or re-scope. Surface to user if unsure.
   - Plan internally inconsistent or wrong → stop and surface to user.
   - Repeated failed attempts → break the task into smaller pieces or escalate.
@@ -134,7 +134,7 @@ Load `${CLAUDE_PLUGIN_ROOT}/prompts/sdd-spec-reviewer.md`. Substitute:
 - `{{IMPLEMENTER_REPORT}}` — the full report from step 3
 - `{{COMMITS_RANGE}}` — from step 4
 
-Invoke Codex read-only (same `--model`/`--effort` resolution as step 2 — default `--effort medium`):
+Invoke Codex read-only (same `--model`/`--effort` resolution as step 2 — default `--model gpt-5.6-luna`, `--effort xhigh`):
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --wait --fresh [--model <m>] [--effort <e>] "<filled prompt>"
@@ -155,7 +155,7 @@ Load `${CLAUDE_PLUGIN_ROOT}/prompts/sdd-code-quality-reviewer.md`. Substitute:
 - `{{IMPLEMENTER_SUMMARY}}` — the implementer's summary section
 - `{{COMMITS_RANGE}}` — from step 4 (or updated after fix iterations)
 
-Invoke read-only (same `--model`/`--effort` resolution as step 2 — default `--effort medium`):
+Invoke read-only (same `--model`/`--effort` resolution as step 2 — default `--model gpt-5.6-luna`, `--effort xhigh`):
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --wait --fresh [--model <m>] [--effort <e>] "<filled prompt>"
@@ -227,7 +227,7 @@ If the user passed `--single-shot`, skip task extraction and the per-task loop. 
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --wait --write --fresh [--model <m>] [--effort <e>] "<wrapped plan>"
 ```
 
-(Same `--model`/`--effort` resolution as sequential mode — default `--effort medium` unless the user passed one.)
+(Same `--model`/`--effort` resolution as sequential mode — default `--model gpt-5.6-luna`, `--effort xhigh` unless the user passed one.)
 
 The single-shot Codex agent leaves its changes uncommitted too (same sandbox limitation). After it returns, commit the working-tree changes yourself:
 
@@ -243,7 +243,7 @@ Show the report. Propose next steps.
 - `--single-shot` → legacy one-Codex-agent mode.
 - `--sequential` → explicit SDD mode (also the default).
 - `--background` / `--wait` → forwarded to individual `task` invocations. Default is `--wait` for SDD (the orchestration is sequential).
-- `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run. If omitted, `--model` defaults to `gpt-5.5` and `--effort` defaults to `medium` (passed explicitly by this command, overriding the runtime's `high` default).
+- `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run. If omitted, `--model` defaults to `gpt-5.6-luna` and `--effort` defaults to `xhigh` (both passed explicitly by this command, overriding the runtime defaults of `gpt-5.5` / `high`).
 - `-C "${WORKTREE_ROOT}"` → applied to every Codex invocation in this run (established in Pre-flight Checks). Pins the implementer/reviewer workspace to the task's worktree instead of `codex-companion.mjs`'s default of the controller's own process cwd.
 - `--resume` / `--fresh` → ignored in SDD mode (the orchestrator picks per-step). SDD resumes the implementer by explicit thread id via `--resume-id "${IMPLEMENTER_THREAD_ID}"` (not `--resume-last`, which would resolve to whichever `task`-class thread was dispatched most recently — often a reviewer, not the implementer).
 

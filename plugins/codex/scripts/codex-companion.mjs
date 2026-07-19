@@ -80,8 +80,8 @@ function printUsage() {
       "Usage:",
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
-      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
+      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]",
+      "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
@@ -436,6 +436,7 @@ async function executeReviewRun(request) {
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
+    effort: request.effort ?? null,
     sandbox: "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
@@ -744,7 +745,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd"],
+    valueOptions: ["base", "scope", "model", "effort", "cwd"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
@@ -758,7 +759,18 @@ async function handleReviewCommand(argv, config) {
     base: options.base,
     scope: options.scope
   });
-  const model = resolveRequestedModel(options.model);
+  const model =
+    normalizeRequestedModel(options.model) ?? config.defaultModel ?? DEFAULT_CODEX_MODEL;
+  // The native `review/start` path has no per-turn effort control, so reject an
+  // explicit --effort there rather than silently ignoring it. Deep/adversarial
+  // reviews run through runAppServerTurn, which does forward effort.
+  const supportsEffort = config.reviewName !== "Review";
+  if (options.effort != null && !supportsEffort) {
+    throw new Error(
+      "The native `review` command does not support `--effort`. Use `/codex:deep-review` or `/codex:adversarial-review` for reasoning-effort control."
+    );
+  }
+  const effort = normalizeReasoningEffort(options.effort) ?? config.defaultEffort ?? null;
 
   config.validateRequest?.(target, focusText);
   const metadata = buildReviewJobMetadata(config.reviewName, target);
@@ -778,6 +790,7 @@ async function handleReviewCommand(argv, config) {
         base: options.base,
         scope: options.scope,
         model,
+        effort,
         focusText,
         reviewName: config.reviewName,
         onProgress: progress
@@ -1085,7 +1098,9 @@ async function main() {
       break;
     case "deep-review":
       await handleReviewCommand(argv, {
-        reviewName: "Deep Review"
+        reviewName: "Deep Review",
+        defaultModel: "gpt-5.6-sol",
+        defaultEffort: "medium"
       });
       break;
     case "task":

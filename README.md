@@ -140,6 +140,8 @@ Each finding is tagged with its dimension (`[correctness]`, `[conciseness]`, or 
 It uses the same review target selection as `/codex:review`, including `--base <ref>` for branch review.
 It also supports `--wait` and `--background`. Like `/codex:adversarial-review`, it can take extra focus text after the flags.
 
+By default `/codex:deep-review` uses `gpt-5.6-sol` with `medium` reasoning effort. Override either per run with `--model <model|spark>` and `--effort <none|minimal|low|medium|high|xhigh>` (also accepted by `/codex:adversarial-review`). The native `/codex:review` path does not support `--effort`.
+
 Use it when you want:
 
 - one thorough pass that covers defects, cleanup opportunities, and maintainability together
@@ -215,7 +217,7 @@ Use it when you have:
 
 The plan can come from inline text, a file path, or the most recent plan-like content in the current Claude conversation. If no explicit plan is passed, the command asks you to confirm the plan it found before starting.
 
-It supports `--sequential`, `--single-shot`, `--background`, `--wait`, `--model <model|spark>`, and `--effort <none|minimal|low|medium|high|xhigh>`. If omitted, `/codex:implement` uses `gpt-5.5` with `medium` reasoning effort (lower than the plugin-wide `high` default, since the multi-agent flow runs many Codex passes per task); capacity blocks escalate to `high`.
+It supports `--sequential`, `--single-shot`, `--background`, `--wait`, `--model <model|spark>`, and `--effort <none|minimal|low|medium|high|xhigh>`. If omitted, `/codex:implement` uses `gpt-5.6-luna` with `xhigh` reasoning effort; since `xhigh` is already the top effort step, capacity blocks escalate straight to a stronger model.
 
 Examples:
 

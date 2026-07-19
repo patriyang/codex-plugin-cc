@@ -51,7 +51,7 @@ test("adversarial review command auto-decides execution mode and uses background
   assert.match(source, /```bash/);
   assert.match(source, /```typescript/);
   assert.match(source, /adversarial-review "\$ARGUMENTS"/);
-  assert.match(source, /\[--scope auto\|working-tree\|branch\] \[focus \.\.\.\]/);
+  assert.match(source, /\[--scope auto\|working-tree\|branch\] \[--model <model\|spark>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh>\] \[focus \.\.\.\]/);
   assert.match(source, /run_in_background:\s*true/);
   assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" adversarial-review "\$ARGUMENTS"`/);
   assert.match(source, /description:\s*"Codex adversarial review"/);
@@ -83,7 +83,7 @@ test("deep review command auto-decides execution mode and uses background Bash w
   assert.match(source, /```bash/);
   assert.match(source, /```typescript/);
   assert.match(source, /deep-review "\$ARGUMENTS"/);
-  assert.match(source, /\[--scope auto\|working-tree\|branch\] \[focus \.\.\.\]/);
+  assert.match(source, /\[--scope auto\|working-tree\|branch\] \[--model <model\|spark>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh>\] \[focus \.\.\.\]/);
   assert.match(source, /run_in_background:\s*true/);
   assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" deep-review "\$ARGUMENTS"`/);
   assert.match(source, /description:\s*"Codex deep review"/);
@@ -103,6 +103,11 @@ test("deep review command auto-decides execution mode and uses background Bash w
   assert.match(source, /conciseness/i);
   assert.match(source, /code quality/i);
   assert.match(source, /can take extra focus text after the flags/i);
+  // Argument hint advertises the model/effort override flags.
+  assert.match(source, /\[--model <model\|spark>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh>\]/);
+  // README documents the deep-review defaults so command + docs cannot drift.
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  assert.match(readme, /`\/codex:deep-review` uses `gpt-5\.6-sol` with `medium` reasoning effort/);
 });
 
 test("implement command defaults to gpt-5.6-luna at xhigh effort", () => {

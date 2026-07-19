@@ -1,6 +1,6 @@
 ---
 description: Run a deep Codex review covering correctness, conciseness, and code quality
-argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [focus ...]'
+argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [focus ...]'
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*)
 ---
 

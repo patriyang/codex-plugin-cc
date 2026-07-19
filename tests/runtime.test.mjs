@@ -202,6 +202,18 @@ test("deep-review honors explicit --model and --effort overrides", () => {
   assert.equal(state.lastTurnStart.effort, "high");
 });
 
+test("native review rejects --effort instead of silently ignoring it", () => {
+  const { repo, binDir } = setupDeepReviewRepo();
+
+  const result = run("node", [SCRIPT, "review", "--effort", "high"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /native `review` command does not support `--effort`/);
+});
+
 test("task runs when the active provider does not require OpenAI login", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

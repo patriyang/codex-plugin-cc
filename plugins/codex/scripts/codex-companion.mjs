@@ -761,6 +761,15 @@ async function handleReviewCommand(argv, config) {
   });
   const model =
     normalizeRequestedModel(options.model) ?? config.defaultModel ?? DEFAULT_CODEX_MODEL;
+  // The native `review/start` path has no per-turn effort control, so reject an
+  // explicit --effort there rather than silently ignoring it. Deep/adversarial
+  // reviews run through runAppServerTurn, which does forward effort.
+  const supportsEffort = config.reviewName !== "Review";
+  if (options.effort != null && !supportsEffort) {
+    throw new Error(
+      "The native `review` command does not support `--effort`. Use `/codex:deep-review` or `/codex:adversarial-review` for reasoning-effort control."
+    );
+  }
   const effort = normalizeReasoningEffort(options.effort) ?? config.defaultEffort ?? null;
 
   config.validateRequest?.(target, focusText);

@@ -121,6 +121,10 @@ test("implement command defaults to gpt-5.6-luna at xhigh effort", () => {
   );
   // Old defaults must not linger anywhere in the command prose.
   assert.doesNotMatch(source, /default `--effort medium`/);
+
+  // README must document the same defaults so command + docs cannot drift.
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  assert.match(readme, /`\/codex:implement` uses `gpt-5\.6-luna` with `xhigh` reasoning effort/);
 });
 
 test("continue is not exposed as a user-facing command", () => {

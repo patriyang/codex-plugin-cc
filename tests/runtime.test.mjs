@@ -160,6 +160,48 @@ test("review renders a no-findings result from app-server review/start", () => {
   assert.match(result.stdout, /No material issues found/);
 });
 
+function setupDeepReviewRepo() {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 1;\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 2;\n");
+  return { repo, binDir, statePath: path.join(binDir, "fake-codex-state.json") };
+}
+
+test("deep-review defaults to gpt-5.6-sol at medium effort", () => {
+  const { repo, binDir, statePath } = setupDeepReviewRepo();
+
+  const result = run("node", [SCRIPT, "deep-review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state.lastTurnStart.model, "gpt-5.6-sol");
+  assert.equal(state.lastTurnStart.effort, "medium");
+});
+
+test("deep-review honors explicit --model and --effort overrides", () => {
+  const { repo, binDir, statePath } = setupDeepReviewRepo();
+
+  const result = run(
+    "node",
+    [SCRIPT, "deep-review", "--model", "gpt-5.6-terra", "--effort", "high"],
+    { cwd: repo, env: buildEnv(binDir) }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state.lastTurnStart.model, "gpt-5.6-terra");
+  assert.equal(state.lastTurnStart.effort, "high");
+});
+
 test("task runs when the active provider does not require OpenAI login", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

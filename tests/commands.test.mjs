@@ -105,6 +105,24 @@ test("deep review command auto-decides execution mode and uses background Bash w
   assert.match(source, /can take extra focus text after the flags/i);
 });
 
+test("implement command defaults to gpt-5.6-luna at xhigh effort", () => {
+  const source = read("commands/implement.md");
+  // Step 2 default-resolution instructions.
+  assert.match(source, /otherwise pass `--model gpt-5\.6-luna` explicitly/);
+  assert.match(source, /`\/codex:implement` defaults to `gpt-5\.6-luna` rather than the runtime default of `gpt-5\.5`/);
+  assert.match(source, /otherwise pass `--effort xhigh` explicitly/);
+  assert.match(source, /`\/codex:implement` defaults to `xhigh` rather than the runtime default of `high`/);
+  // Reviewer + single-shot steps reuse the same defaults.
+  assert.match(source, /default `--model gpt-5\.6-luna`, `--effort xhigh`/);
+  // Flag reference states both defaults.
+  assert.match(
+    source,
+    /`--model` defaults to `gpt-5\.6-luna` and `--effort` defaults to `xhigh`/
+  );
+  // Old defaults must not linger anywhere in the command prose.
+  assert.doesNotMatch(source, /default `--effort medium`/);
+});
+
 test("continue is not exposed as a user-facing command", () => {
   const commandFiles = fs.readdirSync(path.join(PLUGIN_ROOT, "commands")).sort();
   assert.deepEqual(commandFiles, [

@@ -456,6 +456,17 @@ rl.on("line", (line) => {
 	          prompt
 	        };
 	        saveState(state);
+	        if (BEHAVIOR === "delayed-turn-start") {
+	          // Delay the turn/start response so a client can disconnect during the broker's
+	          // app-server round-trip, before stream ownership is recorded. The turn then hangs
+	          // (no completion) until it is interrupted.
+	          const delayTimer = setTimeout(() => {
+	            send({ id: message.id, result: { turn: buildTurn(turnId) } });
+	          }, 400);
+	          delayTimer.unref?.();
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+	          break;
+	        }
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict

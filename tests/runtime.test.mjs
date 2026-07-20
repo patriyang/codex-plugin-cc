@@ -3087,3 +3087,81 @@ test("shared broker interrupts an orphaned turn when its owning client disconnec
   const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
   assert.deepEqual(fakeState.lastInterrupt, { threadId, turnId });
 });
+
+test("shared broker interrupts a turn orphaned by a disconnect during the turn/start round-trip", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "delayed-turn-start");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const session = await ensureBrokerSession(repo, { env });
+  assert.ok(session?.endpoint, "broker session should start");
+
+  t.after(async () => {
+    await sendBrokerShutdown(session.endpoint).catch(() => {});
+  });
+
+  const target = parseBrokerEndpoint(session.endpoint);
+  const socket = net.createConnection({ path: target.path });
+  socket.setEncoding("utf8");
+
+  const pending = new Map();
+  let buffer = "";
+  socket.on("data", (chunk) => {
+    buffer += chunk;
+    let idx = buffer.indexOf("\n");
+    while (idx !== -1) {
+      const line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      idx = buffer.indexOf("\n");
+      if (!line.trim()) {
+        continue;
+      }
+      const message = JSON.parse(line);
+      if (message.id !== undefined && pending.has(message.id)) {
+        pending.get(message.id)(message);
+        pending.delete(message.id);
+      }
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+
+  function request(id, method, params) {
+    return new Promise((resolve) => {
+      pending.set(id, resolve);
+      socket.write(`${JSON.stringify({ id, method, params })}\n`);
+    });
+  }
+
+  await request(1, "initialize", { capabilities: {} });
+  socket.write(`${JSON.stringify({ method: "initialized" })}\n`);
+
+  const threadResponse = await request(2, "thread/start", { cwd: repo });
+  const threadId = threadResponse.result.thread.id;
+  assert.ok(threadId);
+
+  // Fire turn/start but do NOT wait for the (deliberately delayed) response, then drop the client
+  // mid-round-trip — before the broker has recorded stream ownership. The broker must still abort
+  // the turn once the response resolves, rather than adopting the dead socket as owner.
+  socket.write(`${JSON.stringify({ id: 3, method: "turn/start", params: { threadId, input: [{ type: "text", text: "work forever" }] } })}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  socket.destroy();
+
+  await waitFor(() => {
+    const state = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    return state.lastInterrupt ?? null;
+  }, { timeoutMs: 5000 });
+
+  const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  assert.equal(fakeState.lastInterrupt.threadId, threadId);
+  assert.equal(fakeState.lastInterrupt.turnId, fakeState.lastTurnStart.turnId);
+});

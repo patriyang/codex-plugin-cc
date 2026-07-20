@@ -224,9 +224,19 @@ async function main() {
           const result = await appClient.request(message.method, message.params ?? {});
           send(socket, { id: message.id, result });
           if (isStreaming) {
-            activeStreamSocket = socket;
-            activeStreamThreadIds = buildStreamThreadIds(message.method, message.params ?? {}, result);
-            activeStreamTurnId = result?.turn?.id ?? null;
+            const threadIds = buildStreamThreadIds(message.method, message.params ?? {}, result);
+            const turnId = result?.turn?.id ?? null;
+            if (socket.destroyed || !sockets.has(socket)) {
+              // The client disconnected during the app-server round-trip, before we could record
+              // stream ownership — so the close handler already ran and saw no active stream to
+              // interrupt. Abort the just-started turn here instead of adopting a dead owner, which
+              // would leave the turn unsupervised and wedge the broker as permanently busy.
+              abortStreamedTurn(threadIds, turnId);
+            } else {
+              activeStreamSocket = socket;
+              activeStreamThreadIds = threadIds;
+              activeStreamTurnId = turnId;
+            }
           }
           if (activeRequestSocket === socket) {
             activeRequestSocket = null;

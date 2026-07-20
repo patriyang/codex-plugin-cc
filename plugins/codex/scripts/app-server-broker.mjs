@@ -11,6 +11,11 @@ import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
 
+// Upper bound on how long the broker keeps its single-flight slot reserved while interrupting an
+// orphaned turn. Normally the interrupt settles in milliseconds; this only guards against an
+// interrupt that never gets a response, so the broker can never wedge itself permanently busy.
+const ABORT_INTERRUPT_TIMEOUT_MS = 10_000;
+
 function buildStreamThreadIds(method, params, result) {
   const threadIds = new Set();
   if (params?.threadId) {
@@ -70,6 +75,10 @@ async function main() {
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
   let activeStreamTurnId = null;
+  // Set while an orphaned turn is being interrupted. Keeps the broker reporting busy so no other
+  // client can start an overlapping turn (or receive the orphan's trailing notifications) until the
+  // interrupt settles.
+  let abortingTurnId = null;
   const sockets = new Set();
 
   function clearSocketOwnership(socket) {
@@ -86,13 +95,25 @@ async function main() {
   function abortStreamedTurn(threadIds, turnId) {
     // The client that owned this streamed turn dropped before it completed. The turn is still
     // running on the shared app-server, unsupervised (any client-side watchdog died with the
-    // client), so interrupt it here — the broker outlives any single client.
+    // client), so interrupt it here — the broker outlives any single client. Reserve the
+    // single-flight slot (abortingTurnId) until the interrupt settles so no other client can start
+    // an overlapping turn or be handed this turn's trailing notifications mid-teardown.
     if (!turnId || !threadIds || threadIds.size === 0) {
       return;
     }
-    for (const threadId of threadIds) {
-      appClient.request("turn/interrupt", { threadId, turnId }).catch(() => {});
-    }
+    abortingTurnId = turnId;
+    const interrupts = [...threadIds].map((threadId) =>
+      appClient.request("turn/interrupt", { threadId, turnId }).catch(() => {})
+    );
+    const bounded = new Promise((resolve) => {
+      const timer = setTimeout(resolve, ABORT_INTERRUPT_TIMEOUT_MS);
+      timer.unref?.();
+    });
+    Promise.race([Promise.all(interrupts), bounded]).finally(() => {
+      if (abortingTurnId === turnId) {
+        abortingTurnId = null;
+      }
+    });
   }
 
   function handleSocketGone(socket) {
@@ -187,6 +208,16 @@ async function main() {
         }
 
         if (message.id === undefined) {
+          continue;
+        }
+
+        if (abortingTurnId) {
+          // An orphaned turn is still being interrupted; keep the single-flight slot reserved so a
+          // new client can't overlap it or inherit its trailing notifications.
+          send(socket, {
+            id: message.id,
+            error: buildJsonRpcError(BROKER_BUSY_RPC_CODE, "Shared Codex broker is busy.")
+          });
           continue;
         }
 

@@ -916,7 +916,7 @@ rl.on("line", (line) => {
 	            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
 	          }, 5000);
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer });
-	        } else if (BEHAVIOR === "idle-hung-turn") {
+	        } else if (BEHAVIOR === "idle-hung-turn" || BEHAVIOR === "idle-hung-slow-interrupt") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          send({
 	            method: "item/completed",
@@ -947,23 +947,33 @@ rl.on("line", (line) => {
 	        };
 	        saveState(state);
 	        const pending = interruptibleTurns.get(message.params.turnId);
-	        if (pending) {
-	          if (pending.timer) {
-	            clearTimeout(pending.timer);
-	          }
-	          if (pending.interval) {
-	            clearInterval(pending.interval);
-	          }
-	          interruptibleTurns.delete(message.params.turnId);
-	          send({
-	            method: "turn/completed",
-	            params: {
-	              threadId: pending.threadId,
-	              turn: buildTurn(message.params.turnId, "interrupted")
+	        const finishInterrupt = () => {
+	          if (pending) {
+	            if (pending.timer) {
+	              clearTimeout(pending.timer);
 	            }
-	          });
+	            if (pending.interval) {
+	              clearInterval(pending.interval);
+	            }
+	            interruptibleTurns.delete(message.params.turnId);
+	            send({
+	              method: "turn/completed",
+	              params: {
+	                threadId: pending.threadId,
+	                turn: buildTurn(message.params.turnId, "interrupted")
+	              }
+	            });
+	          }
+	          send({ id: message.id, result: {} });
+	        };
+	        if (BEHAVIOR === "idle-hung-slow-interrupt") {
+	          // Delay the interrupt RPC response so the broker holds its abort slot long enough for
+	          // a concurrent client to observe BROKER_BUSY.
+	          const slowTimer = setTimeout(finishInterrupt, 2000);
+	          slowTimer.unref?.();
+	        } else {
+	          finishInterrupt();
 	        }
-	        send({ id: message.id, result: {} });
 	        break;
 	      }
 

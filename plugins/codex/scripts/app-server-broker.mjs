@@ -69,6 +69,7 @@ async function main() {
   let activeRequestSocket = null;
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
+  let activeStreamTurnId = null;
   const sockets = new Set();
 
   function clearSocketOwnership(socket) {
@@ -78,7 +79,28 @@ async function main() {
     if (activeStreamSocket === socket) {
       activeStreamSocket = null;
       activeStreamThreadIds = null;
+      activeStreamTurnId = null;
     }
+  }
+
+  function abortStreamedTurn(threadIds, turnId) {
+    // The client that owned this streamed turn dropped before it completed. The turn is still
+    // running on the shared app-server, unsupervised (any client-side watchdog died with the
+    // client), so interrupt it here — the broker outlives any single client.
+    if (!turnId || !threadIds || threadIds.size === 0) {
+      return;
+    }
+    for (const threadId of threadIds) {
+      appClient.request("turn/interrupt", { threadId, turnId }).catch(() => {});
+    }
+  }
+
+  function handleSocketGone(socket) {
+    const threadIds = activeStreamSocket === socket ? activeStreamThreadIds : null;
+    const turnId = activeStreamSocket === socket ? activeStreamTurnId : null;
+    sockets.delete(socket);
+    clearSocketOwnership(socket);
+    abortStreamedTurn(threadIds, turnId);
   }
 
   function routeNotification(message) {
@@ -92,6 +114,7 @@ async function main() {
       if (!threadId || !activeStreamThreadIds || activeStreamThreadIds.has(threadId)) {
         activeStreamSocket = null;
         activeStreamThreadIds = null;
+        activeStreamTurnId = null;
         if (activeRequestSocket === target) {
           activeRequestSocket = null;
         }
@@ -203,6 +226,7 @@ async function main() {
           if (isStreaming) {
             activeStreamSocket = socket;
             activeStreamThreadIds = buildStreamThreadIds(message.method, message.params ?? {}, result);
+            activeStreamTurnId = result?.turn?.id ?? null;
           }
           if (activeRequestSocket === socket) {
             activeRequestSocket = null;
@@ -223,13 +247,11 @@ async function main() {
     });
 
     socket.on("close", () => {
-      sockets.delete(socket);
-      clearSocketOwnership(socket);
+      handleSocketGone(socket);
     });
 
     socket.on("error", () => {
-      sockets.delete(socket);
-      clearSocketOwnership(socket);
+      handleSocketGone(socket);
     });
   });
 

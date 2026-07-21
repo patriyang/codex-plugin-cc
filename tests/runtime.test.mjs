@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -7,7 +8,13 @@ import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
-import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+import {
+  ensureBrokerSession,
+  loadBrokerSession,
+  saveBrokerSession,
+  sendBrokerShutdown
+} from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -2997,4 +3004,255 @@ test("setup and status honor --cwd when reading shared session runtime", () => {
   const payload = JSON.parse(setup.stdout);
   assert.equal(payload.sessionRuntime.mode, "shared");
   assert.equal(payload.sessionRuntime.endpoint, "unix:/tmp/fake-broker.sock");
+});
+
+test("shared broker interrupts an orphaned turn when its owning client disconnects mid-turn", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "idle-hung-turn");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const session = await ensureBrokerSession(repo, { env });
+  assert.ok(session?.endpoint, "broker session should start");
+
+  t.after(async () => {
+    await sendBrokerShutdown(session.endpoint).catch(() => {});
+  });
+
+  const target = parseBrokerEndpoint(session.endpoint);
+  const socket = net.createConnection({ path: target.path });
+  socket.setEncoding("utf8");
+
+  const pending = new Map();
+  let buffer = "";
+  socket.on("data", (chunk) => {
+    buffer += chunk;
+    let idx = buffer.indexOf("\n");
+    while (idx !== -1) {
+      const line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      idx = buffer.indexOf("\n");
+      if (!line.trim()) {
+        continue;
+      }
+      const message = JSON.parse(line);
+      if (message.id !== undefined && pending.has(message.id)) {
+        pending.get(message.id)(message);
+        pending.delete(message.id);
+      }
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+
+  function request(id, method, params) {
+    return new Promise((resolve) => {
+      pending.set(id, resolve);
+      socket.write(`${JSON.stringify({ id, method, params })}\n`);
+    });
+  }
+
+  await request(1, "initialize", { capabilities: {} });
+  socket.write(`${JSON.stringify({ method: "initialized" })}\n`);
+
+  const threadResponse = await request(2, "thread/start", { cwd: repo });
+  const threadId = threadResponse.result.thread.id;
+  assert.ok(threadId);
+
+  const turnResponse = await request(3, "turn/start", {
+    threadId,
+    input: [{ type: "text", text: "work forever" }]
+  });
+  const turnId = turnResponse.result.turn.id;
+  assert.ok(turnId);
+
+  // Simulate the foreground `--wait` client being SIGKILLed mid-turn: the OS drops the broker
+  // socket while the turn is still running. The watchdog that lived in the killed client is gone,
+  // so the broker must abort the now-unsupervised turn itself.
+  socket.destroy();
+
+  await waitFor(() => {
+    const state = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    return state.lastInterrupt ?? null;
+  }, { timeoutMs: 5000 });
+
+  const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  assert.deepEqual(fakeState.lastInterrupt, { threadId, turnId });
+});
+
+test("shared broker interrupts a turn orphaned by a disconnect during the turn/start round-trip", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "delayed-turn-start");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const session = await ensureBrokerSession(repo, { env });
+  assert.ok(session?.endpoint, "broker session should start");
+
+  t.after(async () => {
+    await sendBrokerShutdown(session.endpoint).catch(() => {});
+  });
+
+  const target = parseBrokerEndpoint(session.endpoint);
+  const socket = net.createConnection({ path: target.path });
+  socket.setEncoding("utf8");
+
+  const pending = new Map();
+  let buffer = "";
+  socket.on("data", (chunk) => {
+    buffer += chunk;
+    let idx = buffer.indexOf("\n");
+    while (idx !== -1) {
+      const line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      idx = buffer.indexOf("\n");
+      if (!line.trim()) {
+        continue;
+      }
+      const message = JSON.parse(line);
+      if (message.id !== undefined && pending.has(message.id)) {
+        pending.get(message.id)(message);
+        pending.delete(message.id);
+      }
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+
+  function request(id, method, params) {
+    return new Promise((resolve) => {
+      pending.set(id, resolve);
+      socket.write(`${JSON.stringify({ id, method, params })}\n`);
+    });
+  }
+
+  await request(1, "initialize", { capabilities: {} });
+  socket.write(`${JSON.stringify({ method: "initialized" })}\n`);
+
+  const threadResponse = await request(2, "thread/start", { cwd: repo });
+  const threadId = threadResponse.result.thread.id;
+  assert.ok(threadId);
+
+  // Fire turn/start but do NOT wait for the (deliberately delayed) response, then drop the client
+  // mid-round-trip — before the broker has recorded stream ownership. The broker must still abort
+  // the turn once the response resolves, rather than adopting the dead socket as owner.
+  socket.write(`${JSON.stringify({ id: 3, method: "turn/start", params: { threadId, input: [{ type: "text", text: "work forever" }] } })}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  socket.destroy();
+
+  await waitFor(() => {
+    const state = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    return state.lastInterrupt ?? null;
+  }, { timeoutMs: 5000 });
+
+  const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  assert.equal(fakeState.lastInterrupt.threadId, threadId);
+  assert.equal(fakeState.lastInterrupt.turnId, fakeState.lastTurnStart.turnId);
+});
+
+test("shared broker stays busy while an orphaned turn is being interrupted, blocking overlap", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "idle-hung-slow-interrupt");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const session = await ensureBrokerSession(repo, { env });
+  assert.ok(session?.endpoint, "broker session should start");
+
+  const target = parseBrokerEndpoint(session.endpoint);
+  const opened = [];
+  t.after(async () => {
+    for (const s of opened) {
+      s.destroy();
+    }
+    await sendBrokerShutdown(session.endpoint).catch(() => {});
+  });
+
+  function openClient() {
+    const socket = net.createConnection({ path: target.path });
+    socket.setEncoding("utf8");
+    opened.push(socket);
+    const pending = new Map();
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      let idx = buffer.indexOf("\n");
+      while (idx !== -1) {
+        const line = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+        idx = buffer.indexOf("\n");
+        if (!line.trim()) {
+          continue;
+        }
+        const message = JSON.parse(line);
+        if (message.id !== undefined && pending.has(message.id)) {
+          pending.get(message.id)(message);
+          pending.delete(message.id);
+        }
+      }
+    });
+    const ready = new Promise((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    const request = (id, method, params) =>
+      new Promise((resolve) => {
+        pending.set(id, resolve);
+        socket.write(`${JSON.stringify({ id, method, params })}\n`);
+      });
+    return { socket, ready, request };
+  }
+
+  const a = openClient();
+  await a.ready;
+  await a.request(1, "initialize", { capabilities: {} });
+  a.socket.write(`${JSON.stringify({ method: "initialized" })}\n`);
+  const threadResponse = await a.request(2, "thread/start", { cwd: repo });
+  const threadId = threadResponse.result.thread.id;
+  await a.request(3, "turn/start", { threadId, input: [{ type: "text", text: "work forever" }] });
+
+  // Client A drops mid-turn. The broker interrupts the orphan, but the fake delays the interrupt
+  // response, so the abort is still in flight (single-flight slot reserved) for ~600ms.
+  a.socket.destroy();
+  await waitFor(() => {
+    const state = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    return state.lastInterrupt ?? null;
+  }, { timeoutMs: 5000 });
+
+  // A second client must NOT be able to start an overlapping turn during the abort window.
+  const b = openClient();
+  await b.ready;
+  await b.request(1, "initialize", { capabilities: {} });
+  b.socket.write(`${JSON.stringify({ method: "initialized" })}\n`);
+  const busy = await b.request(2, "turn/start", { threadId, input: [{ type: "text", text: "overlap" }] });
+  assert.ok(busy.error, "second client should be rejected while the orphan is being interrupted");
+  assert.match(busy.error.message, /busy/i);
+
+  // Once the interrupt settles, the broker recovers and accepts a fresh turn.
+  const recovered = await waitFor(async () => {
+    const resp = await b.request(3, "turn/start", { threadId, input: [{ type: "text", text: "after" }] });
+    return resp.result ? resp : null;
+  }, { timeoutMs: 5000, intervalMs: 100 });
+  assert.ok(recovered.result.turn?.id, "broker should accept a new turn after the abort settles");
 });

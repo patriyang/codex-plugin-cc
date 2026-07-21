@@ -13,7 +13,8 @@ import {
   loadBrokerSession,
   saveBrokerSession,
   sendBrokerShutdown,
-  teardownBrokerSession
+  teardownBrokerSession,
+  waitForBrokerEndpoint
 } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
@@ -55,21 +56,29 @@ after(async () => {
     if (session.endpoint) {
       await sendBrokerShutdown(session.endpoint).catch(() => {});
     }
+    // Only SIGTERM the recorded PID if the broker is still reachable on its (unique) endpoint —
+    // proof it's genuinely our live broker. A stale broker.json can hold an already-exited broker's
+    // PID that the OS may have recycled, so never kill a recorded PID blindly.
+    const stillReachable = session.endpoint
+      ? await waitForBrokerEndpoint(session.endpoint, 100).catch(() => false)
+      : false;
     teardownBrokerSession({
       endpoint: session.endpoint ?? null,
       pidFile: session.pidFile ?? null,
       logFile: session.logFile ?? null,
       sessionDir: session.sessionDir ?? null,
-      pid: session.pid ?? null,
+      pid: stillReachable ? session.pid ?? null : null,
       // Backstop if the graceful shutdown didn't land. SIGTERM (not SIGKILL) lets the broker's
-      // signal handler close the app-server child.
-      killProcess: (pid) => {
-        try {
-          process.kill(pid, "SIGTERM");
-        } catch {
-          // already gone
-        }
-      }
+      // signal handler close the app-server child. Guarded on reachability above.
+      killProcess: stillReachable
+        ? (pid) => {
+            try {
+              process.kill(pid, "SIGTERM");
+            } catch {
+              // already gone
+            }
+          }
+        : null
     });
   }
 });

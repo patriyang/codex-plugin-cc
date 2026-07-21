@@ -16,6 +16,21 @@ const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact
 // interrupt that never gets a response, so the broker can never wedge itself permanently busy.
 const ABORT_INTERRUPT_TIMEOUT_MS = 10_000;
 
+// How long a broker may sit idle (no connected clients, nothing in flight) before it self-exits.
+// Brokers are detached and normally reaped by the SessionEnd hook; this self-timeout keeps a broker
+// whose owning session died without a clean SessionEnd from lingering forever. A value of 0 disables
+// it (never self-exit).
+const DEFAULT_BROKER_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+
+function resolveBrokerIdleTimeoutMs(env = process.env) {
+  const raw = env?.CODEX_COMPANION_BROKER_IDLE_TIMEOUT_MS;
+  if (raw === undefined || raw === null || raw === "") {
+    return DEFAULT_BROKER_IDLE_TIMEOUT_MS;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_BROKER_IDLE_TIMEOUT_MS;
+}
+
 function buildStreamThreadIds(method, params, result) {
   const threadIds = new Set();
   if (params?.threadId) {
@@ -122,6 +137,35 @@ async function main() {
     sockets.delete(socket);
     clearSocketOwnership(socket);
     abortStreamedTurn(threadIds, turnId);
+    // A client just left — restart the idle countdown so a broker with no remaining clients exits.
+    bumpIdleTimer();
+  }
+
+  const idleTimeoutMs = resolveBrokerIdleTimeoutMs(process.env);
+  let idleTimer = null;
+
+  function bumpIdleTimer() {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+    if (!(idleTimeoutMs > 0 && Number.isFinite(idleTimeoutMs))) {
+      return;
+    }
+    idleTimer = setTimeout(onIdleTimeout, idleTimeoutMs);
+    idleTimer.unref?.();
+  }
+
+  async function onIdleTimeout() {
+    idleTimer = null;
+    // Never exit mid-work: a live client, an in-flight request/stream, or an in-progress orphan
+    // abort all count as busy — re-arm instead.
+    if (sockets.size > 0 || activeRequestSocket || activeStreamSocket || abortingTurnId) {
+      bumpIdleTimer();
+      return;
+    }
+    await shutdown(server);
+    process.exit(0);
   }
 
   function routeNotification(message) {
@@ -161,10 +205,12 @@ async function main() {
 
   const server = net.createServer((socket) => {
     sockets.add(socket);
+    bumpIdleTimer();
     socket.setEncoding("utf8");
     let buffer = "";
 
     socket.on("data", async (chunk) => {
+      bumpIdleTimer();
       buffer += chunk;
       let newlineIndex = buffer.indexOf("\n");
       while (newlineIndex !== -1) {
@@ -307,6 +353,7 @@ async function main() {
   });
 
   server.listen(listenTarget.path);
+  bumpIdleTimer();
 }
 
 main().catch((error) => {

@@ -1,18 +1,20 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+import { initGitRepo, makeTempDir, run, trackedTempDirs } from "./helpers.mjs";
 import {
   ensureBrokerSession,
   loadBrokerSession,
   saveBrokerSession,
-  sendBrokerShutdown
+  sendBrokerShutdown,
+  teardownBrokerSession,
+  waitForBrokerEndpoint
 } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
@@ -37,6 +39,49 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
   }
   throw new Error("Timed out waiting for condition.");
 }
+
+after(async () => {
+  for (const dir of trackedTempDirs()) {
+    let session = null;
+    try {
+      session = loadBrokerSession(dir);
+    } catch {
+      session = null;
+    }
+    if (!session || (!session.endpoint && !session.pid)) {
+      continue;
+    }
+    // Ask the broker to shut down gracefully first so it closes its own `codex app-server` child;
+    // a SIGKILL would orphan that child and re-leak the app-server half.
+    if (session.endpoint) {
+      await sendBrokerShutdown(session.endpoint).catch(() => {});
+    }
+    // Only SIGTERM the recorded PID if the broker is still reachable on its (unique) endpoint —
+    // proof it's genuinely our live broker. A stale broker.json can hold an already-exited broker's
+    // PID that the OS may have recycled, so never kill a recorded PID blindly.
+    const stillReachable = session.endpoint
+      ? await waitForBrokerEndpoint(session.endpoint, 100).catch(() => false)
+      : false;
+    teardownBrokerSession({
+      endpoint: session.endpoint ?? null,
+      pidFile: session.pidFile ?? null,
+      logFile: session.logFile ?? null,
+      sessionDir: session.sessionDir ?? null,
+      pid: stillReachable ? session.pid ?? null : null,
+      // Backstop if the graceful shutdown didn't land. SIGTERM (not SIGKILL) lets the broker's
+      // signal handler close the app-server child. Guarded on reachability above.
+      killProcess: stillReachable
+        ? (pid) => {
+            try {
+              process.kill(pid, "SIGTERM");
+            } catch {
+              // already gone
+            }
+          }
+        : null
+    });
+  }
+});
 
 test("setup reports ready when fake codex is installed and authenticated", () => {
   const binDir = makeTempDir();
@@ -3255,4 +3300,28 @@ test("shared broker stays busy while an orphaned turn is being interrupted, bloc
     return resp.result ? resp : null;
   }, { timeoutMs: 5000, intervalMs: 100 });
   assert.ok(recovered.result.turn?.id, "broker should accept a new turn after the abort settles");
+});
+
+test("shared broker self-exits after its idle timeout with no clients", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-ok");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = { ...buildEnv(binDir), CODEX_COMPANION_BROKER_IDLE_TIMEOUT_MS: "600" };
+  const session = await ensureBrokerSession(repo, { env });
+  assert.ok(session?.pid, "broker session should start");
+
+  // No client connects; the broker should self-exit once the idle window elapses.
+  await waitFor(() => {
+    try {
+      process.kill(session.pid, 0);
+      return false;
+    } catch (error) {
+      return error?.code === "ESRCH";
+    }
+  }, { timeoutMs: 5000, intervalMs: 100 });
 });

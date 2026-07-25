@@ -140,7 +140,7 @@ Each finding is tagged with its dimension (`[correctness]`, `[conciseness]`, or 
 It uses the same review target selection as `/codex:review`, including `--base <ref>` for branch review.
 It also supports `--wait` and `--background`. Like `/codex:adversarial-review`, it can take extra focus text after the flags.
 
-By default `/codex:deep-review` uses `gpt-5.6-sol` with `medium` reasoning effort. Override either per run with `--model <model|spark>` and `--effort <none|minimal|low|medium|high|xhigh>` (also accepted by `/codex:adversarial-review`). The native `/codex:review` path does not support `--effort`.
+By default `/codex:deep-review` uses `gpt-5.6-sol` with `medium` reasoning effort. Override either per run with `--model <model|spark>` and `--effort <none|minimal|low|medium|high|xhigh>` (also accepted by `/codex:adversarial-review`). The native `/codex:review` path does not support `--effort`. Review output now reports the model and reasoning effort the run actually used, so the resolved config is checkable after the fact.
 
 Use it when you want:
 

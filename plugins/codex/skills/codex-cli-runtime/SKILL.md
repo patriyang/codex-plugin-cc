@@ -19,7 +19,7 @@ Execution rules:
 - You may use the `gpt-5-4-prompting` skill to rewrite the user's request into a tighter Codex prompt before the single `task` call.
 - That prompt drafting is the only Claude-side work allowed. Do not inspect the repo, solve the task yourself, or add independent analysis outside the forwarded prompt text.
 - Leave `--effort` unset unless the user explicitly requests a specific effort; the runtime defaults to `high`.
-- Leave model unset by default; the runtime defaults to `gpt-5.5`. Add `--model` only when the user explicitly asks for one.
+- Leave model unset by default for task requests; the runtime defaults to `gpt-5.5`. Review commands resolve their own defaults: `/codex:deep-review` uses `gpt-5.6-sol` with `medium` effort, and each review's output names the model it ran under — plus the effort, except for the native `/codex:review`, which sends none. Add `--model` only when the user explicitly asks for one.
 - Map `spark` to `--model gpt-5.3-codex-spark`.
 - Default to a write-capable Codex run by adding `--write` unless the user explicitly asks for read-only behavior or only wants review, diagnosis, or research without edits.
 

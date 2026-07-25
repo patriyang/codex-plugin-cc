@@ -21,6 +21,17 @@ function formatLineRange(finding) {
   return `:${finding.line_start}-${finding.line_end}`;
 }
 
+function appendModelAttribution(lines, meta) {
+  const before = lines.length;
+  if (typeof meta.model === "string" && meta.model) {
+    lines.push(`Model: ${meta.model}`);
+  }
+  if (typeof meta.effort === "string" && meta.effort) {
+    lines.push(`Effort: ${meta.effort}`);
+  }
+  return lines.length > before;
+}
+
 function validateReviewResultShape(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return "Expected a top-level JSON object.";
@@ -212,11 +223,12 @@ export function renderReviewResult(parsedResult, meta) {
   if (!parsedResult.parsed) {
     const lines = [
       `# Codex ${meta.reviewLabel}`,
-      "",
-      "Codex did not return valid structured JSON.",
-      "",
-      `- Parse error: ${parsedResult.parseError}`
+      ""
     ];
+    if (appendModelAttribution(lines, meta)) {
+      lines.push("");
+    }
+    lines.push("Codex did not return valid structured JSON.", "", `- Parse error: ${parsedResult.parseError}`);
 
     if (parsedResult.rawOutput) {
       lines.push("", "Raw final message:", "", "```text", parsedResult.rawOutput, "```");
@@ -232,11 +244,10 @@ export function renderReviewResult(parsedResult, meta) {
     const lines = [
       `# Codex ${meta.reviewLabel}`,
       "",
-      `Target: ${meta.targetLabel}`,
-      "Codex returned JSON with an unexpected review shape.",
-      "",
-      `- Validation error: ${validationError}`
+      `Target: ${meta.targetLabel}`
     ];
+    appendModelAttribution(lines, meta);
+    lines.push("Codex returned JSON with an unexpected review shape.", "", `- Validation error: ${validationError}`);
 
     if (parsedResult.rawOutput) {
       lines.push("", "Raw final message:", "", "```text", parsedResult.rawOutput, "```");
@@ -252,12 +263,10 @@ export function renderReviewResult(parsedResult, meta) {
   const lines = [
     `# Codex ${meta.reviewLabel}`,
     "",
-    `Target: ${meta.targetLabel}`,
-    `Verdict: ${data.verdict}`,
-    "",
-    data.summary,
-    ""
+    `Target: ${meta.targetLabel}`
   ];
+  appendModelAttribution(lines, meta);
+  lines.push(`Verdict: ${data.verdict}`, "", data.summary, "");
 
   if (findings.length === 0) {
     lines.push("No material findings.");
@@ -291,9 +300,10 @@ export function renderNativeReviewResult(result, meta) {
   const lines = [
     `# Codex ${meta.reviewLabel}`,
     "",
-    `Target: ${meta.targetLabel}`,
-    ""
+    `Target: ${meta.targetLabel}`
   ];
+  appendModelAttribution(lines, meta);
+  lines.push("");
 
   if (stdout) {
     lines.push(stdout);

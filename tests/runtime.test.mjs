@@ -234,6 +234,8 @@ test("deep-review defaults to gpt-5.6-sol at medium effort", () => {
   });
 
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Model: gpt-5\.6-sol$/m);
+  assert.match(result.stdout, /^Effort: medium$/m);
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(state.lastTurnStart.model, "gpt-5.6-sol");
   assert.equal(state.lastTurnStart.effort, "medium");
@@ -249,9 +251,51 @@ test("deep-review honors explicit --model and --effort overrides", () => {
   );
 
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Model: gpt-5\.6-terra$/m);
+  assert.match(result.stdout, /^Effort: high$/m);
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(state.lastTurnStart.model, "gpt-5.6-terra");
   assert.equal(state.lastTurnStart.effort, "high");
+});
+
+test("adversarial-review reports the default model and Codex-selected effort", () => {
+  const { repo, binDir } = setupDeepReviewRepo();
+
+  const result = run("node", [SCRIPT, "adversarial-review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Model: gpt-5\.5$/m);
+  assert.match(result.stdout, /^Effort: codex default$/m);
+});
+
+test("native review reports the default model without effort attribution", () => {
+  const { repo, binDir } = setupDeepReviewRepo();
+
+  const result = run("node", [SCRIPT, "review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Model: gpt-5\.5$/m);
+  assert.doesNotMatch(result.stdout, /^Effort:/m);
+});
+
+test("deep-review JSON reports the resolved model and effort", () => {
+  const { repo, binDir } = setupDeepReviewRepo();
+
+  const result = run("node", [SCRIPT, "deep-review", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.model, "gpt-5.6-sol");
+  assert.equal(payload.effort, "medium");
 });
 
 test("native review rejects --effort instead of silently ignoring it", () => {

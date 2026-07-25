@@ -397,6 +397,8 @@ async function executeReviewRun(request) {
     const payload = {
       review: reviewName,
       target,
+      model: request.model ?? null,
+      effort: request.effort ?? null,
       threadId: result.threadId,
       sourceThreadId: result.sourceThreadId,
       codex: {
@@ -412,7 +414,7 @@ async function executeReviewRun(request) {
         stdout: result.reviewText,
         stderr: result.stderr
       },
-      { reviewLabel: reviewName, targetLabel: target.label, reasoningSummary: result.reasoningSummary }
+      { reviewLabel: reviewName, targetLabel: target.label, model: request.model, reasoningSummary: result.reasoningSummary }
     );
 
     return {
@@ -448,6 +450,8 @@ async function executeReviewRun(request) {
   const payload = {
     review: reviewName,
     target,
+    model: request.model ?? null,
+    effort: request.effort ?? null,
     threadId: result.threadId,
     context: {
       repoRoot: context.repoRoot,
@@ -474,6 +478,8 @@ async function executeReviewRun(request) {
     rendered: renderReviewResult(parsed, {
       reviewLabel: reviewName,
       targetLabel: context.target.label,
+      model: request.model,
+      effort: request.effort ?? "codex default",
       reasoningSummary: result.reasoningSummary
     }),
     summary: parsed.parsed?.summary ?? parsed.parseError ?? firstMeaningfulLine(result.finalMessage, `${reviewName} finished.`),

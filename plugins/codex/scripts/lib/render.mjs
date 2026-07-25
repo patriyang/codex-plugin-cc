@@ -22,12 +22,14 @@ function formatLineRange(finding) {
 }
 
 function appendModelAttribution(lines, meta) {
+  const before = lines.length;
   if (typeof meta.model === "string" && meta.model) {
     lines.push(`Model: ${meta.model}`);
   }
   if (typeof meta.effort === "string" && meta.effort) {
     lines.push(`Effort: ${meta.effort}`);
   }
+  return lines.length > before;
 }
 
 function validateReviewResultShape(data) {
@@ -221,11 +223,12 @@ export function renderReviewResult(parsedResult, meta) {
   if (!parsedResult.parsed) {
     const lines = [
       `# Codex ${meta.reviewLabel}`,
-      "",
-      "Codex did not return valid structured JSON.",
-      "",
-      `- Parse error: ${parsedResult.parseError}`
+      ""
     ];
+    if (appendModelAttribution(lines, meta)) {
+      lines.push("");
+    }
+    lines.push("Codex did not return valid structured JSON.", "", `- Parse error: ${parsedResult.parseError}`);
 
     if (parsedResult.rawOutput) {
       lines.push("", "Raw final message:", "", "```text", parsedResult.rawOutput, "```");

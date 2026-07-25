@@ -95,6 +95,26 @@ test("renderReviewResult degrades gracefully when JSON is missing required revie
   assert.match(output, /Raw final message:/);
 });
 
+test("renderReviewResult still reports attribution when Codex returns unparseable output", () => {
+  const output = renderReviewResult(
+    {
+      parsed: null,
+      rawOutput: "not json at all",
+      parseError: "Unexpected token 'n'"
+    },
+    {
+      reviewLabel: "Deep Review",
+      targetLabel: "working tree diff",
+      model: "gpt-5.6-sol",
+      effort: "medium"
+    }
+  );
+
+  assert.match(output, /^Model: gpt-5\.6-sol$/m);
+  assert.match(output, /^Effort: medium$/m);
+  assert.match(output, /Codex did not return valid structured JSON\./);
+});
+
 test("renderStoredJobResult prefers rendered output for structured review jobs", () => {
   const output = renderStoredJobResult(
     {

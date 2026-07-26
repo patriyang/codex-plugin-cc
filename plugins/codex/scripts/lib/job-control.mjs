@@ -39,13 +39,33 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
       return job;
     }
 
+    let storedJob = null;
+    let storedReadFailed = false;
+    try {
+      storedJob = readStoredJob(workspaceRoot, job.id);
+    } catch {
+      storedReadFailed = true;
+    }
+
+    if (
+      storedJob &&
+      storedJob.status !== "queued" &&
+      storedJob.status !== "running"
+    ) {
+      return storedJob;
+    }
+
+    const currentJob = {
+      ...job,
+      ...(storedJob ?? {})
+    };
     const pid = job.pid;
-    const logFile = job.logFile ?? null;
-    let completedAt = job.updatedAt ?? nowIso();
+    const logFile = currentJob.logFile ?? null;
+    let completedAt = currentJob.updatedAt ?? nowIso();
     try {
       if (logFile && fs.existsSync(logFile)) {
         const mtime = fs.statSync(logFile).mtime;
-        const startedAt = Date.parse(job.startedAt ?? "");
+        const startedAt = Date.parse(currentJob.startedAt ?? "");
         if (Number.isFinite(startedAt) && mtime.getTime() >= startedAt) {
           completedAt = mtime.toISOString();
         }
@@ -55,7 +75,7 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
     }
 
     const reapedJob = {
-      ...job,
+      ...currentJob,
       status: "failed",
       phase: "failed",
       pid: null,
@@ -64,14 +84,12 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
       reaped: true
     };
 
-    try {
-      const storedJob = readStoredJob(workspaceRoot, job.id) ?? job;
-      writeJobFile(workspaceRoot, job.id, {
-        ...storedJob,
-        ...reapedJob
-      });
-    } catch {
-      // Status should still report the in-memory terminal record.
+    if (!storedReadFailed) {
+      try {
+        writeJobFile(workspaceRoot, job.id, reapedJob);
+      } catch {
+        // Status should still report the in-memory terminal record.
+      }
     }
 
     try {

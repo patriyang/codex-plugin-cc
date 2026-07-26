@@ -4,7 +4,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { reapDeadJobs, resolveResultJob } from "../plugins/codex/scripts/lib/job-control.mjs";
-import { ensureStateDir, listJobs, upsertJob } from "../plugins/codex/scripts/lib/state.mjs";
+import {
+  ensureStateDir,
+  listJobs,
+  resolveJobFile,
+  resolveJobLogFile,
+  resolveStateFile,
+  upsertJob,
+  writeJobFile
+} from "../plugins/codex/scripts/lib/state.mjs";
 import { initGitRepo, makeTempDir, spawnDeadPid } from "./helpers.mjs";
 
 delete process.env.CLAUDE_PLUGIN_DATA;
@@ -45,6 +53,97 @@ test("reapDeadJobs returns a terminal job when persistence fails", () => {
       process.env.CLAUDE_PLUGIN_DATA = previousPluginData;
     }
   }
+});
+
+test("reapDeadJobs preserves a completion stored after the job list was read", () => {
+  const workspace = makeTempDir();
+  ensureStateDir(workspace);
+  const jobId = "task-completed";
+  const logFile = resolveJobLogFile(workspace, jobId);
+  fs.writeFileSync(logFile, "Worker finished successfully.\n", "utf8");
+  writeJobFile(workspace, jobId, {
+    id: jobId,
+    status: "completed",
+    pid: null,
+    logFile,
+    completedAt: "2026-07-26T08:01:00.000Z",
+    result: { message: "done" }
+  });
+  const jobFile = resolveJobFile(workspace, jobId);
+  const storedBefore = fs.readFileSync(jobFile, "utf8");
+  const logBefore = fs.readFileSync(logFile, "utf8");
+
+  const [job] = reapDeadJobs(
+    workspace,
+    [
+      {
+        id: jobId,
+        status: "running",
+        pid: 1234,
+        logFile,
+        updatedAt: "2026-07-26T08:00:00.000Z"
+      }
+    ],
+    {
+      isProcessAlive: () => false
+    }
+  );
+
+  assert.equal(job.status, "completed");
+  assert.deepEqual(job.result, { message: "done" });
+  assert.equal(fs.readFileSync(jobFile, "utf8"), storedBefore);
+  assert.equal(fs.readFileSync(logFile, "utf8"), logBefore);
+  assert.deepEqual(listJobs(workspace), []);
+});
+
+test("reapDeadJobs does not repeat a partial reap whose stored record is terminal", () => {
+  const workspace = makeTempDir();
+  ensureStateDir(workspace);
+  const jobId = "task-partially-reaped";
+  const logFile = resolveJobLogFile(workspace, jobId);
+  const pid = 1234;
+  upsertJob(workspace, {
+    id: jobId,
+    status: "running",
+    pid,
+    logFile,
+    updatedAt: "2026-07-26T08:00:00.000Z"
+  });
+  writeJobFile(workspace, jobId, {
+    id: jobId,
+    status: "failed",
+    phase: "failed",
+    pid: null,
+    logFile,
+    completedAt: "2026-07-26T08:01:00.000Z",
+    errorMessage: `Worker process ${pid} is no longer running; the job ended without recording a result.`,
+    reaped: true,
+    result: { partial: true }
+  });
+  fs.writeFileSync(logFile, "Job reaped: worker process 1234 is gone; marking failed.\n", "utf8");
+
+  const jobFile = resolveJobFile(workspace, jobId);
+  const stateFile = resolveStateFile(workspace);
+  const fixedMtime = new Date("2026-07-26T08:02:00.000Z");
+  fs.utimesSync(jobFile, fixedMtime, fixedMtime);
+  fs.utimesSync(logFile, fixedMtime, fixedMtime);
+  const storedBefore = fs.readFileSync(jobFile, "utf8");
+  const stateBefore = fs.readFileSync(stateFile, "utf8");
+  const logBefore = fs.readFileSync(logFile, "utf8");
+
+  const [job] = reapDeadJobs(workspace, listJobs(workspace), {
+    isProcessAlive: () => false
+  });
+
+  assert.equal(job.status, "failed");
+  assert.equal(job.reaped, true);
+  assert.deepEqual(job.result, { partial: true });
+  assert.equal(fs.readFileSync(jobFile, "utf8"), storedBefore);
+  assert.equal(fs.readFileSync(stateFile, "utf8"), stateBefore);
+  assert.equal(fs.readFileSync(logFile, "utf8"), logBefore);
+  assert.equal(fs.statSync(jobFile).mtime.toISOString(), fixedMtime.toISOString());
+  assert.equal(fs.statSync(logFile).mtime.toISOString(), fixedMtime.toISOString());
+  assert.equal(logBefore.match(/Job reaped:/g)?.length, 1);
 });
 
 test("resolveResultJob reaps jobs before applying the session filter", () => {

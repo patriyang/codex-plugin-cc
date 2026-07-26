@@ -31,6 +31,14 @@ export function run(command, args, options = {}) {
   });
 }
 
+export function spawnDeadPid() {
+  const result = spawnSync(process.execPath, ["-e", ""]);
+  if (!Number.isFinite(result.pid)) {
+    throw result.error ?? new Error("Failed to spawn child process");
+  }
+  return result.pid;
+}
+
 export function initGitRepo(cwd) {
   run("git", ["init", "-b", "main"], { cwd });
   run("git", ["config", "user.name", "Codex Plugin Tests"], { cwd });

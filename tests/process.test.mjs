@@ -2,25 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { isProcessAlive, terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
-
-function findDeadPid() {
-  for (let pid = 1_000_000; ; pid += 1) {
-    try {
-      process.kill(pid, 0);
-    } catch (error) {
-      if (error?.code === "ESRCH") {
-        return pid;
-      }
-    }
-  }
-}
+import { spawnDeadPid } from "./helpers.mjs";
 
 test("isProcessAlive reports the current process as alive", () => {
   assert.equal(isProcessAlive(process.pid), true);
 });
 
 test("isProcessAlive reports a dead process as not alive", () => {
-  assert.equal(isProcessAlive(findDeadPid()), false);
+  assert.equal(isProcessAlive(spawnDeadPid()), false);
 });
 
 test("isProcessAlive rejects non-finite and non-positive pids", () => {

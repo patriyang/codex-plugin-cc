@@ -2010,6 +2010,7 @@ test("status without a job id only shows jobs from the current Claude session", 
 
   const currentLog = path.join(jobsDir, "review-current.log");
   const otherLog = path.join(jobsDir, "review-other.log");
+  const otherPid = spawnDeadPid();
   fs.writeFileSync(currentLog, "[2026-03-18T15:30:00.000Z] Reviewer started: current changes\n", "utf8");
   fs.writeFileSync(otherLog, "[2026-03-18T15:31:00.000Z] Reviewer started: old changes\n", "utf8");
 
@@ -2039,15 +2040,16 @@ test("status without a job id only shows jobs from the current Claude session", 
             id: "review-other",
             kind: "review",
             kindLabel: "review",
-            status: "completed",
+            status: "running",
             title: "Codex Review",
             jobClass: "review",
             sessionId: "sess-other",
             threadId: "thr_other",
             summary: "Previous session review",
+            pid: otherPid,
+            logFile: otherLog,
             createdAt: "2026-03-18T15:20:00.000Z",
             startedAt: "2026-03-18T15:20:05.000Z",
-            completedAt: "2026-03-18T15:21:00.000Z",
             updatedAt: "2026-03-18T15:21:00.000Z"
           }
         ]
@@ -2071,6 +2073,9 @@ test("status without a job id only shows jobs from the current Claude session", 
     [...new Set(result.stdout.match(/review-(?:current|other)/g) ?? [])],
     ["review-current"]
   );
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  assert.equal(state.jobs.find((job) => job.id === "review-other").status, "failed");
+  assert.equal(state.jobs.find((job) => job.id === "review-other").reaped, true);
 });
 
 test("status preserves adversarial review kind labels", () => {
@@ -2202,8 +2207,10 @@ test("status --json reaps a dead running job and freezes its duration", () => {
 
   const jobId = "task-dead";
   const logFile = resolveJobLogFile(workspace, jobId);
-  const startedAt = new Date(Date.now() - 5000).toISOString();
+  const startedAt = "2020-01-01T00:00:00.000Z";
+  const expectedCompletedAt = "2020-01-01T00:01:05.000Z";
   fs.writeFileSync(logFile, `[${startedAt}] Worker started.\n`, "utf8");
+  fs.utimesSync(logFile, new Date(expectedCompletedAt), new Date(expectedCompletedAt));
   const logMtime = fs.statSync(logFile).mtime.toISOString();
   const deadPid = spawnDeadPid();
   const storedRecord = {
@@ -2241,6 +2248,8 @@ test("status --json reaps a dead running job and freezes its duration", () => {
   assert.equal(firstPayload.latestFinished.reaped, true);
   assert.equal(firstPayload.latestFinished.pid, null);
   assert.equal(firstPayload.latestFinished.completedAt, logMtime);
+  assert.equal(firstPayload.latestFinished.elapsed, "1m 5s");
+  assert.equal(firstPayload.latestFinished.duration, "1m 5s");
   assert.equal(
     firstPayload.latestFinished.errorMessage,
     `Worker process ${deadPid} is no longer running; the job ended without recording a result.`

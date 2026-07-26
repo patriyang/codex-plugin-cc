@@ -293,11 +293,8 @@ function matchJobReference(jobs, reference, predicate = () => true) {
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
-  const jobs = reapDeadJobs(
-    workspaceRoot,
-    sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options)),
-    options
-  );
+  const allJobs = reapDeadJobs(workspaceRoot, sortJobsNewestFirst(listJobs(workspaceRoot)), options);
+  const jobs = filterJobsForCurrentSession(allJobs, options);
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
 
@@ -339,10 +336,8 @@ export function buildSingleJobSnapshot(cwd, reference, options = {}) {
 
 export function resolveResultJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = reapDeadJobs(
-    workspaceRoot,
-    sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)))
-  );
+  const allJobs = reapDeadJobs(workspaceRoot, sortJobsNewestFirst(listJobs(workspaceRoot)));
+  const jobs = reference ? allJobs : filterJobsForCurrentSession(allJobs);
   const selected = matchJobReference(
     jobs,
     reference,

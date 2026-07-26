@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { renderNativeReviewResult, renderReviewResult, renderStoredJobResult } from "../plugins/codex/scripts/lib/render.mjs";
+import {
+  renderNativeReviewResult,
+  renderReviewResult,
+  renderStatusReport,
+  renderStoredJobResult
+} from "../plugins/codex/scripts/lib/render.mjs";
 
 test("renderReviewResult places model and effort attribution after the target", () => {
   const output = renderReviewResult(
@@ -69,6 +74,31 @@ test("renderNativeReviewResult includes model attribution without effort", () =>
 
   assert.match(output, /^Model: gpt-5\.5$/m);
   assert.doesNotMatch(output, /^Effort:/m);
+});
+
+test("renderStatusReport explains why a reaped job failed", () => {
+  const errorMessage =
+    "Worker process 1234 is no longer running; the job ended without recording a result.";
+  const output = renderStatusReport({
+    sessionRuntime: { label: "direct startup" },
+    config: { stopReviewGate: false },
+    running: [],
+    latestFinished: {
+      id: "task-dead",
+      status: "failed",
+      kindLabel: "rescue",
+      title: "Codex Task",
+      phase: "failed",
+      duration: "5s",
+      errorMessage,
+      reaped: true
+    },
+    recent: [],
+    needsReview: false
+  });
+
+  assert.match(output, /Latest finished:/);
+  assert.match(output, new RegExp(`Error: ${errorMessage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 });
 
 test("renderReviewResult degrades gracefully when JSON is missing required review fields", () => {

@@ -1,8 +1,16 @@
 import fs from "node:fs";
 
 import { getSessionRuntimeStatus } from "./codex.mjs";
-import { getConfig, listJobs, readJobFile, resolveJobFile } from "./state.mjs";
-import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
+import { isProcessAlive } from "./process.mjs";
+import {
+  getConfig,
+  listJobs,
+  readJobFile,
+  resolveJobFile,
+  upsertJob,
+  writeJobFile
+} from "./state.mjs";
+import { appendLogLine, nowIso, SESSION_ID_ENV } from "./tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 export const DEFAULT_MAX_STATUS_JOBS = 8;
@@ -10,6 +18,78 @@ export const DEFAULT_MAX_PROGRESS_LINES = 4;
 
 export function sortJobsNewestFirst(jobs) {
   return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+}
+
+export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
+  const isProcessAliveImpl = options.isProcessAlive ?? isProcessAlive;
+
+  return jobs.map((job) => {
+    if (
+      (job.status !== "queued" && job.status !== "running") ||
+      !Number.isFinite(job.pid)
+    ) {
+      return job;
+    }
+
+    try {
+      if (isProcessAliveImpl(job.pid)) {
+        return job;
+      }
+    } catch {
+      return job;
+    }
+
+    const pid = job.pid;
+    const logFile = job.logFile ?? null;
+    let completedAt = job.updatedAt ?? nowIso();
+    try {
+      if (logFile && fs.existsSync(logFile)) {
+        const mtime = fs.statSync(logFile).mtime;
+        const startedAt = Date.parse(job.startedAt ?? "");
+        if (Number.isFinite(startedAt) && mtime.getTime() >= startedAt) {
+          completedAt = mtime.toISOString();
+        }
+      }
+    } catch {
+      // Fall back to the last recorded update time.
+    }
+
+    const reapedJob = {
+      ...job,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      errorMessage: `Worker process ${pid} is no longer running; the job ended without recording a result.`,
+      completedAt,
+      reaped: true
+    };
+
+    try {
+      const storedJob = readStoredJob(workspaceRoot, job.id) ?? job;
+      writeJobFile(workspaceRoot, job.id, {
+        ...storedJob,
+        ...reapedJob
+      });
+    } catch {
+      // Status should still report the in-memory terminal record.
+    }
+
+    try {
+      upsertJob(workspaceRoot, reapedJob);
+    } catch {
+      // Status should still report the in-memory terminal record.
+    }
+
+    try {
+      if (logFile && fs.existsSync(logFile)) {
+        appendLogLine(logFile, `Job reaped: worker process ${pid} is gone; marking failed.`);
+      }
+    } catch {
+      // A missing or unwritable log must not break status.
+    }
+
+    return reapedJob;
+  });
 }
 
 function getCurrentSessionId(options = {}) {
@@ -213,7 +293,11 @@ function matchJobReference(jobs, reference, predicate = () => true) {
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
-  const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
+  const jobs = reapDeadJobs(
+    workspaceRoot,
+    sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options)),
+    options
+  );
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
 
@@ -241,7 +325,7 @@ export function buildStatusSnapshot(cwd, options = {}) {
 
 export function buildSingleJobSnapshot(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = reapDeadJobs(workspaceRoot, sortJobsNewestFirst(listJobs(workspaceRoot)), options);
   const selected = matchJobReference(jobs, reference);
   if (!selected) {
     throw new Error(`No job found for "${reference}". Run /codex:status to inspect known jobs.`);
@@ -255,7 +339,10 @@ export function buildSingleJobSnapshot(cwd, reference, options = {}) {
 
 export function resolveResultJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
+  const jobs = reapDeadJobs(
+    workspaceRoot,
+    sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)))
+  );
   const selected = matchJobReference(
     jobs,
     reference,
@@ -280,7 +367,7 @@ export function resolveResultJob(cwd, reference) {
 
 export function resolveCancelableJob(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = reapDeadJobs(workspaceRoot, sortJobsNewestFirst(listJobs(workspaceRoot)), options);
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
 
   if (reference) {

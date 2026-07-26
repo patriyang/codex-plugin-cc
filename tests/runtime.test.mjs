@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { initGitRepo, makeTempDir, run, trackedTempDirs } from "./helpers.mjs";
+import { initGitRepo, makeTempDir, run, spawnDeadPid, trackedTempDirs } from "./helpers.mjs";
 import {
   ensureBrokerSession,
   loadBrokerSession,
@@ -17,7 +17,14 @@ import {
   waitForBrokerEndpoint
 } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
-import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
+import {
+  ensureStateDir,
+  resolveJobFile,
+  resolveJobLogFile,
+  resolveStateDir,
+  upsertJob,
+  writeJobFile
+} from "../plugins/codex/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
@@ -2186,6 +2193,115 @@ test("status --wait times out cleanly when a job is still active", () => {
   assert.equal(payload.job.id, "task-live");
   assert.equal(payload.job.status, "running");
   assert.equal(payload.waitTimedOut, true);
+});
+
+test("status --json reaps a dead running job and freezes its duration", () => {
+  const workspace = makeTempDir();
+  initGitRepo(workspace);
+  ensureStateDir(workspace);
+
+  const jobId = "task-dead";
+  const logFile = resolveJobLogFile(workspace, jobId);
+  const startedAt = new Date(Date.now() - 5000).toISOString();
+  fs.writeFileSync(logFile, `[${startedAt}] Worker started.\n`, "utf8");
+  const logMtime = fs.statSync(logFile).mtime.toISOString();
+  const deadPid = spawnDeadPid();
+  const storedRecord = {
+    id: jobId,
+    status: "running",
+    title: "Codex Task",
+    jobClass: "task",
+    pid: deadPid,
+    startedAt,
+    logFile,
+    threadId: "thr_dead",
+    request: { prompt: "finish the task" },
+    result: { partial: true }
+  };
+  writeJobFile(workspace, jobId, storedRecord);
+  upsertJob(workspace, {
+    id: jobId,
+    status: "running",
+    title: "Codex Task",
+    jobClass: "task",
+    pid: deadPid,
+    startedAt,
+    logFile
+  });
+
+  const first = run("node", [SCRIPT, "status", "--json"], {
+    cwd: workspace,
+    env: buildEnv(makeTempDir())
+  });
+
+  assert.equal(first.status, 0, first.stderr);
+  const firstPayload = JSON.parse(first.stdout);
+  assert.deepEqual(firstPayload.running, []);
+  assert.equal(firstPayload.latestFinished.status, "failed");
+  assert.equal(firstPayload.latestFinished.reaped, true);
+  assert.equal(firstPayload.latestFinished.pid, null);
+  assert.equal(firstPayload.latestFinished.completedAt, logMtime);
+  assert.equal(
+    firstPayload.latestFinished.errorMessage,
+    `Worker process ${deadPid} is no longer running; the job ended without recording a result.`
+  );
+
+  const second = run("node", [SCRIPT, "status", "--json"], {
+    cwd: workspace,
+    env: buildEnv(makeTempDir())
+  });
+
+  assert.equal(second.status, 0, second.stderr);
+  const secondPayload = JSON.parse(second.stdout);
+  assert.equal(secondPayload.latestFinished.elapsed, firstPayload.latestFinished.elapsed);
+  assert.equal(secondPayload.latestFinished.duration, firstPayload.latestFinished.duration);
+
+  const persisted = JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8"));
+  assert.equal(persisted.threadId, "thr_dead");
+  assert.deepEqual(persisted.request, { prompt: "finish the task" });
+  assert.deepEqual(persisted.result, { partial: true });
+  const log = fs.readFileSync(logFile, "utf8");
+  assert.match(log, new RegExp(`Job reaped: worker process ${deadPid} is gone; marking failed\\.`));
+  assert.equal(log.match(/Job reaped:/g)?.length, 1);
+});
+
+test("status --json leaves live and pid-less running jobs active", () => {
+  const workspace = makeTempDir();
+  initGitRepo(workspace);
+  ensureStateDir(workspace);
+
+  upsertJob(workspace, {
+    id: "task-live-pid",
+    status: "running",
+    title: "Codex Task",
+    jobClass: "task",
+    pid: process.pid,
+    startedAt: new Date(Date.now() - 1000).toISOString()
+  });
+  upsertJob(workspace, {
+    id: "task-no-pid",
+    status: "running",
+    title: "Codex Task",
+    jobClass: "task",
+    pid: null,
+    startedAt: new Date(Date.now() - 1000).toISOString()
+  });
+
+  const result = run("node", [SCRIPT, "status", "--json"], {
+    cwd: workspace,
+    env: buildEnv(makeTempDir())
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  const liveJob = payload.running.find((job) => job.id === "task-live-pid");
+  const pidlessJob = payload.running.find((job) => job.id === "task-no-pid");
+  assert.equal(liveJob.status, "running");
+  assert.equal(liveJob.pid, process.pid);
+  assert.equal(liveJob.reaped, undefined);
+  assert.equal(pidlessJob.status, "running");
+  assert.equal(pidlessJob.pid, null);
+  assert.equal(pidlessJob.reaped, undefined);
 });
 
 test("result returns the stored output for the latest finished job by default", () => {

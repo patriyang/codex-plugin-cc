@@ -65,6 +65,7 @@ const DEFAULT_TOOL_MAX_INFLIGHT_MS = 5 * 60 * 1000;
 const QUICK_TOOL_TYPES = new Set(["mcpToolCall", "webSearch", "customToolCall", "dynamicToolCall"]);
 const LONG_TOOL_TYPES = new Set(["commandExecution", "collabAgentToolCall"]);
 const TURN_INTERRUPT_TIMEOUT_MS = 5000;
+const INTERRUPT_TIMEOUT_MS = 10_000;
 
 function cleanCodexStderr(stderr) {
   return stderr
@@ -1334,10 +1335,28 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
     };
   }
 
+  const deadline = Date.now() + INTERRUPT_TIMEOUT_MS;
+  const remaining = () => Math.max(0, deadline - Date.now());
   let client = null;
   try {
-    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
-    await client.request("turn/interrupt", { threadId, turnId });
+    const connectTimeoutMs = remaining();
+    if (connectTimeoutMs === 0) {
+      throw new Error(`codex app-server initialize timed out after ${INTERRUPT_TIMEOUT_MS}ms.`);
+    }
+    client = await CodexAppServerClient.connect(cwd, {
+      reuseExistingBroker: true,
+      timeoutMs: connectTimeoutMs
+    });
+
+    const requestTimeoutMs = remaining();
+    if (requestTimeoutMs === 0) {
+      throw new Error(`codex app-server turn/interrupt timed out after ${INTERRUPT_TIMEOUT_MS}ms.`);
+    }
+    await client.request(
+      "turn/interrupt",
+      { threadId, turnId },
+      { timeoutMs: requestTimeoutMs }
+    );
     return {
       attempted: true,
       interrupted: true,
@@ -1352,7 +1371,11 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
       detail: error instanceof Error ? error.message : String(error)
     };
   } finally {
-    await client?.close().catch(() => {});
+    if (client) {
+      // Cleanup gets a fresh budget so an exhausted operation deadline does not
+      // force-destroy an otherwise healthy connection immediately.
+      await client.close({ timeoutMs: INTERRUPT_TIMEOUT_MS }).catch(() => {});
+    }
   }
 }
 

@@ -1,7 +1,42 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
+import { isProcessAlive, terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
+import { spawnDeadPid } from "./helpers.mjs";
+
+test("isProcessAlive reports the current process as alive", () => {
+  assert.equal(isProcessAlive(process.pid), true);
+});
+
+test("isProcessAlive reports a dead process as not alive", () => {
+  assert.equal(isProcessAlive(spawnDeadPid()), false);
+});
+
+test("isProcessAlive rejects non-finite and non-positive pids", () => {
+  const options = { killImpl() {} };
+
+  for (const pid of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1]) {
+    assert.equal(isProcessAlive(pid, options), false);
+  }
+});
+
+test("isProcessAlive treats a permission error as evidence the process exists", () => {
+  const error = Object.assign(new Error("not permitted"), { code: "EPERM" });
+  assert.equal(isProcessAlive(1234, {
+    killImpl() {
+      throw error;
+    }
+  }), true);
+});
+
+test("isProcessAlive fails open on an unknown error", () => {
+  const error = Object.assign(new Error("ambiguous failure"), { code: "EUNKNOWN" });
+  assert.equal(isProcessAlive(1234, {
+    killImpl() {
+      throw error;
+    }
+  }), true);
+});
 
 test("terminateProcessTree uses taskkill on Windows", () => {
   let captured = null;

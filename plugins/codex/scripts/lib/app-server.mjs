@@ -62,6 +62,7 @@ class AppServerClientBase {
     this.nextId = 1;
     this.stderr = "";
     this.closed = false;
+    this.destroyed = false;
     this.exitError = null;
     /** @type {AppServerNotificationHandler | null} */
     this.notificationHandler = null;
@@ -81,9 +82,10 @@ class AppServerClientBase {
    * @template {AppServerMethod} M
    * @param {M} method
    * @param {import("./app-server-protocol").AppServerRequestParams<M>} params
+   * @param {{ timeoutMs?: number }} [options]
    * @returns {Promise<import("./app-server-protocol").AppServerResponse<M>>}
    */
-  request(method, params) {
+  request(method, params, options = {}) {
     if (this.closed) {
       throw new Error("codex app-server client is closed.");
     }
@@ -92,7 +94,23 @@ class AppServerClientBase {
     this.nextId += 1;
 
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method });
+      const pending = {
+        resolve,
+        reject,
+        method,
+        timer: /** @type {ReturnType<typeof setTimeout> | null} */ (null)
+      };
+      if (options.timeoutMs !== undefined) {
+        pending.timer = setTimeout(() => {
+          if (this.pending.get(id) !== pending) {
+            return;
+          }
+          this.pending.delete(id);
+          reject(new Error(`codex app-server ${method} timed out after ${options.timeoutMs}ms.`));
+        }, options.timeoutMs);
+        pending.timer.unref?.();
+      }
+      this.pending.set(id, pending);
       this.sendMessage({ id, method, params });
     });
   }
@@ -139,6 +157,7 @@ class AppServerClientBase {
         return;
       }
       this.pending.delete(message.id);
+      clearTimeout(pending.timer);
 
       if (message.error) {
         pending.reject(createProtocolError(message.error.message ?? `codex app-server ${pending.method} failed.`, message.error));
@@ -169,10 +188,42 @@ class AppServerClientBase {
     this.exitError = error ?? null;
 
     for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
       pending.reject(this.exitError ?? new Error("codex app-server connection closed."));
     }
     this.pending.clear();
     this.resolveExit(undefined);
+  }
+
+  destroy(error = null) {
+    if (this.destroyed) {
+      return;
+    }
+    this.destroyed = true;
+    this.closed = true;
+    this.handleExit(error ?? new Error("codex app-server connection destroyed."));
+  }
+
+  /** @param {{ timeoutMs?: number }} [options] */
+  async waitForExit(options = {}) {
+    if (options.timeoutMs === undefined) {
+      await this.exitPromise;
+      return;
+    }
+
+    let timer = null;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        this.destroy(new Error(`codex app-server close timed out after ${options.timeoutMs}ms.`));
+        resolve(undefined);
+      }, options.timeoutMs);
+      timer.unref?.();
+    });
+    try {
+      await Promise.race([this.exitPromise, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   sendMessage(_message) {
@@ -229,9 +280,10 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     this.notify("initialized", {});
   }
 
-  async close() {
+  /** @param {{ timeoutMs?: number }} [options] */
+  async close(options = {}) {
     if (this.closed) {
-      await this.exitPromise;
+      await this.waitForExit(options);
       return;
     }
 
@@ -262,7 +314,36 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       }, 50).unref?.();
     }
 
-    await this.exitPromise;
+    await this.waitForExit(options);
+  }
+
+  destroy(error = null) {
+    if (this.destroyed) {
+      return;
+    }
+
+    if (this.readline) {
+      this.readline.close();
+    }
+    if (this.proc) {
+      if (this.proc.exitCode === null && this.proc.signalCode === null) {
+        try {
+          if (process.platform === "win32") {
+            terminateProcessTree(this.proc.pid);
+          } else {
+            this.proc.kill("SIGKILL");
+          }
+        } catch {
+          // Forced teardown is best-effort; destroying stdio and unref'ing the
+          // child below still releases this client's handles.
+        }
+      }
+      this.proc.stdin?.destroy();
+      this.proc.stdout?.destroy();
+      this.proc.stderr?.destroy();
+      this.proc.unref();
+    }
+    super.destroy(error);
   }
 
   sendMessage(message) {
@@ -309,9 +390,10 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
     this.notify("initialized", {});
   }
 
-  async close() {
+  /** @param {{ timeoutMs?: number }} [options] */
+  async close(options = {}) {
     if (this.closed) {
-      await this.exitPromise;
+      await this.waitForExit(options);
       return;
     }
 
@@ -319,7 +401,15 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
     if (this.socket) {
       this.socket.end();
     }
-    await this.exitPromise;
+    await this.waitForExit(options);
+  }
+
+  destroy(error = null) {
+    if (this.destroyed) {
+      return;
+    }
+    this.socket?.destroy();
+    super.destroy(error);
   }
 
   sendMessage(message) {
@@ -333,6 +423,10 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
 }
 
 export class CodexAppServerClient {
+  /**
+   * @param {string} cwd
+   * @param {CodexAppServerClientOptions} [options]
+   */
   static async connect(cwd, options = {}) {
     let brokerEndpoint = null;
     if (!options.disableBroker) {
@@ -348,7 +442,32 @@ export class CodexAppServerClient {
     const client = brokerEndpoint
       ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint })
       : new SpawnedCodexAppServerClient(cwd, options);
-    await client.initialize();
+    if (options.timeoutMs === undefined) {
+      try {
+        await client.initialize();
+      } catch (error) {
+        client.destroy(error);
+        throw error;
+      }
+      return client;
+    }
+
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error(`codex app-server initialize timed out after ${options.timeoutMs}ms.`);
+        reject(error);
+      }, options.timeoutMs);
+      timer.unref?.();
+    });
+    try {
+      await Promise.race([client.initialize(), timeout]);
+    } catch (error) {
+      client.destroy(error);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
     return client;
   }
 }

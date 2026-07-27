@@ -16,6 +16,14 @@ const readline = require("node:readline");
 	const STATE_PATH = ${JSON.stringify(statePath)};
 	const BEHAVIOR = ${JSON.stringify(behavior)};
 	const interruptibleTurns = new Map();
+	if (BEHAVIOR === "close-stalls") {
+	  const keepAlive = setInterval(() => {}, 1000);
+	  process.on("SIGTERM", () => {});
+	  setTimeout(() => {
+	    clearInterval(keepAlive);
+	    process.exit(0);
+	  }, 500);
+	}
 
 	function loadState() {
 	  if (!fs.existsSync(STATE_PATH)) {
@@ -272,6 +280,7 @@ if (args[0] !== "app-server") {
 }
 const bootState = loadState();
 bootState.appServerStarts = (bootState.appServerStarts || 0) + 1;
+bootState.appServerPid = process.pid;
 saveState(bootState);
 
 const rl = readline.createInterface({ input: process.stdin });
@@ -286,6 +295,9 @@ rl.on("line", (line) => {
   try {
     switch (message.method) {
       case "initialize":
+        if (BEHAVIOR === "initialize-never-replies") {
+          break;
+        }
         state.capabilities = message.params.capabilities || null;
         saveState(state);
         send({ id: message.id, result: { userAgent: "fake-codex-app-server" } });
@@ -330,6 +342,9 @@ rl.on("line", (line) => {
       }
 
       case "thread/list": {
+        if (BEHAVIOR === "request-never-replies") {
+          break;
+        }
         let threads = state.threads.slice();
         if (message.params.cwd) {
           threads = threads.filter((thread) => thread.cwd === message.params.cwd);

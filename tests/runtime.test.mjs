@@ -187,6 +187,36 @@ test("app-server request resolves when the peer replies before the timeout", asy
   assert.deepEqual(result, { data: [], nextCursor: null });
 });
 
+test("app-server connect timeout destroys a client whose initialize never replies", async () => {
+  const workspace = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "initialize-never-replies");
+
+  await assert.rejects(
+    CodexAppServerClient.connect(workspace, {
+      disableBroker: true,
+      env: buildEnv(binDir),
+      timeoutMs: 25
+    }),
+    /codex app-server initialize timed out after 25ms\./
+  );
+});
+
+test("app-server close timeout destroys a client whose transport does not close", async () => {
+  const workspace = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "close-stalls");
+  const client = await CodexAppServerClient.connect(workspace, {
+    disableBroker: true,
+    env: buildEnv(binDir)
+  });
+
+  const startedAt = Date.now();
+  await client.close({ timeoutMs: 25 });
+
+  assert.ok(Date.now() - startedAt < 250);
+});
+
 test("setup reports ready when fake codex is installed and authenticated", () => {
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -3071,6 +3101,71 @@ test("cancel completes and persists cancellation when turn interrupt never repli
   assert.equal(payload.turnInterruptAttempted, true);
   assert.equal(payload.turnInterrupted, false);
   assert.match(payload.turnInterruptDetail, /timed out after 10000ms/);
+  const stored = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
+  assert.equal(stored.status, "cancelled");
+});
+
+test("cancel completes and persists cancellation when app-server initialize never replies", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  ensureStateDir(repo);
+
+  const endpoint = await startTestBroker(t, () => {});
+  const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: repo,
+    detached: true,
+    stdio: "ignore"
+  });
+  sleeper.unref();
+  t.after(() => {
+    try {
+      process.kill(-sleeper.pid, "SIGKILL");
+    } catch {
+      try {
+        process.kill(sleeper.pid, "SIGKILL");
+      } catch {
+        // Ignore missing process.
+      }
+    }
+  });
+
+  const jobId = "task-initialize-timeout";
+  const logFile = resolveJobLogFile(repo, jobId);
+  fs.writeFileSync(logFile, "", "utf8");
+  const job = {
+    id: jobId,
+    status: "running",
+    title: "Codex Task",
+    jobClass: "task",
+    pid: sleeper.pid,
+    logFile,
+    threadId: "thr_initialize_timeout",
+    turnId: "turn_initialize_timeout"
+  };
+  writeJobFile(repo, jobId, job);
+  upsertJob(repo, job);
+
+  const startedAt = Date.now();
+  const child = spawn(process.execPath, [SCRIPT, "cancel", jobId, "--json"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_COMPANION_APP_SERVER_ENDPOINT: endpoint
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const result = await waitForChildExit(child, 20000);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.signal, null);
+  assert.ok(Date.now() - startedAt < 20000);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.status, "cancelled");
+  assert.equal(payload.turnInterruptAttempted, true);
+  assert.equal(payload.turnInterrupted, false);
+  assert.match(payload.turnInterruptDetail, /initialize timed out after 10000ms/);
   const stored = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
   assert.equal(stored.status, "cancelled");
 });

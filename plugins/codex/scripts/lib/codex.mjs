@@ -67,19 +67,6 @@ const LONG_TOOL_TYPES = new Set(["commandExecution", "collabAgentToolCall"]);
 const TURN_INTERRUPT_TIMEOUT_MS = 5000;
 const INTERRUPT_TIMEOUT_MS = 10_000;
 
-async function withTimeout(promise, timeoutMs, message) {
-  let timer = null;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-    timer.unref?.();
-  });
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 function cleanCodexStderr(stderr) {
   return stderr
     .split(/\r?\n/)
@@ -1350,17 +1337,14 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
 
   let client = null;
   try {
-    await withTimeout(
-      (async () => {
-        client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
-        await client.request(
-          "turn/interrupt",
-          { threadId, turnId },
-          { timeoutMs: INTERRUPT_TIMEOUT_MS }
-        );
-      })(),
-      INTERRUPT_TIMEOUT_MS,
-      `codex app-server turn interrupt timed out after ${INTERRUPT_TIMEOUT_MS}ms.`
+    client = await CodexAppServerClient.connect(cwd, {
+      reuseExistingBroker: true,
+      timeoutMs: INTERRUPT_TIMEOUT_MS
+    });
+    await client.request(
+      "turn/interrupt",
+      { threadId, turnId },
+      { timeoutMs: INTERRUPT_TIMEOUT_MS }
     );
     return {
       attempted: true,
@@ -1377,11 +1361,7 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
     };
   } finally {
     if (client) {
-      await withTimeout(
-        client.close(),
-        INTERRUPT_TIMEOUT_MS,
-        `codex app-server close timed out after ${INTERRUPT_TIMEOUT_MS}ms.`
-      ).catch(() => {});
+      await client.close({ timeoutMs: INTERRUPT_TIMEOUT_MS }).catch(() => {});
     }
   }
 }

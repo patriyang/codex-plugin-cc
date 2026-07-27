@@ -3100,7 +3100,7 @@ test("cancel completes and persists cancellation when turn interrupt never repli
   assert.equal(payload.status, "cancelled");
   assert.equal(payload.turnInterruptAttempted, true);
   assert.equal(payload.turnInterrupted, false);
-  assert.match(payload.turnInterruptDetail, /timed out after 10000ms/);
+  assert.match(payload.turnInterruptDetail, /timed out after \d+ms/);
   const stored = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
   assert.equal(stored.status, "cancelled");
 });
@@ -3165,7 +3165,80 @@ test("cancel completes and persists cancellation when app-server initialize neve
   assert.equal(payload.status, "cancelled");
   assert.equal(payload.turnInterruptAttempted, true);
   assert.equal(payload.turnInterrupted, false);
-  assert.match(payload.turnInterruptDetail, /initialize timed out after 10000ms/);
+  assert.match(payload.turnInterruptDetail, /initialize timed out after \d+ms/);
+  const stored = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
+  assert.equal(stored.status, "cancelled");
+});
+
+test("cancel shares one timeout across slow initialize and turn interrupt", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  ensureStateDir(repo);
+
+  let interruptSeen = false;
+  const endpoint = await startTestBroker(t, (socket, message) => {
+    if (message.method === "initialize") {
+      setTimeout(() => {
+        if (!socket.destroyed) {
+          socket.write(`${JSON.stringify({ id: message.id, result: {} })}\n`);
+        }
+      }, 7500);
+    } else if (message.method === "turn/interrupt") {
+      interruptSeen = true;
+    }
+  });
+  const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: repo,
+    detached: true,
+    stdio: "ignore"
+  });
+  sleeper.unref();
+  t.after(() => {
+    try {
+      process.kill(-sleeper.pid, "SIGKILL");
+    } catch {
+      try {
+        process.kill(sleeper.pid, "SIGKILL");
+      } catch {
+        // Ignore missing process.
+      }
+    }
+  });
+
+  const jobId = "task-shared-interrupt-timeout";
+  const logFile = resolveJobLogFile(repo, jobId);
+  fs.writeFileSync(logFile, "", "utf8");
+  const job = {
+    id: jobId,
+    status: "running",
+    title: "Codex Task",
+    jobClass: "task",
+    pid: sleeper.pid,
+    logFile,
+    threadId: "thr_shared_timeout",
+    turnId: "turn_shared_timeout"
+  };
+  writeJobFile(repo, jobId, job);
+  upsertJob(repo, job);
+
+  const startedAt = Date.now();
+  const child = spawn(process.execPath, [SCRIPT, "cancel", jobId, "--json"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_COMPANION_APP_SERVER_ENDPOINT: endpoint
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const result = await waitForChildExit(child, 15000);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.signal, null);
+  assert.ok(Date.now() - startedAt < 15000);
+  assert.equal(interruptSeen, true);
+  assert.equal(JSON.parse(result.stdout).status, "cancelled");
   const stored = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
   assert.equal(stored.status, "cancelled");
 });

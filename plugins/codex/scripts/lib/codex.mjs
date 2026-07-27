@@ -1335,16 +1335,27 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
     };
   }
 
+  const deadline = Date.now() + INTERRUPT_TIMEOUT_MS;
+  const remaining = () => Math.max(0, deadline - Date.now());
   let client = null;
   try {
+    const connectTimeoutMs = remaining();
+    if (connectTimeoutMs === 0) {
+      throw new Error(`codex app-server initialize timed out after ${INTERRUPT_TIMEOUT_MS}ms.`);
+    }
     client = await CodexAppServerClient.connect(cwd, {
       reuseExistingBroker: true,
-      timeoutMs: INTERRUPT_TIMEOUT_MS
+      timeoutMs: connectTimeoutMs
     });
+
+    const requestTimeoutMs = remaining();
+    if (requestTimeoutMs === 0) {
+      throw new Error(`codex app-server turn/interrupt timed out after ${INTERRUPT_TIMEOUT_MS}ms.`);
+    }
     await client.request(
       "turn/interrupt",
       { threadId, turnId },
-      { timeoutMs: INTERRUPT_TIMEOUT_MS }
+      { timeoutMs: requestTimeoutMs }
     );
     return {
       attempted: true,
@@ -1361,6 +1372,8 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
     };
   } finally {
     if (client) {
+      // Cleanup gets a fresh budget so an exhausted operation deadline does not
+      // force-destroy an otherwise healthy connection immediately.
       await client.close({ timeoutMs: INTERRUPT_TIMEOUT_MS }).catch(() => {});
     }
   }

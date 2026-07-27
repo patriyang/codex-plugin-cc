@@ -1376,15 +1376,32 @@ test("task records a signal-specific failure before exiting on SIGTERM", async (
     child.once("error", reject);
     child.once("exit", (code, signal) => resolve({ code, signal }));
   });
+  const waitForExit = (timeoutMs, message) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      exited.then(
+        (exit) => {
+          clearTimeout(timer);
+          resolve(exit);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        }
+      );
+    });
 
   t.after(async () => {
     if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM");
+      child.kill("SIGKILL");
     }
-    await exited.catch(() => {});
-    const session = loadBrokerSession(repo);
-    if (session?.endpoint) {
-      await sendBrokerShutdown(session.endpoint).catch(() => {});
+    try {
+      await waitForExit(5000, "child did not exit after SIGKILL during cleanup").catch(() => {});
+    } finally {
+      const session = loadBrokerSession(repo);
+      if (session?.endpoint) {
+        await sendBrokerShutdown(session.endpoint).catch(() => {});
+      }
     }
   });
 
@@ -1394,14 +1411,26 @@ test("task records a signal-specific failure before exiting on SIGTERM", async (
     if (!fs.existsSync(stateFile)) {
       return null;
     }
-    const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    const serializedState = fs.readFileSync(stateFile, "utf8");
+    let state;
+    try {
+      state = JSON.parse(serializedState);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        return null;
+      }
+      throw error;
+    }
     return state.jobs.find(
       (job) => job.status === "running" && job.threadId && job.turnId
     ) ?? null;
   }, { timeoutMs: 15000 });
 
   child.kill("SIGTERM");
-  const exit = await exited;
+  const exit = await waitForExit(
+    10000,
+    "child did not exit after SIGTERM — the signal handler did not re-raise"
+  );
   assert.equal(exit.code, null);
   assert.equal(exit.signal, "SIGTERM");
 

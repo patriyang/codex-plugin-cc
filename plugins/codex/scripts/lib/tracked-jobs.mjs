@@ -190,6 +190,8 @@ export async function runTrackedJob(job, runner, options = {}) {
       );
     } finally {
       process.removeListener(signal, handler);
+      // runTrackedJob owns the process's sole listener for this signal; after removal,
+      // re-sending it restores Node's default termination behavior.
       process.kill(process.pid, signal);
     }
   };

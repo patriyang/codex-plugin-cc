@@ -2129,7 +2129,7 @@ test("adversarial review rejects staged-only scope to match review target select
   assert.match(result.stderr, /Use one of: auto, working-tree, branch, or pass --base <ref>/i);
 });
 
-test("review accepts --background while still running as a tracked review job", () => {
+test("review --background still runs in the foreground and returns the full result", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -2145,6 +2145,10 @@ test("review accepts --background while still running as a tracked review job", 
   });
 
   assert.equal(launched.status, 0, launched.stderr);
+  assert.match(
+    launched.stderr,
+    /\[codex\] --background does not background the review; the script runs it in the foreground and returns the full result\. Detaching is the caller's job \(Claude Code: run_in_background\); there is no job id to poll\./
+  );
   const launchPayload = JSON.parse(launched.stdout);
   assert.equal(launchPayload.review, "Review");
   assert.match(launchPayload.codex.stdout, /No material issues found/);
@@ -2158,6 +2162,25 @@ test("review accepts --background while still running as a tracked review job", 
   assert.match(status.stdout, /# Codex Status/);
   assert.match(status.stdout, /Codex Review/);
   assert.match(status.stdout, /completed/);
+});
+
+test("review rejects --wait and --background together", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const result = run("node", [SCRIPT, "review", "--wait", "--background"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Choose either --wait or --background\./);
 });
 
 test("status shows phases, hints, and the latest finished job", () => {

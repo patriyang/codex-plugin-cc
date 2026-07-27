@@ -758,6 +758,15 @@ async function handleReviewCommand(argv, config) {
     }
   });
 
+  if (options.wait && options.background) {
+    throw new Error("Choose either --wait or --background.");
+  }
+  if (options.background) {
+    process.stderr.write(
+      "[codex] --background does not background the review; the script runs it in the foreground and returns the full result. Detaching is the caller's job (Claude Code: run_in_background); there is no job id to poll.\n"
+    );
+  }
+
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const focusText = positionals.join(" ").trim();

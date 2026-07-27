@@ -1357,6 +1357,67 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   assert.match(resultPayload.storedJob.rendered, /Handled the requested task/);
 });
 
+test("task records a signal-specific failure before exiting on SIGTERM", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "interruptible-slow-task");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const child = spawn(process.execPath, [SCRIPT, "task", "--json", "keep working until interrupted"], {
+    cwd: repo,
+    env,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const exited = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+    }
+    await exited.catch(() => {});
+    const session = loadBrokerSession(repo);
+    if (session?.endpoint) {
+      await sendBrokerShutdown(session.endpoint).catch(() => {});
+    }
+  });
+
+  const stateDir = resolveStateDir(repo);
+  const runningJob = await waitFor(() => {
+    const stateFile = path.join(stateDir, "state.json");
+    if (!fs.existsSync(stateFile)) {
+      return null;
+    }
+    const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    return state.jobs.find(
+      (job) => job.status === "running" && job.threadId && job.turnId
+    ) ?? null;
+  }, { timeoutMs: 15000 });
+
+  child.kill("SIGTERM");
+  const exit = await exited;
+  assert.equal(exit.code, null);
+  assert.equal(exit.signal, "SIGTERM");
+
+  const storedJob = JSON.parse(
+    fs.readFileSync(resolveJobFile(repo, runningJob.id), "utf8")
+  );
+  assert.equal(storedJob.status, "failed");
+  assert.equal(storedJob.phase, "failed");
+  assert.equal(storedJob.pid, null);
+  assert.equal(storedJob.errorMessage, "Job terminated by signal SIGTERM.");
+  assert.ok(storedJob.completedAt);
+  assert.equal(storedJob.threadId, runningJob.threadId);
+  assert.equal(storedJob.turnId, runningJob.turnId);
+  assert.match(fs.readFileSync(storedJob.logFile, "utf8"), /signal SIGTERM/i);
+});
+
 test("task watchdog interrupts a hung tool turn and fails the job instead of hanging", async () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

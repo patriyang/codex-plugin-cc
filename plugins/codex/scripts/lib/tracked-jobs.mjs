@@ -151,6 +151,54 @@ export async function runTrackedJob(job, runner, options = {}) {
   writeJobFile(job.workspaceRoot, job.id, runningRecord);
   upsertJob(job.workspaceRoot, runningRecord);
 
+  let handlingSignal = false;
+  const signalHandlers = new Map();
+  const handleSignal = (signal) => {
+    const handler = signalHandlers.get(signal);
+    if (handlingSignal) {
+      process.removeListener(signal, handler);
+      process.kill(process.pid, signal);
+      return;
+    }
+    handlingSignal = true;
+
+    try {
+      const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
+      if (existing.status === "running") {
+        const completedAt = nowIso();
+        const errorMessage = `Job terminated by signal ${signal}.`;
+        writeJobFile(job.workspaceRoot, job.id, {
+          ...existing,
+          status: "failed",
+          phase: "failed",
+          pid: null,
+          completedAt,
+          errorMessage
+        });
+        upsertJob(job.workspaceRoot, {
+          id: job.id,
+          status: "failed",
+          phase: "failed",
+          pid: null,
+          completedAt,
+          errorMessage
+        });
+      }
+      appendLogLine(
+        options.logFile ?? job.logFile ?? existing.logFile ?? null,
+        `Job terminated by signal ${signal}.`
+      );
+    } finally {
+      process.removeListener(signal, handler);
+      process.kill(process.pid, signal);
+    }
+  };
+  for (const signal of ["SIGTERM", "SIGINT"]) {
+    const handler = () => handleSignal(signal);
+    signalHandlers.set(signal, handler);
+    process.on(signal, handler);
+  }
+
   try {
     const execution = await runner();
     const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
@@ -200,5 +248,9 @@ export async function runTrackedJob(job, runner, options = {}) {
       completedAt
     });
     throw error;
+  } finally {
+    for (const [signal, handler] of signalHandlers) {
+      process.removeListener(signal, handler);
+    }
   }
 }

@@ -330,6 +330,9 @@ rl.on("line", (line) => {
       }
 
       case "thread/list": {
+        if (BEHAVIOR === "request-never-replies") {
+          break;
+        }
         let threads = state.threads.slice();
         if (message.params.cwd) {
           threads = threads.filter((thread) => thread.cwd === message.params.cwd);

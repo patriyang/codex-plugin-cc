@@ -24,7 +24,7 @@ import {
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
-import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
+import { binaryAvailable, isProcessAlive, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
   generateJobId,
@@ -1035,7 +1035,26 @@ async function handleCancel(argv) {
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
 
-  const interrupt = await interruptAppServerTurn(cwd, { threadId, turnId });
+  let interrupt;
+  if (Number.isFinite(job.pid) && !isProcessAlive(job.pid)) {
+    interrupt = {
+      attempted: false,
+      interrupted: false,
+      transport: null,
+      detail: "worker process is gone"
+    };
+  } else {
+    try {
+      interrupt = await interruptAppServerTurn(cwd, { threadId, turnId });
+    } catch (error) {
+      interrupt = {
+        attempted: true,
+        interrupted: false,
+        transport: null,
+        detail: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
   if (interrupt.attempted) {
     appendLogLine(
       job.logFile,
@@ -1077,7 +1096,8 @@ async function handleCancel(argv) {
     status: "cancelled",
     title: job.title,
     turnInterruptAttempted: interrupt.attempted,
-    turnInterrupted: interrupt.interrupted
+    turnInterrupted: interrupt.interrupted,
+    turnInterruptDetail: interrupt.detail
   };
 
   outputCommandResult(payload, renderCancelReport(nextJob), options.json);

@@ -17,6 +17,7 @@ import {
   waitForBrokerEndpoint
 } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
+import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import {
   ensureStateDir,
   resolveJobFile,
@@ -45,6 +46,71 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   throw new Error("Timed out waiting for condition.");
+}
+
+async function startTestBroker(t, onRequest) {
+  const socketPath = path.join(makeTempDir(), "app-server.sock");
+  const sockets = new Set();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.setEncoding("utf8");
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line.trim()) {
+          onRequest(socket, JSON.parse(line));
+        }
+        newlineIndex = buffer.indexOf("\n");
+      }
+    });
+    socket.on("close", () => {
+      sockets.delete(socket);
+    });
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  return `unix:${socketPath}`;
+}
+
+function waitForChildExit(child, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`Child process did not exit within ${timeoutMs}ms.`));
+    }, timeoutMs);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, stdout, stderr });
+    });
+  });
 }
 
 after(async () => {
@@ -88,6 +154,37 @@ after(async () => {
         : null
     });
   }
+});
+
+test("app-server request times out when the peer never replies", async (t) => {
+  const workspace = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "request-never-replies");
+  const client = await CodexAppServerClient.connect(workspace, {
+    disableBroker: true,
+    env: buildEnv(binDir)
+  });
+  t.after(() => client.close());
+
+  await assert.rejects(
+    client.request("thread/list", {}, { timeoutMs: 25 }),
+    /codex app-server thread\/list timed out after 25ms\./
+  );
+});
+
+test("app-server request resolves when the peer replies before the timeout", async (t) => {
+  const workspace = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  const client = await CodexAppServerClient.connect(workspace, {
+    disableBroker: true,
+    env: buildEnv(binDir)
+  });
+  t.after(() => client.close());
+
+  const result = await client.request("thread/list", {}, { timeoutMs: 1000 });
+
+  assert.deepEqual(result, { data: [], nextCursor: null });
 });
 
 test("setup reports ready when fake codex is installed and authenticated", () => {
@@ -2789,6 +2886,62 @@ test("cancel with a job id can still target an active job from another Claude se
   assert.equal(state.jobs[0].status, "cancelled");
 });
 
+test("cancel skips turn interrupt when the recorded pid dies after resolution", () => {
+  const workspace = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  ensureStateDir(workspace);
+
+  const jobId = "task-no-worker";
+  const workerPid = 2_147_483_647;
+  const processProbeHook = path.join(makeTempDir(), "process-probe.cjs");
+  fs.writeFileSync(
+    processProbeHook,
+    `const originalKill = process.kill;\n` +
+      `let probes = 0;\n` +
+      `process.kill = function (pid, signal) {\n` +
+      `  if (pid === ${workerPid} && signal === 0) {\n` +
+      `    probes += 1;\n` +
+      `    if (probes === 1) return true;\n` +
+      `    const error = new Error("kill ESRCH");\n` +
+      `    error.code = "ESRCH";\n` +
+      `    throw error;\n` +
+      `  }\n` +
+      `  return originalKill.call(process, pid, signal);\n` +
+      `};\n`,
+    "utf8"
+  );
+  const logFile = resolveJobLogFile(workspace, jobId);
+  fs.writeFileSync(logFile, "", "utf8");
+  const job = {
+    id: jobId,
+    status: "running",
+    title: "Codex Task",
+    jobClass: "task",
+    pid: workerPid,
+    logFile,
+    threadId: "thr_gone",
+    turnId: "turn_gone"
+  };
+  writeJobFile(workspace, jobId, job);
+  upsertJob(workspace, job);
+
+  const cancel = run("node", [SCRIPT, "cancel", jobId, "--json"], {
+    cwd: workspace,
+    env: {
+      ...buildEnv(binDir),
+      NODE_OPTIONS: `--require=${processProbeHook}`
+    }
+  });
+
+  assert.equal(cancel.status, 0, cancel.stderr);
+  const payload = JSON.parse(cancel.stdout);
+  assert.equal(payload.status, "cancelled");
+  assert.equal(payload.turnInterruptAttempted, false);
+  assert.equal(payload.turnInterrupted, false);
+  assert.equal(payload.turnInterruptDetail, "worker process is gone");
+});
+
 test("cancel sends turn interrupt to the shared app-server before killing a brokered task", async () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -2851,6 +3004,75 @@ test("cancel sends turn interrupt to the shared app-server before killing a brok
     })
   });
   assert.equal(cleanup.status, 0, cleanup.stderr);
+});
+
+test("cancel completes and persists cancellation when turn interrupt never replies", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  ensureStateDir(repo);
+
+  const endpoint = await startTestBroker(t, (socket, message) => {
+    if (message.method === "initialize") {
+      socket.write(`${JSON.stringify({ id: message.id, result: {} })}\n`);
+    }
+  });
+  const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: repo,
+    detached: true,
+    stdio: "ignore"
+  });
+  sleeper.unref();
+  t.after(() => {
+    try {
+      process.kill(-sleeper.pid, "SIGKILL");
+    } catch {
+      try {
+        process.kill(sleeper.pid, "SIGKILL");
+      } catch {
+        // Ignore missing process.
+      }
+    }
+  });
+
+  const jobId = "task-interrupt-timeout";
+  const logFile = resolveJobLogFile(repo, jobId);
+  fs.writeFileSync(logFile, "", "utf8");
+  const job = {
+    id: jobId,
+    status: "running",
+    title: "Codex Task",
+    jobClass: "task",
+    pid: sleeper.pid,
+    logFile,
+    threadId: "thr_timeout",
+    turnId: "turn_timeout"
+  };
+  writeJobFile(repo, jobId, job);
+  upsertJob(repo, job);
+
+  const startedAt = Date.now();
+  const child = spawn(process.execPath, [SCRIPT, "cancel", jobId, "--json"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_COMPANION_APP_SERVER_ENDPOINT: endpoint
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const result = await waitForChildExit(child, 20000);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.signal, null);
+  assert.ok(Date.now() - startedAt < 20000);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.status, "cancelled");
+  assert.equal(payload.turnInterruptAttempted, true);
+  assert.equal(payload.turnInterrupted, false);
+  assert.match(payload.turnInterruptDetail, /timed out after 10000ms/);
+  const stored = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
+  assert.equal(stored.status, "cancelled");
 });
 
 test("session end fully cleans up jobs for the ending session", async (t) => {

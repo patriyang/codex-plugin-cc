@@ -33,7 +33,7 @@ test("review command auto-decides execution mode and uses background Bash while 
   assert.match(source, /Treat untracked files or directories as reviewable work/i);
   assert.match(source, /Choose the foreground only when the review is clearly tiny, roughly 1-2 files total/i);
   assert.match(source, /In every other case, including unclear size, choose the background/i);
-  assert.match(source, /The companion script parses `--wait` and `--background`/i);
+  assert.match(source, /The companion script[^.\n]*does not itself background the review/i);
   assert.match(source, /Claude Code's `Bash\(..., run_in_background: true\)` is what actually detaches the run/i);
   assert.match(source, /When in doubt, run the review/i);
   assert.match(source, /Tell the user which mode you chose/i);
@@ -62,7 +62,7 @@ test("adversarial review command auto-decides execution mode and uses background
   assert.match(source, /Treat untracked files or directories as reviewable work/i);
   assert.match(source, /Choose the foreground only when the scoped review is clearly tiny, roughly 1-2 files total/i);
   assert.match(source, /In every other case, including unclear size, choose the background/i);
-  assert.match(source, /The companion script parses `--wait` and `--background`/i);
+  assert.match(source, /The companion script[^.\n]*does not itself background the review/i);
   assert.match(source, /Claude Code's `Bash\(..., run_in_background: true\)` is what actually detaches the run/i);
   assert.match(source, /When in doubt, run the review/i);
   assert.match(source, /Tell the user which mode you chose/i);
@@ -94,7 +94,7 @@ test("deep review command auto-decides execution mode and uses background Bash w
   assert.match(source, /Treat untracked files or directories as reviewable work/i);
   assert.match(source, /Choose the foreground only when the scoped review is clearly tiny, roughly 1-2 files total/i);
   assert.match(source, /In every other case, including unclear size, choose the background/i);
-  assert.match(source, /The companion script parses `--wait` and `--background`/i);
+  assert.match(source, /The companion script[^.\n]*does not itself background the review/i);
   assert.match(source, /Claude Code's `Bash\(..., run_in_background: true\)` is what actually detaches the run/i);
   assert.match(source, /When in doubt, run the review/i);
   assert.match(source, /Tell the user which mode you chose/i);

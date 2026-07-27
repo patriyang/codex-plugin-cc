@@ -334,8 +334,8 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
             this.proc.kill("SIGKILL");
           }
         } catch {
-          // Forced teardown is best-effort; destroying and unref'ing stdio below
-          // still releases this client's handles.
+          // Forced teardown is best-effort; destroying stdio and unref'ing the
+          // child below still releases this client's handles.
         }
       }
       this.proc.stdin?.destroy();
@@ -443,7 +443,12 @@ export class CodexAppServerClient {
       ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint })
       : new SpawnedCodexAppServerClient(cwd, options);
     if (options.timeoutMs === undefined) {
-      await client.initialize();
+      try {
+        await client.initialize();
+      } catch (error) {
+        client.destroy(error);
+        throw error;
+      }
       return client;
     }
 
@@ -452,12 +457,14 @@ export class CodexAppServerClient {
       timer = setTimeout(() => {
         const error = new Error(`codex app-server initialize timed out after ${options.timeoutMs}ms.`);
         reject(error);
-        client.destroy(error);
       }, options.timeoutMs);
       timer.unref?.();
     });
     try {
       await Promise.race([client.initialize(), timeout]);
+    } catch (error) {
+      client.destroy(error);
+      throw error;
     } finally {
       clearTimeout(timer);
     }

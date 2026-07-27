@@ -48,6 +48,17 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
   throw new Error("Timed out waiting for condition.");
 }
 
+async function waitForProcessExit(pid) {
+  await waitFor(() => {
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (error) {
+      return error?.code === "ESRCH";
+    }
+  });
+}
+
 async function startTestBroker(t, onRequest) {
   const socketPath = path.join(makeTempDir(), "app-server.sock");
   const sockets = new Set();
@@ -190,16 +201,20 @@ test("app-server request resolves when the peer replies before the timeout", asy
 test("app-server connect timeout destroys a client whose initialize never replies", async () => {
   const workspace = makeTempDir();
   const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir, "initialize-never-replies");
 
   await assert.rejects(
     CodexAppServerClient.connect(workspace, {
       disableBroker: true,
       env: buildEnv(binDir),
-      timeoutMs: 25
+      timeoutMs: 250
     }),
-    /codex app-server initialize timed out after 25ms\./
+    /codex app-server initialize timed out after 250ms\./
   );
+
+  const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  await waitForProcessExit(fakeState.appServerPid);
 });
 
 test("app-server close timeout destroys a client whose transport does not close", async () => {
@@ -210,11 +225,36 @@ test("app-server close timeout destroys a client whose transport does not close"
     disableBroker: true,
     env: buildEnv(binDir)
   });
+  const childPid = client.proc.pid;
 
   const startedAt = Date.now();
   await client.close({ timeoutMs: 25 });
 
   assert.ok(Date.now() - startedAt < 250);
+  await waitForProcessExit(childPid);
+});
+
+test("app-server connect destroys broker transport when initialize rejects", async (t) => {
+  const workspace = makeTempDir();
+  let connectionClosed = false;
+  const endpoint = await startTestBroker(t, (socket, message) => {
+    if (message.method === "initialize") {
+      socket.once("close", () => {
+        connectionClosed = true;
+      });
+      socket.write(`${JSON.stringify({
+        id: message.id,
+        error: { code: -32000, message: "initialize rejected" }
+      })}\n`);
+    }
+  });
+
+  await assert.rejects(
+    CodexAppServerClient.connect(workspace, { brokerEndpoint: endpoint }),
+    /initialize rejected/
+  );
+  await waitFor(() => connectionClosed);
+  assert.equal(connectionClosed, true);
 });
 
 test("setup reports ready when fake codex is installed and authenticated", () => {

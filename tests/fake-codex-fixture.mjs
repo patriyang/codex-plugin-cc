@@ -280,6 +280,7 @@ if (args[0] !== "app-server") {
 }
 const bootState = loadState();
 bootState.appServerStarts = (bootState.appServerStarts || 0) + 1;
+bootState.appServerPid = process.pid;
 saveState(bootState);
 
 const rl = readline.createInterface({ input: process.stdin });

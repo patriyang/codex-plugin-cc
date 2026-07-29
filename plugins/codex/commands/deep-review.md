@@ -58,5 +58,11 @@ Bash({
   run_in_background: true
 })
 ```
-- Do not call `BashOutput` or wait for completion in this turn.
-- After launching the command, tell the user: "Codex deep review started in the background. Check `/codex:status` for progress."
+- Do not call `BashOutput` in a polling loop while the review runs, and do not narrate progress.
+- After launching the command, tell the user in one line that the review is running in the background, then end the turn.
+
+Follow through when the background run exits:
+- Claude Code re-invokes you when a `run_in_background` command exits. That re-invocation is the second half of this command, not a fresh request: read the finished output with `BashOutput` and present the review immediately, in that same turn.
+- Never wait for the user to ask "is it done?", "continue", or "what did Codex say?". Dispatching is the middle of the work; presenting the findings is the end of it.
+- If the run exited non-zero, or the output is empty or malformed, say so and surface the most actionable stderr lines. Do not let a failed review disappear silently.
+- If the background shell is still running the next time you act, keep waiting on it. Do not hand the user a "check `/codex:status`" checkpoint in place of the review, and do not re-dispatch a second review over the same diff.

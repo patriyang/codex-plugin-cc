@@ -298,3 +298,46 @@ test("setup command can offer Codex install and still points users to codex logi
   assert.match(readme, /\/codex:setup --enable-review-gate/);
   assert.match(readme, /\/codex:setup --disable-review-gate/);
 });
+
+test("dispatch is never a stopping point: every async surface pins the follow-through contract", () => {
+  // Regression for the "dispatched, then ended the turn" failure mode: the
+  // background flows used to end at "Check /codex:status for progress", which
+  // trained the controller to hand the user a checkpoint instead of the result.
+  for (const file of ["commands/review.md", "commands/adversarial-review.md", "commands/deep-review.md"]) {
+    const source = read(file);
+    assert.match(source, /Claude Code re-invokes you when a `run_in_background` command exits/i);
+    assert.match(source, /read the finished output with `BashOutput` and present the review immediately/i);
+    assert.match(source, /Never wait for the user to ask "is it done\?", "continue", or "what did Codex say\?"/i);
+    assert.match(source, /keep waiting on it/i);
+    // The old dead-end phrasing must not come back.
+    assert.doesNotMatch(source, /Check `\/codex:status` for progress/);
+  }
+
+  const rescue = read("commands/rescue.md");
+  assert.match(rescue, /Background is a way to keep working while Codex runs, not a way to end the work/i);
+  assert.match(rescue, /Do not close out a turn with a dispatched-but-unread rescue/i);
+
+  const implement = read("commands/implement.md");
+  assert.match(implement, /## Dispatch and Follow-Through/);
+  assert.match(implement, /A foreground `Bash` call caps at 600000 ms/);
+  assert.match(implement, /\*\*"Dispatched" is never a stopping point\.\*\*/);
+  assert.match(implement, /two live Codex threads mutating `WORKTREE_ROOT`/i);
+  assert.match(implement, /having to be prompted to resume the loop is a failure of this command/i);
+});
+
+test("status command documents the job-scoped wait as the only safe poll", () => {
+  const status = read("commands/status.md");
+  assert.match(status, /status <job-id> --wait \[--timeout-ms <ms>\]/);
+  assert.match(status, /`--wait` requires a job ID/i);
+  assert.match(status, /default timeout is 240000 ms/i);
+  assert.match(status, /waitTimedOut: true/);
+  assert.match(status, /Never hand-roll a poll loop that greps the bare `status` table/i);
+  assert.match(status, /run_in_background: true/);
+
+  // The runtime's own queued-launch line must advertise the same waiting form.
+  const companion = fs.readFileSync(
+    path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs"),
+    "utf8"
+  );
+  assert.match(companion, /Block on it with .+\/codex:status \$\{payload\.jobId\} --wait/);
+});

@@ -17,6 +17,8 @@ Execution mode:
 - If the request includes `--wait`, run the `codex:codex-rescue` subagent in the foreground.
 - If neither flag is present, default to foreground.
 - `--background` and `--wait` are execution flags for Claude Code. Do not forward them to `task`, and do not treat them as part of the natural-language task text.
+- Background is a way to keep working while Codex runs, not a way to end the work. Claude Code re-invokes you when a background subagent finishes; that re-invocation is the rest of this command. Present the subagent's output verbatim then, in the same turn.
+- Do not close out a turn with a dispatched-but-unread rescue and a "check back later" note, and do not wait to be told "continue". The user asked for the rescue result, not for the dispatch.
 - `--model` and `--effort` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
 - If the request includes `--resume`, do not ask whether to continue. The user already chose.
 - If the request includes `--fresh`, do not ask whether to continue. The user already chose.

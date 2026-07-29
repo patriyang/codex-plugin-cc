@@ -42,6 +42,16 @@ Before extracting tasks:
 
 All `git` commands in this loop, and all `codex-companion.mjs` invocations, run against `WORKTREE_ROOT` (via `git -C` / `-C`) rather than the controller's ambient cwd — this keeps the tree Codex edits and the tree the controller commits to in sync.
 
+## Dispatch and Follow-Through
+
+Every Codex dispatch below is written as a `--wait` invocation, because the loop is sequential — the controller cannot take the next step until that step returns. How you run it depends on how long it will take:
+
+- A foreground `Bash` call caps at 600000 ms. Implementer and reviewer runs at `xhigh` routinely exceed that, so dispatch them with `Bash(..., run_in_background: true)` and let Claude Code re-invoke you when the command exits. Keep foreground `Bash` for steps you expect to finish inside the cap.
+- When that re-invocation arrives, it is the next step of this loop, not a fresh request. Read the output with `BashOutput`, parse the report, and continue through the remaining steps in the same turn.
+- **"Dispatched" is never a stopping point.** Do not end a turn with an unread Codex run and a note that you will check back, and do not wait to be told "continue" or "keep going". The loop advances only when you advance it.
+- If a background shell from a previous step is still running, keep waiting on it. Never abandon it and re-dispatch — two live Codex threads mutating `WORKTREE_ROOT` will corrupt each other's work.
+- If a dispatch exits non-zero or returns empty or malformed output, treat it as `BLOCKED` (step 3) rather than assuming the step succeeded.
+
 ## Task Extraction
 
 Parse the plan and extract every discrete task:
@@ -178,6 +188,8 @@ Once you start, **do not pause to check in with the user between tasks**. Execut
 - All tasks complete.
 
 Do not emit "Should I continue?" prompts or progress summaries between tasks. The user asked you to execute the plan.
+
+Waiting on a dispatched Codex run is not one of those reasons. If a step is still running, wait it out (see Dispatch and Follow-Through); having to be prompted to resume the loop is a failure of this command.
 
 ## Final Review
 

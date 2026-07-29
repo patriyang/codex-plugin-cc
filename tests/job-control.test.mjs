@@ -11,6 +11,7 @@ import {
   resolveJobLogFile,
   resolveStateFile,
   upsertJob,
+  withJobPersistenceLock,
   writeJobFile
 } from "../plugins/codex/scripts/lib/state.mjs";
 import { runTrackedJob } from "../plugins/codex/scripts/lib/tracked-jobs.mjs";
@@ -127,6 +128,65 @@ test("runTrackedJob persists the worker start time in its running record", async
   assert.equal(runningRecord.pidStartTime, "worker-start");
   const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(workspace, job.id), "utf8"));
   assert.equal(storedJob.pidStartTime, "worker-start");
+});
+
+test("runTrackedJob cannot overwrite cancellation that lands before result persistence", async () => {
+  const workspace = makeTempDir();
+  const jobId = "task-cancel-race";
+  const job = {
+    id: jobId,
+    workspaceRoot: workspace,
+    title: "Codex Task",
+    status: "running"
+  };
+  let cancellationPersisted = false;
+
+  await runTrackedJob(
+    job,
+    async () => ({
+      exitStatus: 0,
+      threadId: "thread-result",
+      turnId: "turn-result",
+      payload: { result: "done" },
+      rendered: "done",
+      summary: "done"
+    }),
+    {
+      getProcessStartTime: () => null,
+      beforeTerminalPersistence() {
+        // This runs after the worker's last pre-write guard and before its persistence lock.
+        withJobPersistenceLock(workspace, jobId, () => {
+          const cancelledAt = "2026-07-29T12:00:00.000Z";
+          writeJobFile(workspace, jobId, {
+            ...job,
+            status: "cancelled",
+            phase: "cancelled",
+            pid: null,
+            completedAt: cancelledAt,
+            cancelledAt,
+            errorMessage: "Cancelled by user."
+          });
+          upsertJob(workspace, {
+            id: jobId,
+            status: "cancelled",
+            phase: "cancelled",
+            pid: null,
+            completedAt: cancelledAt,
+            errorMessage: "Cancelled by user."
+          });
+        });
+        cancellationPersisted = true;
+      }
+    }
+  );
+
+  assert.equal(cancellationPersisted, true);
+  const indexedJob = listJobs(workspace).find((candidate) => candidate.id === jobId);
+  assert.equal(indexedJob.status, "cancelled");
+  assert.equal(indexedJob.phase, "cancelled");
+  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8"));
+  assert.equal(storedJob.status, "cancelled");
+  assert.equal(storedJob.phase, "cancelled");
 });
 
 test("reapDeadJobs preserves a completion stored after the job list was read", () => {

@@ -32,6 +32,7 @@ import {
   listJobs,
   setConfig,
   upsertJob,
+  withJobPersistenceLock,
   writeJobFile
 } from "./lib/state.mjs";
 import {
@@ -1091,6 +1092,31 @@ async function handleCancel(argv) {
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
+  const completedAt = nowIso();
+  const nextJob = {
+    ...job,
+    status: "cancelled",
+    phase: "cancelled",
+    pid: null,
+    completedAt,
+    errorMessage: "Cancelled by user."
+  };
+
+  withJobPersistenceLock(workspaceRoot, job.id, () => {
+    writeJobFile(workspaceRoot, job.id, {
+      ...existing,
+      ...nextJob,
+      cancelledAt: completedAt
+    });
+    upsertJob(workspaceRoot, {
+      id: job.id,
+      status: "cancelled",
+      phase: "cancelled",
+      pid: null,
+      errorMessage: "Cancelled by user.",
+      completedAt
+    });
+  });
 
   let interrupt;
   if (Number.isFinite(job.pid) && !isProcessAlive(job.pid)) {
@@ -1142,30 +1168,6 @@ async function handleCancel(argv) {
     appendLogLine(job.logFile, "No verified worker was signalled.");
   }
   appendLogLine(job.logFile, "Cancelled by user.");
-
-  const completedAt = nowIso();
-  const nextJob = {
-    ...job,
-    status: "cancelled",
-    phase: "cancelled",
-    pid: null,
-    completedAt,
-    errorMessage: "Cancelled by user."
-  };
-
-  writeJobFile(workspaceRoot, job.id, {
-    ...existing,
-    ...nextJob,
-    cancelledAt: completedAt
-  });
-  upsertJob(workspaceRoot, {
-    id: job.id,
-    status: "cancelled",
-    phase: "cancelled",
-    pid: null,
-    errorMessage: "Cancelled by user.",
-    completedAt
-  });
 
   const payload = {
     jobId: job.id,

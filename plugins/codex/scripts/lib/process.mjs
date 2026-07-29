@@ -124,7 +124,7 @@ export function getProcessStartTime(pid, options = {}) {
       env: commandEnv,
       shell: false
     });
-    if (!result || result.error || (result.status ?? 0) !== 0) {
+    if (!result || result.error || result.signal || result.status !== 0) {
       return null;
     }
     return normalizeProcessStartTimeOutput(result.stdout);

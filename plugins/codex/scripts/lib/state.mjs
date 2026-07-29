@@ -11,6 +11,10 @@ const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
+const JOB_LOCK_TIMEOUT_MS = 10000;
+// Keep stale-lock recovery longer than acquisition so a live owner is never stolen by a contender.
+const JOB_LOCK_STALE_AFTER_MS = 30000;
+const JOB_LOCK_RETRY_MS = 5;
 
 function nowIso() {
   return new Date().toISOString();
@@ -168,6 +172,62 @@ export function writeJobFile(cwd, jobId, payload) {
   const jobFile = resolveJobFile(cwd, jobId);
   fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   return jobFile;
+}
+
+function resolveJobLockFile(cwd, jobId) {
+  ensureStateDir(cwd);
+  return path.join(resolveJobsDir(cwd), `${jobId}.lock`);
+}
+
+function sleepSynchronously(milliseconds) {
+  const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(waitBuffer, 0, 0, milliseconds);
+}
+
+export function withJobPersistenceLock(cwd, jobId, callback) {
+  const lockFile = resolveJobLockFile(cwd, jobId);
+  const deadline = Date.now() + JOB_LOCK_TIMEOUT_MS;
+  let lockHandle = null;
+
+  while (lockHandle === null) {
+    try {
+      lockHandle = fs.openSync(lockFile, "wx");
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+
+      try {
+        if (Date.now() - fs.statSync(lockFile).mtimeMs >= JOB_LOCK_STALE_AFTER_MS) {
+          fs.unlinkSync(lockFile);
+          continue;
+        }
+      } catch (statError) {
+        if (statError?.code !== "ENOENT") {
+          throw statError;
+        }
+        continue;
+      }
+
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out acquiring persistence lock for job ${jobId}.`);
+      }
+      sleepSynchronously(JOB_LOCK_RETRY_MS);
+    }
+  }
+
+  try {
+    return callback();
+  } finally {
+    fs.closeSync(lockHandle);
+    try {
+      fs.unlinkSync(lockFile);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
 }
 
 export function readJobFile(jobFile) {

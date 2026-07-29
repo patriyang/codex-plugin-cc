@@ -8,6 +8,7 @@ import {
   resolveJobFile,
   resolveJobLogFile,
   upsertJob,
+  withJobPersistenceLock,
   writeJobFile
 } from "./state.mjs";
 
@@ -109,23 +110,25 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
       return;
     }
 
-    if (hasTerminalJobRecord(workspaceRoot, jobId)) {
-      return;
-    }
-    upsertJob(workspaceRoot, patch);
+    withJobPersistenceLock(workspaceRoot, jobId, () => {
+      if (isPersistenceBlocked(workspaceRoot, jobId)) {
+        return;
+      }
+      upsertJob(workspaceRoot, patch);
 
-    const jobFile = resolveJobFile(workspaceRoot, jobId);
-    if (!fs.existsSync(jobFile)) {
-      return;
-    }
+      const jobFile = resolveJobFile(workspaceRoot, jobId);
+      if (!fs.existsSync(jobFile)) {
+        return;
+      }
 
-    const storedJob = readJobFile(jobFile);
-    if (isTerminalJobStatus(storedJob.status) || hasTerminalJobRecord(workspaceRoot, jobId)) {
-      return;
-    }
-    writeJobFile(workspaceRoot, jobId, {
-      ...storedJob,
-      ...patch
+      const storedJob = readJobFile(jobFile);
+      if (isTerminalJobStatus(storedJob.status) || isPersistenceBlocked(workspaceRoot, jobId)) {
+        return;
+      }
+      writeJobFile(workspaceRoot, jobId, {
+        ...storedJob,
+        ...patch
+      });
     });
   };
 }
@@ -171,11 +174,11 @@ function hasTerminalJobRecord(workspaceRoot, jobId) {
   return isTerminalJobStatus(readIndexedJobOrNull(workspaceRoot, jobId)?.status);
 }
 
-export async function runTrackedJob(job, runner, options = {}) {
-  if (job.status && hasTerminalJobRecord(job.workspaceRoot, job.id)) {
-    return null;
-  }
+function isPersistenceBlocked(workspaceRoot, jobId) {
+  return hasTerminalJobRecord(workspaceRoot, jobId);
+}
 
+export async function runTrackedJob(job, runner, options = {}) {
   const getProcessStartTimeImpl = options.getProcessStartTime ?? getProcessStartTime;
   let pidStartTime = null;
   try {
@@ -193,11 +196,17 @@ export async function runTrackedJob(job, runner, options = {}) {
     pidStartTime,
     logFile: options.logFile ?? job.logFile ?? null
   };
-  if (job.status && hasTerminalJobRecord(job.workspaceRoot, job.id)) {
+  const runningPersisted = withJobPersistenceLock(job.workspaceRoot, job.id, () => {
+    if (job.status && isPersistenceBlocked(job.workspaceRoot, job.id)) {
+      return false;
+    }
+    writeJobFile(job.workspaceRoot, job.id, runningRecord);
+    upsertJob(job.workspaceRoot, runningRecord);
+    return true;
+  });
+  if (!runningPersisted) {
     return null;
   }
-  writeJobFile(job.workspaceRoot, job.id, runningRecord);
-  upsertJob(job.workspaceRoot, runningRecord);
 
   let handlingSignal = false;
   const signalHandlers = new Map();
@@ -211,8 +220,12 @@ export async function runTrackedJob(job, runner, options = {}) {
     handlingSignal = true;
 
     try {
-      const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
-      if (existing.status === "running" && !hasTerminalJobRecord(job.workspaceRoot, job.id)) {
+      let existing = runningRecord;
+      withJobPersistenceLock(job.workspaceRoot, job.id, () => {
+        existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
+        if (existing.status !== "running" || isPersistenceBlocked(job.workspaceRoot, job.id)) {
+          return;
+        }
         const completedAt = nowIso();
         const errorMessage = `Job terminated by signal ${signal}.`;
         writeJobFile(job.workspaceRoot, job.id, {
@@ -231,7 +244,7 @@ export async function runTrackedJob(job, runner, options = {}) {
           completedAt,
           errorMessage
         });
-      }
+      });
       appendLogLine(
         options.logFile ?? job.logFile ?? existing.logFile ?? null,
         `Job terminated by signal ${signal}.`
@@ -253,55 +266,66 @@ export async function runTrackedJob(job, runner, options = {}) {
     const execution = await runner();
     const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
     const completedAt = nowIso();
-    if (hasTerminalJobRecord(job.workspaceRoot, job.id)) {
+    if (isPersistenceBlocked(job.workspaceRoot, job.id)) {
       return execution;
     }
-    writeJobFile(job.workspaceRoot, job.id, {
-      ...runningRecord,
-      status: completionStatus,
-      threadId: execution.threadId ?? null,
-      turnId: execution.turnId ?? null,
-      pid: null,
-      phase: completionStatus === "completed" ? "done" : "failed",
-      completedAt,
-      result: execution.payload,
-      rendered: execution.rendered
+    options.beforeTerminalPersistence?.();
+    const completionPersisted = withJobPersistenceLock(job.workspaceRoot, job.id, () => {
+      if (isPersistenceBlocked(job.workspaceRoot, job.id)) {
+        return false;
+      }
+      writeJobFile(job.workspaceRoot, job.id, {
+        ...runningRecord,
+        status: completionStatus,
+        threadId: execution.threadId ?? null,
+        turnId: execution.turnId ?? null,
+        pid: null,
+        phase: completionStatus === "completed" ? "done" : "failed",
+        completedAt,
+        result: execution.payload,
+        rendered: execution.rendered
+      });
+      upsertJob(job.workspaceRoot, {
+        id: job.id,
+        status: completionStatus,
+        threadId: execution.threadId ?? null,
+        turnId: execution.turnId ?? null,
+        summary: execution.summary,
+        phase: completionStatus === "completed" ? "done" : "failed",
+        pid: null,
+        completedAt
+      });
+      return true;
     });
-    upsertJob(job.workspaceRoot, {
-      id: job.id,
-      status: completionStatus,
-      threadId: execution.threadId ?? null,
-      turnId: execution.turnId ?? null,
-      summary: execution.summary,
-      phase: completionStatus === "completed" ? "done" : "failed",
-      pid: null,
-      completedAt
-    });
-    appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
+    if (completionPersisted) {
+      appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
+    }
     return execution;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
-    if (hasTerminalJobRecord(job.workspaceRoot, job.id)) {
-      throw error;
-    }
     const completedAt = nowIso();
-    writeJobFile(job.workspaceRoot, job.id, {
-      ...existing,
-      status: "failed",
-      phase: "failed",
-      errorMessage,
-      pid: null,
-      completedAt,
-      logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
-    });
-    upsertJob(job.workspaceRoot, {
-      id: job.id,
-      status: "failed",
-      phase: "failed",
-      pid: null,
-      errorMessage,
-      completedAt
+    withJobPersistenceLock(job.workspaceRoot, job.id, () => {
+      if (isPersistenceBlocked(job.workspaceRoot, job.id)) {
+        return;
+      }
+      const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
+      writeJobFile(job.workspaceRoot, job.id, {
+        ...existing,
+        status: "failed",
+        phase: "failed",
+        errorMessage,
+        pid: null,
+        completedAt,
+        logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
+      });
+      upsertJob(job.workspaceRoot, {
+        id: job.id,
+        status: "failed",
+        phase: "failed",
+        pid: null,
+        errorMessage,
+        completedAt
+      });
     });
     throw error;
   } finally {

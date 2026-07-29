@@ -8,6 +8,7 @@ import {
   readJobFile,
   resolveJobFile,
   upsertJob,
+  withJobPersistenceLock,
   writeJobFile
 } from "./state.mjs";
 import { appendLogLine, nowIso, SESSION_ID_ENV } from "./tracked-jobs.mjs";
@@ -51,11 +52,10 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
     }
 
     let storedJob = null;
-    let storedReadFailed = false;
     try {
       storedJob = readStoredJob(workspaceRoot, job.id);
     } catch {
-      storedReadFailed = true;
+      // Re-read under the persistence lock before deciding whether to reap.
     }
 
     if (
@@ -95,26 +95,57 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
       reaped: true
     };
 
-    if (!storedReadFailed) {
-      try {
-        writeJobFile(workspaceRoot, job.id, reapedJob);
-      } catch {
-        // Status should still report the in-memory terminal record.
-      }
-    }
-
+    let latestTerminalJob = null;
+    let persistedReap = false;
     try {
-      upsertJob(workspaceRoot, reapedJob);
+      withJobPersistenceLock(workspaceRoot, job.id, () => {
+        let latestStoredJob = null;
+        let latestStoredReadFailed = false;
+        try {
+          latestStoredJob = readStoredJob(workspaceRoot, job.id);
+        } catch {
+          latestStoredReadFailed = true;
+        }
+        if (
+          latestStoredJob &&
+          latestStoredJob.status !== "queued" &&
+          latestStoredJob.status !== "running"
+        ) {
+          latestTerminalJob = latestStoredJob;
+          return;
+        }
+
+        if (!latestStoredReadFailed) {
+          try {
+            writeJobFile(workspaceRoot, job.id, reapedJob);
+          } catch {
+            // Status should still report the in-memory terminal record.
+          }
+        }
+
+        try {
+          upsertJob(workspaceRoot, reapedJob);
+        } catch {
+          // Status should still report the in-memory terminal record.
+        }
+        persistedReap = true;
+      });
     } catch {
       // Status should still report the in-memory terminal record.
     }
 
-    try {
-      if (logFile && fs.existsSync(logFile)) {
-        appendLogLine(logFile, `Job reaped: worker process ${pid} is gone; marking failed.`);
+    if (latestTerminalJob) {
+      return latestTerminalJob;
+    }
+
+    if (persistedReap) {
+      try {
+        if (logFile && fs.existsSync(logFile)) {
+          appendLogLine(logFile, `Job reaped: worker process ${pid} is gone; marking failed.`);
+        }
+      } catch {
+        // A missing or unwritable log must not break status.
       }
-    } catch {
-      // A missing or unwritable log must not break status.
     }
 
     return reapedJob;

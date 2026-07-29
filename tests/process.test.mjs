@@ -95,6 +95,21 @@ test("getProcessStartTime returns unavailable for failed or ambiguous lookups", 
     }),
     null
   );
+  assert.equal(
+    getProcessStartTime(1234, {
+      platform: "linux",
+      runCommandImpl() {
+        return {
+          status: null,
+          signal: "SIGTERM",
+          stdout: "Mon Jul 27 12:34:56 2026\n",
+          stderr: "",
+          error: null
+        };
+      }
+    }),
+    null
+  );
   assert.equal(getProcessStartTime(0), null);
 });
 

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 import { getSessionRuntimeStatus } from "./codex.mjs";
-import { isProcessAlive } from "./process.mjs";
+import { getProcessStartTime, isProcessAlive } from "./process.mjs";
 import {
   getConfig,
   listJobs,
@@ -22,6 +22,7 @@ export function sortJobsNewestFirst(jobs) {
 
 export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
   const isProcessAliveImpl = options.isProcessAlive ?? isProcessAlive;
+  const getProcessStartTimeImpl = options.getProcessStartTime ?? getProcessStartTime;
 
   return jobs.map((job) => {
     if (
@@ -33,7 +34,17 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
 
     try {
       if (isProcessAliveImpl(job.pid)) {
-        return job;
+        const storedStartTime = typeof job.pidStartTime === "string" ? job.pidStartTime.trim() : "";
+        if (!storedStartTime) {
+          return job;
+        }
+
+        const currentStartTime = getProcessStartTimeImpl(job.pid);
+        const normalizedCurrentStartTime =
+          typeof currentStartTime === "string" ? currentStartTime.trim() : "";
+        if (!normalizedCurrentStartTime || normalizedCurrentStartTime === storedStartTime) {
+          return job;
+        }
       }
     } catch {
       return job;

@@ -24,7 +24,7 @@ import {
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
-import { binaryAvailable, isProcessAlive, terminateProcessTree } from "./lib/process.mjs";
+import { binaryAvailable, getProcessStartTime, isProcessAlive, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
   generateJobId,
@@ -68,6 +68,8 @@ const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
+const TASK_WORKER_STARTUP_TIMEOUT_MS = 10000;
+const TASK_WORKER_STARTUP_POLL_INTERVAL_MS = 25;
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_CODEX_REASONING_EFFORT = "high";
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
@@ -721,19 +723,65 @@ function spawnDetachedTaskWorker(cwd, jobId) {
   return child;
 }
 
+async function waitForReadyTaskWorker(workspaceRoot, jobId) {
+  const deadline = Date.now() + TASK_WORKER_STARTUP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const storedJob = readStoredJob(workspaceRoot, jobId);
+      const stateJob = listJobs(workspaceRoot).find((candidate) => candidate.id === jobId);
+      if (
+        storedJob?.status === "queued" &&
+        storedJob.pid === process.pid &&
+        stateJob?.status === "queued" &&
+        stateJob.pid === process.pid
+      ) {
+        return storedJob;
+      }
+    } catch {
+      // The parent may still be writing the handshake records.
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, TASK_WORKER_STARTUP_POLL_INTERVAL_MS));
+  }
+
+  return null;
+}
+
 function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
+  const placeholderRecord = {
+    ...job,
+    status: "starting",
+    phase: "starting",
+    pid: null,
+    pidStartTime: null,
+    logFile,
+    request
+  };
+  writeJobFile(job.workspaceRoot, job.id, placeholderRecord);
+
   const child = spawnDetachedTaskWorker(cwd, job.id);
+  let pidStartTime = null;
+  try {
+    if (Number.isFinite(child.pid)) {
+      pidStartTime = getProcessStartTime(child.pid);
+    }
+  } catch {
+    // A missing process probe must not prevent the task from being queued.
+  }
+
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
     pid: child.pid ?? null,
+    pidStartTime,
     logFile,
     request
   };
+  // The worker requires both records, so it cannot observe readiness until this state write completes.
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   upsertJob(job.workspaceRoot, queuedRecord);
 
@@ -917,9 +965,9 @@ async function handleTaskWorker(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
+  const storedJob = await waitForReadyTaskWorker(workspaceRoot, options["job-id"]);
   if (!storedJob) {
-    throw new Error(`No stored job found for ${options["job-id"]}.`);
+    throw new Error(`Timed out waiting for queued job ${options["job-id"]} to become ready.`);
   }
 
   const request = storedJob.request;
@@ -1073,7 +1121,26 @@ async function handleCancel(argv) {
     );
   }
 
-  terminateProcessTree(job.pid ?? Number.NaN);
+  let workerSignal = {
+    attempted: false,
+    delivered: false,
+    method: null
+  };
+  const storedStartTime = typeof job.pidStartTime === "string" ? job.pidStartTime.trim() : "";
+  let currentStartTime = "";
+  if (Number.isFinite(job.pid) && storedStartTime) {
+    try {
+      const observedStartTime = getProcessStartTime(job.pid);
+      currentStartTime = typeof observedStartTime === "string" ? observedStartTime.trim() : "";
+    } catch {
+      currentStartTime = "";
+    }
+  }
+  if (storedStartTime && currentStartTime === storedStartTime) {
+    workerSignal = terminateProcessTree(job.pid);
+  } else {
+    appendLogLine(job.logFile, "No verified worker was signalled.");
+  }
   appendLogLine(job.logFile, "Cancelled by user.");
 
   const completedAt = nowIso();
@@ -1106,7 +1173,9 @@ async function handleCancel(argv) {
     title: job.title,
     turnInterruptAttempted: interrupt.attempted,
     turnInterrupted: interrupt.interrupted,
-    turnInterruptDetail: interrupt.detail
+    turnInterruptDetail: interrupt.detail,
+    workerSignalAttempted: workerSignal.attempted,
+    workerSignalled: workerSignal.delivered
   };
 
   outputCommandResult(payload, renderCancelReport(nextJob), options.json);

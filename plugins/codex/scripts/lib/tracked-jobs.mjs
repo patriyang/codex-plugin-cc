@@ -1,9 +1,19 @@
 import fs from "node:fs";
 import process from "node:process";
 
-import { readJobFile, resolveJobFile, resolveJobLogFile, upsertJob, writeJobFile } from "./state.mjs";
+import { getProcessStartTime } from "./process.mjs";
+import {
+  listJobs,
+  readJobFile,
+  resolveJobFile,
+  resolveJobLogFile,
+  upsertJob,
+  writeJobFile
+} from "./state.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
+
+const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 export function nowIso() {
   return new Date().toISOString();
@@ -99,6 +109,9 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
       return;
     }
 
+    if (hasTerminalJobRecord(workspaceRoot, jobId)) {
+      return;
+    }
     upsertJob(workspaceRoot, patch);
 
     const jobFile = resolveJobFile(workspaceRoot, jobId);
@@ -107,6 +120,9 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
     }
 
     const storedJob = readJobFile(jobFile);
+    if (isTerminalJobStatus(storedJob.status) || hasTerminalJobRecord(workspaceRoot, jobId)) {
+      return;
+    }
     writeJobFile(workspaceRoot, jobId, {
       ...storedJob,
       ...patch
@@ -139,15 +155,47 @@ function readStoredJobOrNull(workspaceRoot, jobId) {
   return readJobFile(jobFile);
 }
 
+function readIndexedJobOrNull(workspaceRoot, jobId) {
+  return listJobs(workspaceRoot).find((job) => job.id === jobId) ?? null;
+}
+
+function isTerminalJobStatus(status) {
+  return TERMINAL_JOB_STATUSES.has(status);
+}
+
+function hasTerminalJobRecord(workspaceRoot, jobId) {
+  const storedJob = readStoredJobOrNull(workspaceRoot, jobId);
+  if (isTerminalJobStatus(storedJob?.status)) {
+    return true;
+  }
+  return isTerminalJobStatus(readIndexedJobOrNull(workspaceRoot, jobId)?.status);
+}
+
 export async function runTrackedJob(job, runner, options = {}) {
+  if (job.status && hasTerminalJobRecord(job.workspaceRoot, job.id)) {
+    return null;
+  }
+
+  const getProcessStartTimeImpl = options.getProcessStartTime ?? getProcessStartTime;
+  let pidStartTime = null;
+  try {
+    pidStartTime = getProcessStartTimeImpl(process.pid);
+  } catch {
+    // A missing process probe must not prevent the worker from starting.
+  }
+
   const runningRecord = {
     ...job,
     status: "running",
     startedAt: nowIso(),
     phase: "starting",
     pid: process.pid,
+    pidStartTime,
     logFile: options.logFile ?? job.logFile ?? null
   };
+  if (job.status && hasTerminalJobRecord(job.workspaceRoot, job.id)) {
+    return null;
+  }
   writeJobFile(job.workspaceRoot, job.id, runningRecord);
   upsertJob(job.workspaceRoot, runningRecord);
 
@@ -164,7 +212,7 @@ export async function runTrackedJob(job, runner, options = {}) {
 
     try {
       const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
-      if (existing.status === "running") {
+      if (existing.status === "running" && !hasTerminalJobRecord(job.workspaceRoot, job.id)) {
         const completedAt = nowIso();
         const errorMessage = `Job terminated by signal ${signal}.`;
         writeJobFile(job.workspaceRoot, job.id, {
@@ -205,6 +253,9 @@ export async function runTrackedJob(job, runner, options = {}) {
     const execution = await runner();
     const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
     const completedAt = nowIso();
+    if (hasTerminalJobRecord(job.workspaceRoot, job.id)) {
+      return execution;
+    }
     writeJobFile(job.workspaceRoot, job.id, {
       ...runningRecord,
       status: completionStatus,
@@ -231,6 +282,9 @@ export async function runTrackedJob(job, runner, options = {}) {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
+    if (hasTerminalJobRecord(job.workspaceRoot, job.id)) {
+      throw error;
+    }
     const completedAt = nowIso();
     writeJobFile(job.workspaceRoot, job.id, {
       ...existing,

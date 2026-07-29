@@ -13,6 +13,7 @@ import {
   upsertJob,
   writeJobFile
 } from "../plugins/codex/scripts/lib/state.mjs";
+import { runTrackedJob } from "../plugins/codex/scripts/lib/tracked-jobs.mjs";
 import { initGitRepo, makeTempDir, spawnDeadPid } from "./helpers.mjs";
 
 delete process.env.CLAUDE_PLUGIN_DATA;
@@ -53,6 +54,79 @@ test("reapDeadJobs returns a terminal job when persistence fails", () => {
       process.env.CLAUDE_PLUGIN_DATA = previousPluginData;
     }
   }
+});
+
+test("reapDeadJobs reaps an alive PID when its start time no longer matches", () => {
+  const [job] = reapDeadJobs(
+    makeTempDir(),
+    [
+      {
+        id: "task-reused-pid",
+        status: "running",
+        pid: 1234,
+        pidStartTime: "old-worker-start",
+        updatedAt: "2026-07-28T08:00:00.000Z"
+      }
+    ],
+    {
+      isProcessAlive: () => true,
+      getProcessStartTime: () => "new-worker-start"
+    }
+  );
+
+  assert.equal(job.status, "failed");
+  assert.equal(job.phase, "failed");
+  assert.equal(job.pid, null);
+  assert.equal(job.reaped, true);
+});
+
+test("reapDeadJobs preserves an alive job when its start time lookup is unavailable", () => {
+  const originalJob = {
+    id: "task-ambiguous-pid",
+    status: "running",
+    pid: 1234,
+    pidStartTime: "worker-start",
+    updatedAt: "2026-07-28T08:00:00.000Z"
+  };
+  const [job] = reapDeadJobs(makeTempDir(), [originalJob], {
+    isProcessAlive: () => true,
+    getProcessStartTime: () => null
+  });
+
+  assert.deepEqual(job, originalJob);
+});
+
+test("runTrackedJob persists the worker start time in its running record", async () => {
+  const workspace = makeTempDir();
+  const job = {
+    id: "task-start-time",
+    workspaceRoot: workspace,
+    title: "Codex Task",
+    status: "queued"
+  };
+  let runningRecord = null;
+
+  await runTrackedJob(
+    job,
+    async () => {
+      runningRecord = JSON.parse(fs.readFileSync(resolveJobFile(workspace, job.id), "utf8"));
+      return {
+        exitStatus: 0,
+        threadId: null,
+        turnId: null,
+        payload: {},
+        rendered: "",
+        summary: "done"
+      };
+    },
+    {
+      getProcessStartTime: () => "worker-start"
+    }
+  );
+
+  assert.equal(runningRecord.pidStartTime, "worker-start");
+  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(workspace, job.id), "utf8"));
+  assert.equal(storedJob.pidStartTime, "worker-start");
 });
 
 test("reapDeadJobs preserves a completion stored after the job list was read", () => {

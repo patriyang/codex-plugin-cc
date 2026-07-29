@@ -30,6 +30,36 @@ function isActiveJobStatus(status) {
   return status === "queued" || status === "running";
 }
 
+function normalizeJobStartTime(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || null;
+}
+
+function hasSameWorkerIdentity(left, right) {
+  const leftPid = Number.isFinite(left?.pid) ? left.pid : null;
+  const rightPid = Number.isFinite(right?.pid) ? right.pid : null;
+  return (
+    leftPid === rightPid &&
+    normalizeJobStartTime(left?.pidStartTime) === normalizeJobStartTime(right?.pidStartTime)
+  );
+}
+
+function resolveReapCompletedAt(job, fallback = nowIso()) {
+  let completedAt = job.updatedAt ?? fallback;
+  try {
+    if (job.logFile && fs.existsSync(job.logFile)) {
+      const mtime = fs.statSync(job.logFile).mtime;
+      const startedAt = Date.parse(job.startedAt ?? "");
+      if (Number.isFinite(startedAt) && mtime.getTime() >= startedAt) {
+        completedAt = mtime.toISOString();
+      }
+    }
+  } catch {
+    // Fall back to the last recorded update time.
+  }
+  return completedAt;
+}
+
 export function persistJobCancellation(workspaceRoot, job, options = {}) {
   const withPersistenceLockImpl = options.withPersistenceLock ?? withJobPersistenceLock;
   let terminalJob = null;
@@ -85,14 +115,18 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
       return job;
     }
 
+    const probedWorker = {
+      pid: job.pid,
+      pidStartTime: job.pidStartTime
+    };
     try {
-      if (isProcessAliveImpl(job.pid)) {
+      if (isProcessAliveImpl(probedWorker.pid)) {
         const storedStartTime = typeof job.pidStartTime === "string" ? job.pidStartTime.trim() : "";
         if (!storedStartTime) {
           return job;
         }
 
-        const currentStartTime = getProcessStartTimeImpl(job.pid);
+        const currentStartTime = getProcessStartTimeImpl(probedWorker.pid);
         const normalizedCurrentStartTime =
           typeof currentStartTime === "string" ? currentStartTime.trim() : "";
         if (!normalizedCurrentStartTime || normalizedCurrentStartTime === storedStartTime) {
@@ -122,20 +156,9 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
       ...job,
       ...(storedJob ?? {})
     };
-    const pid = job.pid;
+    const pid = probedWorker.pid;
     const logFile = currentJob.logFile ?? null;
-    let completedAt = currentJob.updatedAt ?? nowIso();
-    try {
-      if (logFile && fs.existsSync(logFile)) {
-        const mtime = fs.statSync(logFile).mtime;
-        const startedAt = Date.parse(currentJob.startedAt ?? "");
-        if (Number.isFinite(startedAt) && mtime.getTime() >= startedAt) {
-          completedAt = mtime.toISOString();
-        }
-      }
-    } catch {
-      // Fall back to the last recorded update time.
-    }
+    const completedAt = resolveReapCompletedAt(currentJob);
 
     const reapedJob = {
       ...currentJob,
@@ -148,6 +171,9 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
     };
 
     let latestTerminalJob = null;
+    let latestActiveJob = null;
+    let persistedReapJob = reapedJob;
+    let reapLogFile = logFile;
     let persistedReap = false;
     try {
       withJobPersistenceLock(workspaceRoot, job.id, () => {
@@ -158,25 +184,59 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
         } catch {
           latestStoredReadFailed = true;
         }
-        if (
-          latestStoredJob &&
-          latestStoredJob.status !== "queued" &&
-          latestStoredJob.status !== "running"
-        ) {
-          latestTerminalJob = latestStoredJob;
+
+        const latestIndexedJob =
+          listJobs(workspaceRoot).find((candidate) => candidate.id === job.id) ?? null;
+        latestTerminalJob =
+          [latestStoredJob, latestIndexedJob].find((candidate) => isTerminalJobStatus(candidate?.status)) ??
+          null;
+        if (latestTerminalJob) {
           return;
         }
 
+        const latestActiveJobs = [latestStoredJob, latestIndexedJob].filter((candidate) =>
+          isActiveJobStatus(candidate?.status)
+        );
+        const changedActiveJob = latestActiveJobs.find(
+          (candidate) => !hasSameWorkerIdentity(candidate, probedWorker)
+        );
+        if (changedActiveJob) {
+          latestActiveJob = {
+            ...(latestIndexedJob ?? {}),
+            ...(latestStoredJob ?? {}),
+            ...changedActiveJob
+          };
+          return;
+        }
+
+        const activeJob = latestActiveJobs.length
+          ? {
+              ...(latestIndexedJob ?? {}),
+              ...(latestStoredJob ?? {})
+            }
+          : currentJob;
+        const activePid = activeJob.pid ?? pid;
+        persistedReapJob = {
+          ...activeJob,
+          status: "failed",
+          phase: "failed",
+          pid: null,
+          errorMessage: `Worker process ${activePid} is no longer running; the job ended without recording a result.`,
+          completedAt: resolveReapCompletedAt(activeJob),
+          reaped: true
+        };
+        reapLogFile = activeJob.logFile ?? null;
+
         if (!latestStoredReadFailed) {
           try {
-            writeJobFile(workspaceRoot, job.id, reapedJob);
+            writeJobFile(workspaceRoot, job.id, persistedReapJob);
           } catch {
             // Status should still report the in-memory terminal record.
           }
         }
 
         try {
-          upsertJob(workspaceRoot, reapedJob);
+          upsertJob(workspaceRoot, persistedReapJob);
         } catch {
           // Status should still report the in-memory terminal record.
         }
@@ -190,17 +250,21 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
       return latestTerminalJob;
     }
 
+    if (latestActiveJob) {
+      return latestActiveJob;
+    }
+
     if (persistedReap) {
       try {
-        if (logFile && fs.existsSync(logFile)) {
-          appendLogLine(logFile, `Job reaped: worker process ${pid} is gone; marking failed.`);
+        if (reapLogFile && fs.existsSync(reapLogFile)) {
+          appendLogLine(reapLogFile, `Job reaped: worker process ${pid} is gone; marking failed.`);
         }
       } catch {
         // A missing or unwritable log must not break status.
       }
     }
 
-    return reapedJob;
+    return persistedReapJob;
   });
 }
 

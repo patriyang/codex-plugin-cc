@@ -3,11 +3,36 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 
 import { makeTempDir } from "./helpers.mjs";
-import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../plugins/codex/scripts/lib/state.mjs";
+import {
+  loadState,
+  resolveJobFile,
+  resolveJobLogFile,
+  resolveJobsDir,
+  resolveStateDir,
+  resolveStateFile,
+  saveState,
+  upsertJob,
+  withJobPersistenceLock,
+  withStatePersistenceLock
+} from "../plugins/codex/scripts/lib/state.mjs";
 
 delete process.env.CLAUDE_PLUGIN_DATA;
+
+function sleepSynchronously(milliseconds) {
+  const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(waitBuffer, 0, 0, milliseconds);
+}
+
+function waitForFile(filePath, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(filePath) && Date.now() < deadline) {
+    sleepSynchronously(5);
+  }
+  assert.equal(fs.existsSync(filePath), true, `Timed out waiting for ${filePath}`);
+}
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();
@@ -104,4 +129,158 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
       .flatMap((jobId) => [`${jobId}.json`, `${jobId}.log`])
       .sort()
   );
+});
+
+test("upsertJob retains different-job updates under the workspace state lock", () => {
+  const workspace = makeTempDir();
+  const readyFile = path.join(workspace, "state-writer-ready");
+  const doneFile = path.join(workspace, "state-writer-done");
+  const stateModuleUrl = new URL(
+    "../plugins/codex/scripts/lib/state.mjs",
+    import.meta.url
+  ).href;
+  const childScript = [
+    'import fs from "node:fs";',
+    `const { upsertJob } = await import(${JSON.stringify(stateModuleUrl)});`,
+    'fs.writeFileSync(process.env.READY_FILE, "ready", "utf8");',
+    'upsertJob(process.env.WORKSPACE, { id: "job-b", status: "running" });',
+    'fs.writeFileSync(process.env.DONE_FILE, "done", "utf8");'
+  ].join("\n");
+
+  let child = null;
+  withStatePersistenceLock(workspace, () => {
+    const staleState = loadState(workspace);
+    child = spawn(process.execPath, ["--input-type=module", "-e", childScript], {
+      env: {
+        ...process.env,
+        DONE_FILE: doneFile,
+        READY_FILE: readyFile,
+        WORKSPACE: workspace
+      },
+      stdio: "ignore"
+    });
+    waitForFile(readyFile);
+    sleepSynchronously(100);
+    staleState.jobs.unshift({
+      id: "job-a",
+      status: "running",
+      createdAt: "2026-07-29T12:00:00.000Z",
+      updatedAt: "2026-07-29T12:00:00.000Z"
+    });
+    saveState(workspace, staleState);
+  });
+  waitForFile(doneFile);
+  if (child.exitCode === null) {
+    child.kill();
+  }
+
+  const jobs = loadState(workspace).jobs;
+  assert.equal(jobs.some((job) => job.id === "job-a"), true);
+  assert.equal(jobs.some((job) => job.id === "job-b"), true);
+});
+
+test("persistence lock preserves a live owner even when its file is old", () => {
+  const workspace = makeTempDir();
+  const lockFile = path.join(resolveJobsDir(workspace), "live-owner.lock");
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+  fs.writeFileSync(
+    lockFile,
+    `${JSON.stringify({ token: "live-owner", pid: 4321, pidStartTime: "live-start" })}\n`,
+    "utf8"
+  );
+  const oldTime = new Date(Date.now() - 60000);
+  fs.utimesSync(lockFile, oldTime, oldTime);
+
+  assert.throws(
+    () =>
+      withJobPersistenceLock(
+        workspace,
+        "live-owner",
+        () => {},
+        {
+          timeoutMs: 25,
+          isProcessAlive: () => true,
+          getProcessStartTime: () => "live-start"
+        }
+      ),
+    /Timed out acquiring persistence lock/
+  );
+  assert.equal(JSON.parse(fs.readFileSync(lockFile, "utf8")).token, "live-owner");
+});
+
+test("persistence lock preserves an owner with an unavailable identity", () => {
+  const workspace = makeTempDir();
+  const lockFile = path.join(resolveJobsDir(workspace), "ambiguous-owner.lock");
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+  fs.writeFileSync(
+    lockFile,
+    `${JSON.stringify({ token: "ambiguous-owner", pid: 4321, pidStartTime: null })}\n`,
+    "utf8"
+  );
+
+  assert.throws(
+    () =>
+      withJobPersistenceLock(workspace, "ambiguous-owner", () => {}, {
+        timeoutMs: 25,
+        isProcessAlive: () => false,
+        getProcessStartTime: () => null
+      }),
+    /Timed out acquiring persistence lock/
+  );
+  assert.equal(JSON.parse(fs.readFileSync(lockFile, "utf8")).token, "ambiguous-owner");
+});
+
+test("persistence lock recovers dead and replaced owners", () => {
+  for (const [label, isAlive, getStartTime] of [
+    ["dead", () => false, () => null],
+    ["replaced", () => true, () => "new-start"]
+  ]) {
+    const workspace = makeTempDir();
+    const lockFile = path.join(resolveJobsDir(workspace), `${label}-owner.lock`);
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    fs.writeFileSync(
+      lockFile,
+      `${JSON.stringify({ token: `${label}-owner`, pid: 4321, pidStartTime: "old-start" })}\n`,
+      "utf8"
+    );
+    let callbackRan = false;
+    withJobPersistenceLock(
+      workspace,
+      `${label}-owner`,
+      () => {
+        callbackRan = true;
+      },
+      {
+        timeoutMs: 100,
+        isProcessAlive: isAlive,
+        getProcessStartTime: getStartTime
+      }
+    );
+    assert.equal(callbackRan, true);
+    assert.equal(fs.existsSync(lockFile), false);
+  }
+});
+
+test("persistence lock release does not remove a replacement lock", () => {
+  const workspace = makeTempDir();
+  const lockFile = path.join(resolveJobsDir(workspace), "replacement-owner.lock");
+  withJobPersistenceLock(
+    workspace,
+    "replacement-owner",
+    () => {
+      const owner = JSON.parse(fs.readFileSync(lockFile, "utf8"));
+      assert.match(owner.token, /^[0-9a-f-]{36}$/);
+      assert.equal(owner.pid, process.pid);
+      assert.equal(owner.pidStartTime, "owner-start");
+      fs.writeFileSync(
+        lockFile,
+        `${JSON.stringify({ token: "replacement-owner", pid: 4321, pidStartTime: "replacement-start" })}\n`,
+        "utf8"
+      );
+    },
+    { getProcessStartTime: () => "owner-start" }
+  );
+
+  assert.equal(fs.existsSync(lockFile), true);
+  assert.equal(JSON.parse(fs.readFileSync(lockFile, "utf8")).token, "replacement-owner");
 });

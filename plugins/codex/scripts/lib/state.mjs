@@ -1,20 +1,24 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import process from "node:process";
 
+import { getProcessStartTime, isProcessAlive } from "./process.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
+const STATE_LOCK_FILE_NAME = "state.lock";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
 const JOB_LOCK_TIMEOUT_MS = 10000;
-// Keep stale-lock recovery longer than acquisition so a live owner is never stolen by a contender.
-const JOB_LOCK_STALE_AFTER_MS = 30000;
 const JOB_LOCK_RETRY_MS = 5;
+
+let currentProcessStartTimeResolved = false;
+let currentProcessStartTime = null;
 
 function nowIso() {
   return new Date().toISOString();
@@ -131,23 +135,25 @@ export function generateJobId(prefix = "job") {
 }
 
 export function upsertJob(cwd, jobPatch) {
-  return updateState(cwd, (state) => {
-    const timestamp = nowIso();
-    const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
-    if (existingIndex === -1) {
-      state.jobs.unshift({
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        ...jobPatch
-      });
-      return;
-    }
-    state.jobs[existingIndex] = {
-      ...state.jobs[existingIndex],
-      ...jobPatch,
-      updatedAt: timestamp
-    };
-  });
+  return withStatePersistenceLock(cwd, () =>
+    updateState(cwd, (state) => {
+      const timestamp = nowIso();
+      const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
+      if (existingIndex === -1) {
+        state.jobs.unshift({
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          ...jobPatch
+        });
+        return;
+      }
+      state.jobs[existingIndex] = {
+        ...state.jobs[existingIndex],
+        ...jobPatch,
+        updatedAt: timestamp
+      };
+    })
+  );
 }
 
 export function listJobs(cwd) {
@@ -174,6 +180,11 @@ export function writeJobFile(cwd, jobId, payload) {
   return jobFile;
 }
 
+function resolveStateLockFile(cwd) {
+  ensureStateDir(cwd);
+  return path.join(resolveStateDir(cwd), STATE_LOCK_FILE_NAME);
+}
+
 function resolveJobLockFile(cwd, jobId) {
   ensureStateDir(cwd);
   return path.join(resolveJobsDir(cwd), `${jobId}.lock`);
@@ -184,9 +195,114 @@ function sleepSynchronously(milliseconds) {
   Atomics.wait(waitBuffer, 0, 0, milliseconds);
 }
 
-export function withJobPersistenceLock(cwd, jobId, callback) {
-  const lockFile = resolveJobLockFile(cwd, jobId);
-  const deadline = Date.now() + JOB_LOCK_TIMEOUT_MS;
+function normalizeLockStartTime(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || null;
+}
+
+function resolveCurrentProcessStartTime(options = {}) {
+  if (options.getProcessStartTime) {
+    try {
+      return normalizeLockStartTime(options.getProcessStartTime(process.pid));
+    } catch {
+      return null;
+    }
+  }
+
+  if (!currentProcessStartTimeResolved) {
+    try {
+      const resolved = normalizeLockStartTime(getProcessStartTime(process.pid));
+      if (resolved) {
+        currentProcessStartTime = resolved;
+        currentProcessStartTimeResolved = true;
+      }
+    } catch {
+      // Retry an unavailable lookup on the next lock acquisition.
+    }
+  }
+  return currentProcessStartTime;
+}
+
+function createLockOwner(options = {}) {
+  return {
+    token: randomUUID(),
+    pid: process.pid,
+    pidStartTime: resolveCurrentProcessStartTime(options)
+  };
+}
+
+function readLockOwner(lockFile) {
+  try {
+    const owner = JSON.parse(fs.readFileSync(lockFile, "utf8"));
+    if (!owner || typeof owner.token !== "string" || !owner.token) {
+      return null;
+    }
+    return owner;
+  } catch {
+    return null;
+  }
+}
+
+function isDefinitelyAbandoned(owner, options = {}) {
+  const ownerStartTime = normalizeLockStartTime(owner?.pidStartTime);
+  if (!Number.isFinite(owner?.pid) || owner.pid <= 0 || !ownerStartTime) {
+    return false;
+  }
+
+  const isProcessAliveImpl = options.isProcessAlive ?? isProcessAlive;
+  let alive;
+  try {
+    alive = isProcessAliveImpl(owner.pid);
+  } catch {
+    return false;
+  }
+  if (alive === false) {
+    return true;
+  }
+  if (alive !== true) {
+    return false;
+  }
+
+  const getProcessStartTimeImpl = options.getProcessStartTime ?? getProcessStartTime;
+  let currentStartTime;
+  try {
+    currentStartTime = normalizeLockStartTime(getProcessStartTimeImpl(owner.pid));
+  } catch {
+    return false;
+  }
+  return Boolean(currentStartTime) && currentStartTime !== ownerStartTime;
+}
+
+function removeLockIfOwned(lockFile, token) {
+  const owner = readLockOwner(lockFile);
+  if (owner?.token !== token) {
+    return false;
+  }
+  try {
+    fs.unlinkSync(lockFile);
+    return true;
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      return false;
+    }
+    return true;
+  }
+}
+
+// A missing or ambiguous owner identity is preserved so a live lock is never stolen.
+function reclaimAbandonedLock(lockFile, options = {}) {
+  const owner = readLockOwner(lockFile);
+  if (!isDefinitelyAbandoned(owner, options)) {
+    return false;
+  }
+  return removeLockIfOwned(lockFile, owner.token);
+}
+
+function withPersistenceLock(lockFile, callback, options = {}, description = lockFile) {
+  const owner = createLockOwner(options);
+  const timeoutMs = options.timeoutMs ?? JOB_LOCK_TIMEOUT_MS;
+  const retryMs = options.retryMs ?? JOB_LOCK_RETRY_MS;
+  const deadline = Date.now() + timeoutMs;
   let lockHandle = null;
 
   while (lockHandle === null) {
@@ -197,22 +313,23 @@ export function withJobPersistenceLock(cwd, jobId, callback) {
         throw error;
       }
 
-      try {
-        if (Date.now() - fs.statSync(lockFile).mtimeMs >= JOB_LOCK_STALE_AFTER_MS) {
-          fs.unlinkSync(lockFile);
-          continue;
-        }
-      } catch (statError) {
-        if (statError?.code !== "ENOENT") {
-          throw statError;
-        }
+      if (reclaimAbandonedLock(lockFile, options)) {
         continue;
       }
 
       if (Date.now() >= deadline) {
-        throw new Error(`Timed out acquiring persistence lock for job ${jobId}.`);
+        throw new Error(`Timed out acquiring persistence lock ${description}.`);
       }
-      sleepSynchronously(JOB_LOCK_RETRY_MS);
+      sleepSynchronously(retryMs);
+      continue;
+    }
+
+    try {
+      fs.writeFileSync(lockHandle, `${JSON.stringify(owner)}\n`, "utf8");
+    } catch (error) {
+      fs.closeSync(lockHandle);
+      lockHandle = null;
+      throw error;
     }
   }
 
@@ -220,14 +337,16 @@ export function withJobPersistenceLock(cwd, jobId, callback) {
     return callback();
   } finally {
     fs.closeSync(lockHandle);
-    try {
-      fs.unlinkSync(lockFile);
-    } catch (error) {
-      if (error?.code !== "ENOENT") {
-        throw error;
-      }
-    }
+    removeLockIfOwned(lockFile, owner.token);
   }
+}
+
+export function withStatePersistenceLock(cwd, callback, options = {}) {
+  return withPersistenceLock(resolveStateLockFile(cwd), callback, options, "for workspace state");
+}
+
+export function withJobPersistenceLock(cwd, jobId, callback, options = {}) {
+  return withPersistenceLock(resolveJobLockFile(cwd, jobId), callback, options, `for job ${jobId}`);
 }
 
 export function readJobFile(jobFile) {

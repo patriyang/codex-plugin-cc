@@ -1547,6 +1547,7 @@ test("task --background handshakes queued persistence before releasing its worke
   const parentProbeStarted = path.join(probeDir, "parent-started");
   const parentProbeRelease = path.join(probeDir, "parent-release");
   const parentProbeLock = path.join(probeDir, "parent-lock");
+  const lockOwnerProbeLock = path.join(probeDir, "lock-owner-lock");
   const workerProbeStarted = path.join(probeDir, "worker-started");
   const workerProbeRelease = path.join(probeDir, "worker-release");
   const workerProbeLock = path.join(probeDir, "worker-lock");
@@ -1554,9 +1555,12 @@ test("task --background handshakes queued persistence before releasing its worke
     path.join(probeDir, "ps"),
     [
       "#!/bin/sh",
+      "# Keep state-lock owner probes separate from the parent/worker handshake probes.",
       'if mkdir "$CODEX_TEST_PARENT_PROBE_LOCK" 2>/dev/null; then',
       '  printf \'started\\n\' > "$CODEX_TEST_PARENT_PROBE_STARTED"',
       '  while [ ! -e "$CODEX_TEST_PARENT_PROBE_RELEASE" ]; do sleep 0.01; done',
+      'elif mkdir "$CODEX_TEST_LOCK_OWNER_PROBE_LOCK" 2>/dev/null; then',
+      "  :",
       'elif mkdir "$CODEX_TEST_WORKER_PROBE_LOCK" 2>/dev/null; then',
       '  printf \'started\\n\' > "$CODEX_TEST_WORKER_PROBE_STARTED"',
       '  while [ ! -e "$CODEX_TEST_WORKER_PROBE_RELEASE" ]; do sleep 0.01; done',
@@ -1572,6 +1576,7 @@ test("task --background handshakes queued persistence before releasing its worke
     CODEX_TEST_PARENT_PROBE_LOCK: parentProbeLock,
     CODEX_TEST_PARENT_PROBE_STARTED: parentProbeStarted,
     CODEX_TEST_PARENT_PROBE_RELEASE: parentProbeRelease,
+    CODEX_TEST_LOCK_OWNER_PROBE_LOCK: lockOwnerProbeLock,
     CODEX_TEST_WORKER_PROBE_LOCK: workerProbeLock,
     CODEX_TEST_WORKER_PROBE_STARTED: workerProbeStarted,
     CODEX_TEST_WORKER_PROBE_RELEASE: workerProbeRelease

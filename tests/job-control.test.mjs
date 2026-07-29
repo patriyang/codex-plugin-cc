@@ -101,6 +101,50 @@ test("reapDeadJobs preserves an alive job when its start time lookup is unavaila
   assert.deepEqual(job, originalJob);
 });
 
+test("reapDeadJobs preserves a newer active worker published during the dead-process probe", () => {
+  const workspace = makeTempDir();
+  const jobId = "task-reap-fresh-worker";
+  const listedJob = {
+    id: jobId,
+    workspaceRoot: workspace,
+    status: "running",
+    phase: "tool",
+    pid: 1234,
+    pidStartTime: "old-start",
+    threadId: "old-thread"
+  };
+  const freshJob = {
+    ...listedJob,
+    pid: 5678,
+    pidStartTime: "new-start",
+    threadId: "new-thread"
+  };
+  writeJobFile(workspace, jobId, listedJob);
+  upsertJob(workspace, listedJob);
+
+  const [job] = reapDeadJobs(workspace, [listedJob], {
+    isProcessAlive(pid) {
+      assert.equal(pid, listedJob.pid);
+      writeJobFile(workspace, jobId, freshJob);
+      upsertJob(workspace, freshJob);
+      return false;
+    }
+  });
+
+  assert.equal(job.status, "running");
+  assert.equal(job.pid, freshJob.pid);
+  assert.equal(job.pidStartTime, freshJob.pidStartTime);
+  assert.equal(job.threadId, freshJob.threadId);
+  const indexedJob = listJobs(workspace).find((candidate) => candidate.id === jobId);
+  assert.equal(indexedJob.status, "running");
+  assert.equal(indexedJob.pid, freshJob.pid);
+  assert.equal(indexedJob.pidStartTime, freshJob.pidStartTime);
+  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8"));
+  assert.equal(storedJob.status, "running");
+  assert.equal(storedJob.pid, freshJob.pid);
+  assert.equal(storedJob.pidStartTime, freshJob.pidStartTime);
+});
+
 test("runTrackedJob persists the worker start time in its running record", async () => {
   const workspace = makeTempDir();
   const job = {

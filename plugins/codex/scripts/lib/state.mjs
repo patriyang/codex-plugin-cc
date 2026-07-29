@@ -97,7 +97,7 @@ function removeFileIfExists(filePath) {
   }
 }
 
-export function saveState(cwd, state) {
+function saveStateUnlocked(cwd, state) {
   const previousJobs = loadState(cwd).jobs;
   ensureStateDir(cwd);
   const nextJobs = pruneJobs(state.jobs ?? []);
@@ -123,10 +123,16 @@ export function saveState(cwd, state) {
   return nextState;
 }
 
+export function saveState(cwd, state) {
+  return withStatePersistenceLock(cwd, () => saveStateUnlocked(cwd, state));
+}
+
 export function updateState(cwd, mutate) {
-  const state = loadState(cwd);
-  mutate(state);
-  return saveState(cwd, state);
+  return withStatePersistenceLock(cwd, () => {
+    const state = loadState(cwd);
+    mutate(state);
+    return saveStateUnlocked(cwd, state);
+  });
 }
 
 export function generateJobId(prefix = "job") {
@@ -135,25 +141,23 @@ export function generateJobId(prefix = "job") {
 }
 
 export function upsertJob(cwd, jobPatch) {
-  return withStatePersistenceLock(cwd, () =>
-    updateState(cwd, (state) => {
-      const timestamp = nowIso();
-      const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
-      if (existingIndex === -1) {
-        state.jobs.unshift({
-          createdAt: timestamp,
-          updatedAt: timestamp,
-          ...jobPatch
-        });
-        return;
-      }
-      state.jobs[existingIndex] = {
-        ...state.jobs[existingIndex],
-        ...jobPatch,
-        updatedAt: timestamp
-      };
-    })
-  );
+  return updateState(cwd, (state) => {
+    const timestamp = nowIso();
+    const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
+    if (existingIndex === -1) {
+      state.jobs.unshift({
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        ...jobPatch
+      });
+      return;
+    }
+    state.jobs[existingIndex] = {
+      ...state.jobs[existingIndex],
+      ...jobPatch,
+      updatedAt: timestamp
+    };
+  });
 }
 
 export function listJobs(cwd) {

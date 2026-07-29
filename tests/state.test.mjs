@@ -131,7 +131,7 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
   );
 });
 
-test("upsertJob retains different-job updates under the workspace state lock", () => {
+test("config and different-job updates retain both results under the workspace state lock", () => {
   const workspace = makeTempDir();
   const readyFile = path.join(workspace, "state-writer-ready");
   const doneFile = path.join(workspace, "state-writer-done");
@@ -141,8 +141,9 @@ test("upsertJob retains different-job updates under the workspace state lock", (
   ).href;
   const childScript = [
     'import fs from "node:fs";',
-    `const { upsertJob } = await import(${JSON.stringify(stateModuleUrl)});`,
+    `const { setConfig, upsertJob } = await import(${JSON.stringify(stateModuleUrl)});`,
     'fs.writeFileSync(process.env.READY_FILE, "ready", "utf8");',
+    'setConfig(process.env.WORKSPACE, "stopReviewGate", true);',
     'upsertJob(process.env.WORKSPACE, { id: "job-b", status: "running" });',
     'fs.writeFileSync(process.env.DONE_FILE, "done", "utf8");'
   ].join("\n");
@@ -167,14 +168,16 @@ test("upsertJob retains different-job updates under the workspace state lock", (
       createdAt: "2026-07-29T12:00:00.000Z",
       updatedAt: "2026-07-29T12:00:00.000Z"
     });
-    saveState(workspace, staleState);
+    fs.writeFileSync(resolveStateFile(workspace), `${JSON.stringify(staleState, null, 2)}\n`, "utf8");
   });
   waitForFile(doneFile);
   if (child.exitCode === null) {
     child.kill();
   }
 
-  const jobs = loadState(workspace).jobs;
+  const state = loadState(workspace);
+  assert.equal(state.config.stopReviewGate, true);
+  const jobs = state.jobs;
   assert.equal(jobs.some((job) => job.id === "job-a"), true);
   assert.equal(jobs.some((job) => job.id === "job-b"), true);
 });

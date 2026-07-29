@@ -32,12 +32,12 @@ import {
   listJobs,
   setConfig,
   upsertJob,
-  withJobPersistenceLock,
   writeJobFile
 } from "./lib/state.mjs";
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
+  persistJobCancellation,
   readStoredJob,
   resolveCancelableJob,
   resolveResultJob,
@@ -1092,31 +1092,14 @@ async function handleCancel(argv) {
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
-  const completedAt = nowIso();
-  const nextJob = {
-    ...job,
-    status: "cancelled",
-    phase: "cancelled",
-    pid: null,
-    completedAt,
-    errorMessage: "Cancelled by user."
-  };
-
-  withJobPersistenceLock(workspaceRoot, job.id, () => {
-    writeJobFile(workspaceRoot, job.id, {
-      ...existing,
-      ...nextJob,
-      cancelledAt: completedAt
-    });
-    upsertJob(workspaceRoot, {
-      id: job.id,
-      status: "cancelled",
-      phase: "cancelled",
-      pid: null,
-      errorMessage: "Cancelled by user.",
-      completedAt
-    });
-  });
+  const cancellation = persistJobCancellation(workspaceRoot, job, existing);
+  if (!cancellation.cancelled) {
+    if (cancellation.job?.status) {
+      throw new Error(`Job ${job.id} finished as ${cancellation.job.status} before cancellation.`);
+    }
+    throw new Error(`Job ${job.id} is no longer active.`);
+  }
+  const nextJob = cancellation.job;
 
   let interrupt;
   if (Number.isFinite(job.pid) && !isProcessAlive(job.pid)) {

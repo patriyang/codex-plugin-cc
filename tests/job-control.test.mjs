@@ -3,7 +3,11 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { reapDeadJobs, resolveResultJob } from "../plugins/codex/scripts/lib/job-control.mjs";
+import {
+  persistJobCancellation,
+  reapDeadJobs,
+  resolveResultJob
+} from "../plugins/codex/scripts/lib/job-control.mjs";
 import {
   ensureStateDir,
   listJobs,
@@ -187,6 +191,57 @@ test("runTrackedJob cannot overwrite cancellation that lands before result persi
   const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8"));
   assert.equal(storedJob.status, "cancelled");
   assert.equal(storedJob.phase, "cancelled");
+});
+
+test("persistJobCancellation preserves a terminal result that wins after the active snapshot", () => {
+  const workspace = makeTempDir();
+  const jobId = "task-cancel-after-finish";
+  const job = {
+    id: jobId,
+    workspaceRoot: workspace,
+    title: "Codex Task",
+    status: "running",
+    phase: "running",
+    pid: 1234
+  };
+  writeJobFile(workspace, jobId, job);
+  upsertJob(workspace, job);
+  const existing = JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8"));
+
+  const completedAt = "2026-07-29T12:01:00.000Z";
+  const completedJob = {
+    ...job,
+    status: "completed",
+    phase: "done",
+    pid: null,
+    completedAt,
+    result: { message: "done" }
+  };
+  const result = persistJobCancellation(workspace, job, existing, {
+    withPersistenceLock(cwd, id, callback) {
+      return withJobPersistenceLock(cwd, id, () => {
+        writeJobFile(cwd, id, completedJob);
+        upsertJob(cwd, {
+          id,
+          status: completedJob.status,
+          phase: completedJob.phase,
+          pid: completedJob.pid,
+          completedAt
+        });
+        return callback();
+      });
+    }
+  });
+
+  assert.equal(result.cancelled, false);
+  assert.equal(result.job.status, "completed");
+  assert.equal(result.job.phase, "done");
+  const indexedJob = listJobs(workspace).find((candidate) => candidate.id === jobId);
+  assert.equal(indexedJob.status, "completed");
+  assert.equal(indexedJob.phase, "done");
+  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8"));
+  assert.equal(storedJob.status, "completed");
+  assert.equal(storedJob.phase, "done");
 });
 
 test("reapDeadJobs preserves a completion stored after the job list was read", () => {

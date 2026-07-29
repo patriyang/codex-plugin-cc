@@ -16,9 +16,63 @@ import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 export const DEFAULT_MAX_STATUS_JOBS = 8;
 export const DEFAULT_MAX_PROGRESS_LINES = 4;
+const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 export function sortJobsNewestFirst(jobs) {
   return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+}
+
+function isTerminalJobStatus(status) {
+  return TERMINAL_JOB_STATUSES.has(status);
+}
+
+function isActiveJobStatus(status) {
+  return status === "queued" || status === "running";
+}
+
+export function persistJobCancellation(workspaceRoot, job, existing, options = {}) {
+  const withPersistenceLockImpl = options.withPersistenceLock ?? withJobPersistenceLock;
+  let terminalJob = null;
+  let cancelledJob = null;
+  let latestJob = null;
+
+  withPersistenceLockImpl(workspaceRoot, job.id, () => {
+    const latestStoredJob = readStoredJob(workspaceRoot, job.id);
+    const latestIndexedJob = listJobs(workspaceRoot).find((candidate) => candidate.id === job.id) ?? null;
+    latestJob = latestStoredJob ?? latestIndexedJob;
+    terminalJob = [latestStoredJob, latestIndexedJob].find((candidate) => isTerminalJobStatus(candidate?.status)) ?? null;
+    if (terminalJob || ![latestStoredJob, latestIndexedJob].some((candidate) => isActiveJobStatus(candidate?.status))) {
+      return;
+    }
+
+    const completedAt = nowIso();
+    cancelledJob = {
+      ...job,
+      status: "cancelled",
+      phase: "cancelled",
+      pid: null,
+      completedAt,
+      errorMessage: "Cancelled by user."
+    };
+    writeJobFile(workspaceRoot, job.id, {
+      ...existing,
+      ...cancelledJob,
+      cancelledAt: completedAt
+    });
+    upsertJob(workspaceRoot, {
+      id: job.id,
+      status: "cancelled",
+      phase: "cancelled",
+      pid: null,
+      errorMessage: "Cancelled by user.",
+      completedAt
+    });
+  });
+
+  return {
+    cancelled: Boolean(cancelledJob),
+    job: terminalJob ?? cancelledJob ?? latestJob
+  };
 }
 
 export function reapDeadJobs(workspaceRoot, jobs, options = {}) {

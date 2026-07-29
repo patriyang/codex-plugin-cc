@@ -1089,10 +1089,7 @@ async function handleCancel(argv) {
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process.env });
-  const existing = readStoredJob(workspaceRoot, job.id) ?? {};
-  const threadId = existing.threadId ?? job.threadId ?? null;
-  const turnId = existing.turnId ?? job.turnId ?? null;
-  const cancellation = persistJobCancellation(workspaceRoot, job, existing);
+  const cancellation = persistJobCancellation(workspaceRoot, job);
   if (!cancellation.cancelled) {
     if (cancellation.job?.status) {
       throw new Error(`Job ${job.id} finished as ${cancellation.job.status} before cancellation.`);
@@ -1100,9 +1097,12 @@ async function handleCancel(argv) {
     throw new Error(`Job ${job.id} is no longer active.`);
   }
   const nextJob = cancellation.job;
+  const activeJob = cancellation.activeJob;
+  const threadId = activeJob.threadId ?? null;
+  const turnId = activeJob.turnId ?? null;
 
   let interrupt;
-  if (Number.isFinite(job.pid) && !isProcessAlive(job.pid)) {
+  if (Number.isFinite(activeJob.pid) && !isProcessAlive(activeJob.pid)) {
     interrupt = {
       attempted: false,
       interrupted: false,
@@ -1123,7 +1123,7 @@ async function handleCancel(argv) {
   }
   if (interrupt.attempted) {
     appendLogLine(
-      job.logFile,
+      activeJob.logFile,
       interrupt.interrupted
         ? `Requested Codex turn interrupt for ${turnId} on ${threadId}.`
         : `Codex turn interrupt failed${interrupt.detail ? `: ${interrupt.detail}` : "."}`
@@ -1135,27 +1135,27 @@ async function handleCancel(argv) {
     delivered: false,
     method: null
   };
-  const storedStartTime = typeof job.pidStartTime === "string" ? job.pidStartTime.trim() : "";
+  const storedStartTime = typeof activeJob.pidStartTime === "string" ? activeJob.pidStartTime.trim() : "";
   let currentStartTime = "";
-  if (Number.isFinite(job.pid) && storedStartTime) {
+  if (Number.isFinite(activeJob.pid) && storedStartTime) {
     try {
-      const observedStartTime = getProcessStartTime(job.pid);
+      const observedStartTime = getProcessStartTime(activeJob.pid);
       currentStartTime = typeof observedStartTime === "string" ? observedStartTime.trim() : "";
     } catch {
       currentStartTime = "";
     }
   }
   if (storedStartTime && currentStartTime === storedStartTime) {
-    workerSignal = terminateProcessTree(job.pid);
+    workerSignal = terminateProcessTree(activeJob.pid);
   } else {
-    appendLogLine(job.logFile, "No verified worker was signalled.");
+    appendLogLine(activeJob.logFile, "No verified worker was signalled.");
   }
-  appendLogLine(job.logFile, "Cancelled by user.");
+  appendLogLine(activeJob.logFile, "Cancelled by user.");
 
   const payload = {
     jobId: job.id,
     status: "cancelled",
-    title: job.title,
+    title: activeJob.title,
     turnInterruptAttempted: interrupt.attempted,
     turnInterrupted: interrupt.interrupted,
     turnInterruptDetail: interrupt.detail,

@@ -206,8 +206,6 @@ test("persistJobCancellation preserves a terminal result that wins after the act
   };
   writeJobFile(workspace, jobId, job);
   upsertJob(workspace, job);
-  const existing = JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8"));
-
   const completedAt = "2026-07-29T12:01:00.000Z";
   const completedJob = {
     ...job,
@@ -217,7 +215,7 @@ test("persistJobCancellation preserves a terminal result that wins after the act
     completedAt,
     result: { message: "done" }
   };
-  const result = persistJobCancellation(workspace, job, existing, {
+  const result = persistJobCancellation(workspace, job, {
     withPersistenceLock(cwd, id, callback) {
       return withJobPersistenceLock(cwd, id, () => {
         writeJobFile(cwd, id, completedJob);
@@ -242,6 +240,88 @@ test("persistJobCancellation preserves a terminal result that wins after the act
   const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8"));
   assert.equal(storedJob.status, "completed");
   assert.equal(storedJob.phase, "done");
+});
+
+test("persistJobCancellation uses the freshest stored and indexed metadata", () => {
+  const workspace = makeTempDir();
+  const jobId = "task-cancel-fresh-metadata";
+  const oldLogFile = resolveJobLogFile(workspace, `${jobId}-old`);
+  const freshLogFile = resolveJobLogFile(workspace, `${jobId}-fresh`);
+  const job = {
+    id: jobId,
+    workspaceRoot: workspace,
+    title: "Codex Task",
+    status: "running",
+    phase: "running",
+    pid: 1234,
+    pidStartTime: "old-start",
+    threadId: "old-thread",
+    turnId: "old-turn",
+    logFile: oldLogFile
+  };
+  writeJobFile(workspace, jobId, job);
+  upsertJob(workspace, job);
+  const freshStoredJob = {
+    ...job,
+    title: "Fresh Codex Task",
+    phase: "tool",
+    pid: 5678,
+    pidStartTime: "new-start",
+    threadId: "new-thread",
+    turnId: "new-turn",
+    logFile: freshLogFile,
+    storedOnly: "from-job-file"
+  };
+  const result = persistJobCancellation(workspace, job, {
+    withPersistenceLock(cwd, id, callback) {
+      return withJobPersistenceLock(cwd, id, () => {
+        writeJobFile(cwd, id, freshStoredJob);
+        upsertJob(cwd, {
+          id,
+          status: "running",
+          phase: "tool",
+          pid: 5678,
+          pidStartTime: "indexed-start",
+          threadId: "indexed-thread",
+          turnId: "indexed-turn",
+          summary: "from-index",
+          indexedOnly: "from-index"
+        });
+        return callback();
+      });
+    }
+  });
+
+  assert.equal(result.cancelled, true);
+  assert.equal(result.activeJob.pid, 5678);
+  assert.equal(result.activeJob.pidStartTime, "new-start");
+  assert.equal(result.activeJob.threadId, "new-thread");
+  assert.equal(result.activeJob.turnId, "new-turn");
+  assert.equal(result.activeJob.logFile, freshLogFile);
+  assert.equal(result.activeJob.storedOnly, "from-job-file");
+  assert.equal(result.activeJob.summary, "from-index");
+  assert.equal(result.activeJob.indexedOnly, "from-index");
+
+  const indexedJob = listJobs(workspace).find((candidate) => candidate.id === jobId);
+  assert.equal(indexedJob.status, "cancelled");
+  assert.equal(indexedJob.pid, null);
+  assert.equal(indexedJob.threadId, "new-thread");
+  assert.equal(indexedJob.turnId, "new-turn");
+  assert.equal(indexedJob.logFile, freshLogFile);
+  assert.equal(indexedJob.storedOnly, "from-job-file");
+  assert.equal(indexedJob.summary, "from-index");
+  assert.equal(indexedJob.indexedOnly, "from-index");
+
+  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8"));
+  assert.equal(storedJob.status, "cancelled");
+  assert.equal(storedJob.pid, null);
+  assert.equal(storedJob.pidStartTime, "new-start");
+  assert.equal(storedJob.threadId, "new-thread");
+  assert.equal(storedJob.turnId, "new-turn");
+  assert.equal(storedJob.logFile, freshLogFile);
+  assert.equal(storedJob.storedOnly, "from-job-file");
+  assert.equal(storedJob.summary, "from-index");
+  assert.equal(storedJob.indexedOnly, "from-index");
 });
 
 test("reapDeadJobs preserves a completion stored after the job list was read", () => {

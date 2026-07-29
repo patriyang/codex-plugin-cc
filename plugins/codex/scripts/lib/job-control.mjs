@@ -30,10 +30,11 @@ function isActiveJobStatus(status) {
   return status === "queued" || status === "running";
 }
 
-export function persistJobCancellation(workspaceRoot, job, existing, options = {}) {
+export function persistJobCancellation(workspaceRoot, job, options = {}) {
   const withPersistenceLockImpl = options.withPersistenceLock ?? withJobPersistenceLock;
   let terminalJob = null;
   let cancelledJob = null;
+  let activeJob = null;
   let latestJob = null;
 
   withPersistenceLockImpl(workspaceRoot, job.id, () => {
@@ -45,9 +46,13 @@ export function persistJobCancellation(workspaceRoot, job, existing, options = {
       return;
     }
 
+    activeJob = {
+      ...(latestIndexedJob ?? {}),
+      ...(latestStoredJob ?? {})
+    };
     const completedAt = nowIso();
     cancelledJob = {
-      ...job,
+      ...activeJob,
       status: "cancelled",
       phase: "cancelled",
       pid: null,
@@ -55,23 +60,16 @@ export function persistJobCancellation(workspaceRoot, job, existing, options = {
       errorMessage: "Cancelled by user."
     };
     writeJobFile(workspaceRoot, job.id, {
-      ...existing,
       ...cancelledJob,
       cancelledAt: completedAt
     });
-    upsertJob(workspaceRoot, {
-      id: job.id,
-      status: "cancelled",
-      phase: "cancelled",
-      pid: null,
-      errorMessage: "Cancelled by user.",
-      completedAt
-    });
+    upsertJob(workspaceRoot, cancelledJob);
   });
 
   return {
     cancelled: Boolean(cancelledJob),
-    job: terminalJob ?? cancelledJob ?? latestJob
+    job: terminalJob ?? cancelledJob ?? latestJob,
+    activeJob
   };
 }
 

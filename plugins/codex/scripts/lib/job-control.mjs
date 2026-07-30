@@ -446,24 +446,32 @@ export function readStoredJob(workspaceRoot, jobId) {
 
 function matchJobReference(jobs, reference, predicate = () => true) {
   const filtered = jobs.filter(predicate);
-  if (!reference) {
-    return filtered[0] ?? null;
+  const selected = findJobReference(filtered, reference);
+  if (selected) {
+    return selected;
   }
 
-  const exact = filtered.find((job) => job.id === reference);
+  throw new Error(`No job found for "${reference}". Run /codex:status to list known jobs.`);
+}
+
+function findJobReference(jobs, reference) {
+  if (!reference) {
+    return jobs[0] ?? null;
+  }
+
+  const exact = jobs.find((job) => job.id === reference);
   if (exact) {
     return exact;
   }
 
-  const prefixMatches = filtered.filter((job) => job.id.startsWith(reference));
+  const prefixMatches = jobs.filter((job) => job.id.startsWith(reference));
   if (prefixMatches.length === 1) {
     return prefixMatches[0];
   }
   if (prefixMatches.length > 1) {
     throw new Error(`Job reference "${reference}" is ambiguous. Use a longer job id.`);
   }
-
-  throw new Error(`No job found for "${reference}". Run /codex:status to list known jobs.`);
+  return null;
 }
 
 export function buildStatusSnapshot(cwd, options = {}) {
@@ -538,10 +546,25 @@ export function resolveResultJob(cwd, reference) {
 
 export function resolveCancelableJob(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = reapDeadJobs(workspaceRoot, sortJobsNewestFirst(listJobs(workspaceRoot)), options);
+  const listedJobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = reapDeadJobs(workspaceRoot, listedJobs, options);
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
 
   if (reference) {
+    const listedActiveJobs = listedJobs.filter((job) => job.status === "queued" || job.status === "running");
+    const requested = findJobReference(listedActiveJobs, reference);
+    if (requested) {
+      const selected = activeJobs.find((job) => job.id === requested.id);
+      if (selected) {
+        return { workspaceRoot, job: selected };
+      }
+
+      const reaped = jobs.find((job) => job.id === requested.id);
+      if (reaped?.status === "failed" && reaped.reaped === true) {
+        return { workspaceRoot, job: reaped, outcome: "reaped" };
+      }
+    }
+
     const selected = matchJobReference(activeJobs, reference);
     if (!selected) {
       throw new Error(`No active job found for "${reference}".`);

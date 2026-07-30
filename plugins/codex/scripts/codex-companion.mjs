@@ -1088,7 +1088,25 @@ async function handleCancel(argv) {
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process.env });
+  const resolution = resolveCancelableJob(cwd, reference, { env: process.env });
+  if (resolution.outcome === "reaped") {
+    const reapedJob = resolution.job;
+    const payload = {
+      jobId: reapedJob.id,
+      status: reapedJob.status,
+      title: reapedJob.title,
+      reaped: true,
+      turnInterruptAttempted: false,
+      turnInterrupted: false,
+      turnInterruptDetail: null,
+      workerSignalAttempted: false,
+      workerSignalled: false
+    };
+    outputCommandResult(payload, renderCancelReport(reapedJob), options.json);
+    return;
+  }
+
+  const { workspaceRoot, job } = resolution;
   const cancellation = persistJobCancellation(workspaceRoot, job);
   if (!cancellation.cancelled) {
     if (cancellation.job?.status) {

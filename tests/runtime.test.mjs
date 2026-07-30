@@ -3106,7 +3106,74 @@ test("cancel marks a legacy job cancelled without signalling its worker", async 
   assert.match(fs.readFileSync(logFile, "utf8"), /no verified worker/i);
 });
 
-test("cancel does not signal a worker whose PID has been replaced", async (t) => {
+test("cancel reaps an explicit dead-PID job without signalling it", () => {
+  const workspace = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  ensureStateDir(workspace);
+
+  const jobId = "task-dead-explicit-cancel";
+  const deadPid = spawnDeadPid();
+  const logFile = resolveJobLogFile(workspace, jobId);
+  const killLog = path.join(makeTempDir(), "kill-signals.log");
+  const processProbeHook = path.join(makeTempDir(), "process-probe.cjs");
+  fs.writeFileSync(killLog, "", "utf8");
+  fs.writeFileSync(
+    processProbeHook,
+    `const originalKill = process.kill;\n` +
+      `process.kill = function (pid, signal) {\n` +
+      `  if (pid === ${deadPid} && signal !== 0) require("node:fs").appendFileSync(${JSON.stringify(killLog)}, String(signal) + "\\n");\n` +
+      `  return originalKill.call(process, pid, signal);\n` +
+      `};\n`,
+    "utf8"
+  );
+  fs.writeFileSync(logFile, "", "utf8");
+  writeJobFile(workspace, jobId, {
+    id: jobId,
+    status: "running",
+    title: "Dead Codex Task",
+    jobClass: "task",
+    pid: deadPid,
+    logFile
+  });
+  upsertJob(workspace, {
+    id: jobId,
+    status: "running",
+    title: "Dead Codex Task",
+    jobClass: "task",
+    pid: deadPid,
+    logFile
+  });
+
+  const cancel = run("node", [SCRIPT, "cancel", jobId, "--json"], {
+    cwd: workspace,
+    env: {
+      ...buildEnv(binDir),
+      NODE_OPTIONS: `--require=${processProbeHook}`
+    }
+  });
+
+  assert.equal(cancel.status, 0, cancel.stderr);
+  const payload = JSON.parse(cancel.stdout);
+  assert.equal(payload.jobId, jobId);
+  assert.equal(payload.status, "failed");
+  assert.equal(payload.title, "Dead Codex Task");
+  assert.equal(payload.reaped, true);
+  assert.equal(payload.turnInterruptAttempted, false);
+  assert.equal(payload.turnInterrupted, false);
+  assert.equal(payload.workerSignalAttempted, false);
+  assert.equal(payload.workerSignalled, false);
+  assert.equal(fs.readFileSync(killLog, "utf8"), "");
+
+  const persisted = JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8"));
+  assert.equal(persisted.status, "failed");
+  assert.equal(persisted.reaped, true);
+  const state = JSON.parse(fs.readFileSync(path.join(resolveStateDir(workspace), "state.json"), "utf8"));
+  assert.equal(state.jobs.find((job) => job.id === jobId).status, "failed");
+  assert.equal(state.jobs.find((job) => job.id === jobId).reaped, true);
+});
+
+test("cancel reaps an explicit reused-PID job without signalling it", async (t) => {
   const workspace = makeTempDir();
   const processBinDir = makeTempDir();
   const processEnv = {
@@ -3160,12 +3227,23 @@ test("cancel does not signal a worker whose PID has been replaced", async (t) =>
     env: processEnv
   });
 
-  assert.equal(cancel.status, 1);
-  assert.match(cancel.stderr, /No job found/);
+  assert.equal(cancel.status, 0, cancel.stderr);
+  const payload = JSON.parse(cancel.stdout);
+  assert.equal(payload.jobId, jobId);
+  assert.equal(payload.status, "failed");
+  assert.equal(payload.title, "Codex Task");
+  assert.equal(payload.reaped, true);
+  assert.equal(payload.turnInterruptAttempted, false);
+  assert.equal(payload.turnInterrupted, false);
+  assert.equal(payload.workerSignalAttempted, false);
+  assert.equal(payload.workerSignalled, false);
   assert.doesNotThrow(() => process.kill(sleeper.pid, 0));
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
   assert.equal(state.jobs[0].status, "failed");
   assert.equal(state.jobs[0].reaped, true);
+  const persisted = JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8"));
+  assert.equal(persisted.status, "failed");
+  assert.equal(persisted.reaped, true);
 });
 
 test("cancel marks an unverifiable worker cancelled without signalling it", async (t) => {

@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
   persistJobCancellation,
   reapDeadJobs,
+  resolveCancelableJob,
   resolveResultJob
 } from "../plugins/codex/scripts/lib/job-control.mjs";
 import {
@@ -457,6 +458,43 @@ test("reapDeadJobs does not repeat a partial reap whose stored record is termina
   assert.equal(fs.statSync(jobFile).mtime.toISOString(), fixedMtime.toISOString());
   assert.equal(fs.statSync(logFile).mtime.toISOString(), fixedMtime.toISOString());
   assert.equal(logBefore.match(/Job reaped:/g)?.length, 1);
+});
+
+test("resolveCancelableJob does not report an already-reaped terminal job as a new reap", () => {
+  const workspace = makeTempDir();
+  ensureStateDir(workspace);
+  const jobId = "task-stale-reap";
+  const deadPid = spawnDeadPid();
+  const logFile = resolveJobLogFile(workspace, jobId);
+  const terminalJob = {
+    id: jobId,
+    status: "failed",
+    phase: "failed",
+    title: "Already Reaped Task",
+    pid: null,
+    logFile,
+    errorMessage: `Worker process ${deadPid} is no longer running; the job ended without recording a result.`,
+    completedAt: "2026-07-29T12:00:00.000Z",
+    reaped: true
+  };
+
+  writeJobFile(workspace, jobId, terminalJob);
+  upsertJob(workspace, {
+    id: jobId,
+    status: "running",
+    title: terminalJob.title,
+    pid: deadPid,
+    logFile
+  });
+
+  assert.throws(
+    () => resolveCancelableJob(workspace, jobId, { isProcessAlive: () => false }),
+    /No job found for "task-stale-reap"/
+  );
+  assert.deepEqual(JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8")), terminalJob);
+  const indexedJob = listJobs(workspace).find((job) => job.id === jobId);
+  assert.equal(indexedJob.status, "running");
+  assert.equal(indexedJob.pid, deadPid);
 });
 
 test("resolveResultJob reaps jobs before applying the session filter", () => {

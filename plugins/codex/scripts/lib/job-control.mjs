@@ -262,6 +262,7 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
       } catch {
         // A missing or unwritable log must not break status.
       }
+      options.onReap?.(persistedReapJob);
     }
 
     return persistedReapJob;
@@ -547,7 +548,11 @@ export function resolveResultJob(cwd, reference) {
 export function resolveCancelableJob(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const listedJobs = sortJobsNewestFirst(listJobs(workspaceRoot));
-  const jobs = reapDeadJobs(workspaceRoot, listedJobs, options);
+  const reapedJobIds = new Set();
+  const jobs = reapDeadJobs(workspaceRoot, listedJobs, {
+    ...options,
+    onReap: (job) => reapedJobIds.add(job.id)
+  });
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
 
   if (reference) {
@@ -560,7 +565,7 @@ export function resolveCancelableJob(cwd, reference, options = {}) {
       }
 
       const reaped = jobs.find((job) => job.id === requested.id);
-      if (reaped?.status === "failed" && reaped.reaped === true) {
+      if (reapedJobIds.has(requested.id) && reaped?.status === "failed" && reaped.reaped === true) {
         return { workspaceRoot, job: reaped, outcome: "reaped" };
       }
     }

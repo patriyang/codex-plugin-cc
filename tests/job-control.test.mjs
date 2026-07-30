@@ -14,6 +14,7 @@ import {
   listJobs,
   resolveJobFile,
   resolveJobLogFile,
+  resolveJobsDir,
   resolveStateFile,
   upsertJob,
   withJobPersistenceLock,
@@ -33,7 +34,6 @@ test("reapDeadJobs reports an in-memory reap when the persistence lock fails", (
 
   try {
     const updatedAt = "2026-07-26T08:00:00.000Z";
-    let reportedJob = null;
     const [job] = reapDeadJobs(
       makeTempDir(),
       [
@@ -45,10 +45,7 @@ test("reapDeadJobs reports an in-memory reap when the persistence lock fails", (
         }
       ],
       {
-        isProcessAlive: () => false,
-        onReap: (reapedJob) => {
-          reportedJob = reapedJob;
-        }
+        isProcessAlive: () => false
       }
     );
 
@@ -57,7 +54,6 @@ test("reapDeadJobs reports an in-memory reap when the persistence lock fails", (
     assert.equal(job.pid, null);
     assert.equal(job.reaped, true);
     assert.equal(job.completedAt, updatedAt);
-    assert.deepEqual(reportedJob, job);
   } finally {
     if (previousPluginData == null) {
       delete process.env.CLAUDE_PLUGIN_DATA;
@@ -93,6 +89,30 @@ test("resolveCancelableJob reports an in-memory reap when the job-file write fai
   assert.equal(indexedJob.status, "failed");
   assert.equal(indexedJob.reaped, true);
   fs.chmodSync(jobFile, 0o644);
+});
+
+test("resolveCancelableJob reports persistence failure when lock and both reap stores fail", () => {
+  const workspace = makeTempDir();
+  ensureStateDir(workspace);
+  const jobId = "task-persistence-failure";
+  const job = {
+    id: jobId,
+    status: "running",
+    pid: 1234
+  };
+  upsertJob(workspace, job);
+
+  const jobsDir = resolveJobsDir(workspace);
+  fs.rmSync(jobsDir, { recursive: true, force: true });
+  fs.writeFileSync(jobsDir, "not a directory", "utf8");
+
+  assert.throws(
+    () => resolveCancelableJob(workspace, jobId, { isProcessAlive: () => false }),
+    /was reaped in memory but its failed state could not be persisted\./
+  );
+  const indexedJob = listJobs(workspace).find((candidate) => candidate.id === jobId);
+  assert.equal(indexedJob.status, "running");
+  assert.equal(indexedJob.pid, job.pid);
 });
 
 test("reapDeadJobs reaps an alive PID when its start time no longer matches", () => {
@@ -493,7 +513,7 @@ test("reapDeadJobs does not repeat a partial reap whose stored record is termina
   assert.equal(logBefore.match(/Job reaped:/g)?.length, 1);
 });
 
-test("resolveCancelableJob does not report an already-reaped terminal job as a new reap", () => {
+test("resolveCancelableJob reports an already-reaped terminal job from the job file", () => {
   const workspace = makeTempDir();
   ensureStateDir(workspace);
   const jobId = "task-stale-reap";
@@ -520,10 +540,9 @@ test("resolveCancelableJob does not report an already-reaped terminal job as a n
     logFile
   });
 
-  assert.throws(
-    () => resolveCancelableJob(workspace, jobId, { isProcessAlive: () => false }),
-    /No job found for "task-stale-reap"/
-  );
+  const resolution = resolveCancelableJob(workspace, jobId, { isProcessAlive: () => false });
+  assert.equal(resolution.outcome, "reaped");
+  assert.deepEqual(resolution.job, terminalJob);
   assert.deepEqual(JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8")), terminalJob);
   const indexedJob = listJobs(workspace).find((job) => job.id === jobId);
   assert.equal(indexedJob.status, "running");

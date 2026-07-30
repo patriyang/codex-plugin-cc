@@ -263,8 +263,6 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
         // A missing or unwritable log must not break status.
       }
     }
-    options.onReap?.(persistedReapJob);
-
     return persistedReapJob;
   });
 }
@@ -445,6 +443,26 @@ export function readStoredJob(workspaceRoot, jobId) {
   return readJobFile(jobFile);
 }
 
+function readPersistedReapedJob(workspaceRoot, jobId) {
+  let storedJob = null;
+  try {
+    storedJob = readStoredJob(workspaceRoot, jobId);
+  } catch {
+    // The workspace index may still provide a persisted terminal record.
+  }
+  if (storedJob?.status === "failed" && storedJob.reaped === true) {
+    return storedJob;
+  }
+
+  let indexedJob = null;
+  try {
+    indexedJob = listJobs(workspaceRoot).find((candidate) => candidate.id === jobId) ?? null;
+  } catch {
+    // Neither persistence source was readable.
+  }
+  return indexedJob?.status === "failed" && indexedJob.reaped === true ? indexedJob : null;
+}
+
 function matchJobReference(jobs, reference, predicate = () => true) {
   const selected = findJobReference(jobs, reference, predicate);
   if (selected) {
@@ -548,11 +566,7 @@ export function resolveResultJob(cwd, reference) {
 export function resolveCancelableJob(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const listedJobs = sortJobsNewestFirst(listJobs(workspaceRoot));
-  const reapedJobIds = new Set();
-  const jobs = reapDeadJobs(workspaceRoot, listedJobs, {
-    ...options,
-    onReap: (job) => reapedJobIds.add(job.id)
-  });
+  const jobs = reapDeadJobs(workspaceRoot, listedJobs, options);
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
 
   if (reference) {
@@ -565,8 +579,12 @@ export function resolveCancelableJob(cwd, reference, options = {}) {
       }
 
       const reaped = jobs.find((job) => job.id === requested.id);
-      if (reapedJobIds.has(requested.id) && reaped?.status === "failed" && reaped.reaped === true) {
-        return { workspaceRoot, job: reaped, outcome: "reaped" };
+      if (reaped?.status === "failed" && reaped.reaped === true) {
+        const persistedReapedJob = readPersistedReapedJob(workspaceRoot, requested.id);
+        if (persistedReapedJob) {
+          return { workspaceRoot, job: persistedReapedJob, outcome: "reaped" };
+        }
+        throw new Error(`Job ${requested.id} was reaped in memory but its failed state could not be persisted.`);
       }
     }
 

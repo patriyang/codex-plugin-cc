@@ -25,7 +25,7 @@ import { initGitRepo, makeTempDir, spawnDeadPid } from "./helpers.mjs";
 delete process.env.CLAUDE_PLUGIN_DATA;
 delete process.env.CODEX_COMPANION_SESSION_ID;
 
-test("reapDeadJobs returns a terminal job when persistence fails", () => {
+test("reapDeadJobs reports an in-memory reap when the persistence lock fails", () => {
   const pluginDataFile = path.join(makeTempDir(), "not-a-directory");
   fs.writeFileSync(pluginDataFile, "", "utf8");
   const previousPluginData = process.env.CLAUDE_PLUGIN_DATA;
@@ -33,6 +33,7 @@ test("reapDeadJobs returns a terminal job when persistence fails", () => {
 
   try {
     const updatedAt = "2026-07-26T08:00:00.000Z";
+    let reportedJob = null;
     const [job] = reapDeadJobs(
       makeTempDir(),
       [
@@ -44,7 +45,10 @@ test("reapDeadJobs returns a terminal job when persistence fails", () => {
         }
       ],
       {
-        isProcessAlive: () => false
+        isProcessAlive: () => false,
+        onReap: (reapedJob) => {
+          reportedJob = reapedJob;
+        }
       }
     );
 
@@ -53,6 +57,7 @@ test("reapDeadJobs returns a terminal job when persistence fails", () => {
     assert.equal(job.pid, null);
     assert.equal(job.reaped, true);
     assert.equal(job.completedAt, updatedAt);
+    assert.deepEqual(reportedJob, job);
   } finally {
     if (previousPluginData == null) {
       delete process.env.CLAUDE_PLUGIN_DATA;
@@ -60,6 +65,34 @@ test("reapDeadJobs returns a terminal job when persistence fails", () => {
       process.env.CLAUDE_PLUGIN_DATA = previousPluginData;
     }
   }
+});
+
+test("resolveCancelableJob reports an in-memory reap when the job-file write fails", () => {
+  const workspace = makeTempDir();
+  ensureStateDir(workspace);
+  const jobId = "task-write-failure";
+  const jobFile = resolveJobFile(workspace, jobId);
+  const job = {
+    id: jobId,
+    status: "running",
+    pid: 1234
+  };
+  fs.writeFileSync(jobFile, `${JSON.stringify(job)}\n`, "utf8");
+  fs.chmodSync(jobFile, 0o444);
+  upsertJob(workspace, job);
+
+  const resolution = resolveCancelableJob(workspace, jobId, { isProcessAlive: () => false });
+  const reapedJob = resolution.job;
+
+  assert.equal(resolution.outcome, "reaped");
+  assert.equal(reapedJob.status, "failed");
+  assert.equal(reapedJob.reaped, true);
+  assert.equal(JSON.parse(fs.readFileSync(jobFile, "utf8")).status, "running");
+  assert.equal(fs.statSync(jobFile).mode & 0o222, 0);
+  const indexedJob = listJobs(workspace).find((candidate) => candidate.id === jobId);
+  assert.equal(indexedJob.status, "failed");
+  assert.equal(indexedJob.reaped, true);
+  fs.chmodSync(jobFile, 0o644);
 });
 
 test("reapDeadJobs reaps an alive PID when its start time no longer matches", () => {
@@ -495,6 +528,50 @@ test("resolveCancelableJob does not report an already-reaped terminal job as a n
   const indexedJob = listJobs(workspace).find((job) => job.id === jobId);
   assert.equal(indexedJob.status, "running");
   assert.equal(indexedJob.pid, deadPid);
+});
+
+test("resolveResultJob reports an explicitly referenced active job", () => {
+  const workspace = makeTempDir();
+  ensureStateDir(workspace);
+  upsertJob(workspace, {
+    id: "task-still-running",
+    status: "running",
+    pid: null
+  });
+
+  assert.throws(
+    () => resolveResultJob(workspace, "task-still-running"),
+    /Job task-still-running is still running\./
+  );
+});
+
+test("resolveResultJob reports the active job when no reference is supplied", () => {
+  const workspace = makeTempDir();
+  ensureStateDir(workspace);
+  upsertJob(workspace, {
+    id: "task-default-running",
+    status: "running",
+    pid: null
+  });
+
+  assert.throws(
+    () => resolveResultJob(workspace, ""),
+    /Job task-default-running is still running\./
+  );
+});
+
+test("resolveResultJob reports when no finished job exists without a reference", () => {
+  const workspace = makeTempDir();
+  ensureStateDir(workspace);
+
+  assert.throws(
+    () => resolveResultJob(workspace, ""),
+    /No finished Codex jobs found for this repository yet\./
+  );
+  assert.throws(
+    () => resolveResultJob(workspace, "missing-job"),
+    /No finished job found for "missing-job"\./
+  );
 });
 
 test("resolveResultJob reaps jobs before applying the session filter", () => {

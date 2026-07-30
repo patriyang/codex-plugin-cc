@@ -262,8 +262,8 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
       } catch {
         // A missing or unwritable log must not break status.
       }
-      options.onReap?.(persistedReapJob);
     }
+    options.onReap?.(persistedReapJob);
 
     return persistedReapJob;
   });
@@ -446,8 +446,7 @@ export function readStoredJob(workspaceRoot, jobId) {
 }
 
 function matchJobReference(jobs, reference, predicate = () => true) {
-  const filtered = jobs.filter(predicate);
-  const selected = findJobReference(filtered, reference);
+  const selected = findJobReference(jobs, reference, predicate);
   if (selected) {
     return selected;
   }
@@ -455,17 +454,18 @@ function matchJobReference(jobs, reference, predicate = () => true) {
   throw new Error(`No job found for "${reference}". Run /codex:status to list known jobs.`);
 }
 
-function findJobReference(jobs, reference) {
+function findJobReference(jobs, reference, predicate = () => true) {
+  const filtered = jobs.filter(predicate);
   if (!reference) {
-    return jobs[0] ?? null;
+    return filtered[0] ?? null;
   }
 
-  const exact = jobs.find((job) => job.id === reference);
+  const exact = filtered.find((job) => job.id === reference);
   if (exact) {
     return exact;
   }
 
-  const prefixMatches = jobs.filter((job) => job.id.startsWith(reference));
+  const prefixMatches = filtered.filter((job) => job.id.startsWith(reference));
   if (prefixMatches.length === 1) {
     return prefixMatches[0];
   }
@@ -523,7 +523,7 @@ export function resolveResultJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const allJobs = reapDeadJobs(workspaceRoot, sortJobsNewestFirst(listJobs(workspaceRoot)));
   const jobs = reference ? allJobs : filterJobsForCurrentSession(allJobs);
-  const selected = matchJobReference(
+  const selected = findJobReference(
     jobs,
     reference,
     (job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled"
@@ -533,7 +533,7 @@ export function resolveResultJob(cwd, reference) {
     return { workspaceRoot, job: selected };
   }
 
-  const active = matchJobReference(jobs, reference, (job) => job.status === "queued" || job.status === "running");
+  const active = findJobReference(jobs, reference, (job) => job.status === "queued" || job.status === "running");
   if (active) {
     throw new Error(`Job ${active.id} is still ${active.status}. Check /codex:status and try again once it finishes.`);
   }

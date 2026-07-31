@@ -371,10 +371,9 @@ test("dispatch is never a stopping point across every async surface", () => {
   assert.doesNotMatch(implement, /caps at \d+ ms/);
 });
 
-test("implement never passes --wait to task, which would land in the prompt", () => {
-  // `handleTask` does not declare `wait` as a boolean option, so parseArgs
-  // routes `--wait` into positionals and readTaskPrompt joins it into the
-  // prompt text -- every dispatch would start with a stray "--wait ". See #46.
+test("implement never passes --wait to task, which is redundant with its foreground default", () => {
+  // `handleTask` declares `wait` as an accepted no-op boolean (foreground is
+  // already `task`'s default; see #46), so SDD dispatches don't need it.
   const implement = read("commands/implement.md");
   for (const line of implement.split("\n")) {
     if (!/codex-companion\.mjs" task /.test(line)) continue;
@@ -382,8 +381,8 @@ test("implement never passes --wait to task, which would land in the prompt", ()
   }
 
   const companion = fs.readFileSync(path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs"), "utf8");
-  const taskOptions = /booleanOptions: \["json", "write", "resume-last", "resume", "fresh", "background"\]/;
-  assert.match(companion, taskOptions, "task's boolean options are unchanged; if `wait` was added, relax this test");
+  const taskOptions = /booleanOptions: \["json", "write", "resume-last", "resume", "fresh", "background", "wait"\]/;
+  assert.match(companion, taskOptions, "task's boolean options should include `wait`");
 });
 
 test("status documents the job-scoped wait without hardcoding runtime values", () => {

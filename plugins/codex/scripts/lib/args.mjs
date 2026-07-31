@@ -45,8 +45,9 @@ export function parseArgs(argv, config = {}) {
         continue;
       }
 
-      positionals.push(token);
-      continue;
+      throw new Error(
+        `Unknown option: --${rawKey}. Pass literal text after a bare "--" if it is not a flag.`
+      );
     }
 
     const shortKey = token.slice(1);
@@ -67,7 +68,9 @@ export function parseArgs(argv, config = {}) {
       continue;
     }
 
-    positionals.push(token);
+    throw new Error(
+      `Unknown option: -${shortKey}. Pass literal text after a bare "--" if it is not a flag.`
+    );
   }
 
   return { options, positionals };

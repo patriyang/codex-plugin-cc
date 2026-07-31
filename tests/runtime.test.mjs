@@ -257,6 +257,18 @@ test("app-server connect destroys broker transport when initialize rejects", asy
   assert.equal(connectionClosed, true);
 });
 
+test("an unrecognized flag fails loudly instead of leaking into a prompt or being silently ignored", () => {
+  const binDir = makeTempDir();
+
+  const result = run("node", [SCRIPT, "status", "--bogus"], {
+    cwd: ROOT,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unknown option: --bogus/);
+});
+
 test("setup reports ready when fake codex is installed and authenticated", () => {
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -1008,6 +1020,41 @@ test("task-resume-candidate returns the latest rescue thread from the current se
   assert.equal(payload.sessionId, "sess-current");
   assert.equal(payload.candidate.id, "task-current");
   assert.equal(payload.candidate.threadId, "thr_current");
+});
+
+test("task --wait sends the prompt without prepending the flag (issue #46)", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "--wait", "do the thing"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(result.status, 0, result.stderr);
+
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.prompt, "do the thing");
+});
+
+test("task rejects --wait and --background together", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+
+  const result = run("node", [SCRIPT, "task", "--wait", "--background", "do the thing"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Choose either --wait or --background\./);
 });
 
 test("task --resume-last does not resume a task from another Claude session", () => {

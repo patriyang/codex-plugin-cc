@@ -796,6 +796,29 @@ test("deep-review focus text as a single raw argv element keeps a hyphen-leading
   assert.match(state.lastTurnStart.prompt, /focus on the --dry-run path/);
 });
 
+test("deep-review warns on stderr when a declared flag lands after the focus text, but still reviews the working tree (issue #46 round 2)", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+
+  const result = run("node", [SCRIPT, "deep-review", "focus on retries --base main"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /^\[codex\] --base came after the prompt text, so it is kept as literal text/m);
+
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.match(state.lastTurnStart.prompt, /focus on retries --base main/);
+});
+
 test("adversarial review accepts the same base-branch targeting as review", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -1079,6 +1102,11 @@ test("task prompt as a single raw argv element keeps hyphen-leading words litera
   });
   assert.equal(result.status, 0, result.stderr);
 
+  // "--wait" is a declared flag on task, but it is buried mid-prose (not the
+  // last or second-to-last positional), so this must NOT trip the round-2
+  // trailing-flag warning -- prompts routinely discuss flag names in passing.
+  assert.doesNotMatch(result.stderr, /came after the prompt text/);
+
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(fakeState.lastTurnStart.prompt, "fix the --wait bug");
 });
@@ -1101,6 +1129,31 @@ test("task prompt as a single raw argv element does not crash on an unknown-look
 
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(fakeState.lastTurnStart.prompt, "add a --dry-run mode");
+});
+
+test("task warns on stderr when a declared flag lands after the prompt text, but keeps it literal (issue #46 round 2)", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "do the thing", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /^\[codex\] --json came after the prompt text, so it is kept as literal text/m);
+
+  // The warning does not flip --json on: stdout is still the human report,
+  // not the JSON payload a caller would try to parse.
+  assert.doesNotMatch(result.stdout, /^\{/);
+
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.prompt, "do the thing --json");
 });
 
 test("task rejects --wait and --background together", () => {

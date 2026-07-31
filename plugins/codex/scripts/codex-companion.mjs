@@ -754,11 +754,24 @@ function enqueueBackgroundTask(cwd, job, request) {
   };
 }
 
+// Prose after the first positional is literal, not flag-parsed (see
+// stopAtFirstPositional above) -- but a token that looks like a flag the
+// handler actually declares is a likely typo, so warn instead of silently
+// swallowing it.
+function warnLiteralOptionLikePositionals(literalOptionLikePositionals) {
+  if (literalOptionLikePositionals.length === 0) {
+    return;
+  }
+  process.stderr.write(
+    `[codex] ${literalOptionLikePositionals.join(" ")} came after the prompt text, so it is kept as literal text, not applied as a flag. Put flags before the prompt.\n`
+  );
+}
+
 async function handleReviewCommand(argv, config) {
   // Trailing positionals here are free-form focus text ("focus on the --dry-run
   // path"), so option parsing stops at the first positional: everything from
   // there on is literal, even if it looks like a flag.
-  const { options, positionals } = parseCommandInput(argv, {
+  const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, {
     valueOptions: ["base", "scope", "model", "effort", "cwd"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
@@ -766,6 +779,7 @@ async function handleReviewCommand(argv, config) {
     },
     stopAtFirstPositional: true
   });
+  warnLiteralOptionLikePositionals(literalOptionLikePositionals);
 
   if (options.wait && options.background) {
     throw new Error("Choose either --wait or --background.");
@@ -831,7 +845,7 @@ async function handleReview(argv) {
 }
 
 async function handleTask(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
+  const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file", "resume-id"],
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "wait"],
     aliasMap: {
@@ -842,6 +856,7 @@ async function handleTask(argv) {
     // (e.g. "fix the --wait bug") that must not be consumed as flags.
     stopAtFirstPositional: true
   });
+  warnLiteralOptionLikePositionals(literalOptionLikePositionals);
 
   if (options.wait && options.background) {
     throw new Error("Choose either --wait or --background.");

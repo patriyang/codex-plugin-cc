@@ -102,3 +102,84 @@ test("default (stopAtFirstPositional: false) behavior is unchanged for the statu
   assert.equal(options.wait, true);
   assert.deepEqual(positionals, ["task-abc"]);
 });
+
+test("literalOptionLikePositionals: reports a declared flag that is the LAST positional (issue #46 round 2)", () => {
+  const { literalOptionLikePositionals } = parseArgs(
+    ["do", "the", "thing", "--wait"],
+    promptLikeConfig
+  );
+
+  assert.deepEqual(literalOptionLikePositionals, ["--wait"]);
+});
+
+test("literalOptionLikePositionals: empty for a non-declared token at the tail", () => {
+  const { literalOptionLikePositionals, positionals } = parseArgs(
+    ["do", "the", "thing", "--dry-run"],
+    promptLikeConfig
+  );
+
+  assert.deepEqual(literalOptionLikePositionals, []);
+  assert.deepEqual(positionals, ["do", "the", "thing", "--dry-run"]);
+});
+
+test("literalOptionLikePositionals: empty for a declared flag buried mid-prose, not at the tail (round 2 fix)", () => {
+  // "fix the --wait bug" -- --wait is a real, declared boolean option on the
+  // handler, but it is not the last (or second-to-last) positional, so this
+  // is prose mentioning a flag name, not a forgotten flag. Must not warn.
+  const { literalOptionLikePositionals, positionals } = parseArgs(
+    ["fix", "the", "--wait", "bug"],
+    promptLikeConfig
+  );
+
+  assert.deepEqual(literalOptionLikePositionals, []);
+  assert.deepEqual(positionals, ["fix", "the", "--wait", "bug"]);
+});
+
+test("literalOptionLikePositionals: reports a trailing declared *value* option paired with its trailing value (round 2 fix)", () => {
+  // "do the thing -C /tmp" -- -C is second-to-last and is a declared value
+  // option; /tmp (the last positional) is its would-be value. Must warn on
+  // -C, not on /tmp.
+  const { literalOptionLikePositionals, positionals } = parseArgs(
+    ["do", "the", "thing", "-C", "/tmp"],
+    promptLikeConfig
+  );
+
+  assert.deepEqual(literalOptionLikePositionals, ["-C"]);
+  assert.deepEqual(positionals, ["do", "the", "thing", "-C", "/tmp"]);
+});
+
+test("literalOptionLikePositionals: a trailing declared *boolean* option second-to-last does not pair with the next token", () => {
+  // "do the thing --write extra" -- --write is second-to-last but it is a
+  // boolean option, not a value option, so it does not consume "extra" as a
+  // value; "extra" itself is not option-like either. Nothing to warn about.
+  const { literalOptionLikePositionals, positionals } = parseArgs(
+    ["do", "the", "thing", "--write", "extra"],
+    promptLikeConfig
+  );
+
+  assert.deepEqual(literalOptionLikePositionals, []);
+  assert.deepEqual(positionals, ["do", "the", "thing", "--write", "extra"]);
+});
+
+test("literalOptionLikePositionals: empty for tokens after an explicit bare --", () => {
+  const { literalOptionLikePositionals, positionals } = parseArgs(
+    ["--write", "--", "--wait", "do the thing"],
+    promptLikeConfig
+  );
+
+  assert.deepEqual(literalOptionLikePositionals, []);
+  assert.deepEqual(positionals, ["--wait", "do the thing"]);
+});
+
+test("literalOptionLikePositionals: empty in default (non-stopAtFirstPositional) mode", () => {
+  const { literalOptionLikePositionals, options, positionals } = parseArgs(
+    ["task-abc", "--wait"],
+    { ...taskLikeConfig, booleanOptions: [...taskLikeConfig.booleanOptions, "wait"] }
+  );
+
+  // Without stopAtFirstPositional, "--wait" after the positional is parsed
+  // as a real flag (not literal text), so there is nothing to warn about.
+  assert.equal(options.wait, true);
+  assert.deepEqual(positionals, ["task-abc"]);
+  assert.deepEqual(literalOptionLikePositionals, []);
+});

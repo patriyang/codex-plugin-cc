@@ -40,6 +40,7 @@ Argument handling:
 - It supports working-tree review, branch review, and `--base <ref>`.
 - It does not support `--scope staged` or `--scope unstaged`.
 - Unlike `/codex:review`, it can still take extra focus text after the flags.
+- Flags must come before the focus text; once the focus text starts, anything after it (including something that looks like a flag) is treated as literal text.
 
 Foreground flow:
 - Run:

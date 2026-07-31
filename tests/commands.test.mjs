@@ -70,6 +70,7 @@ test("adversarial review command auto-decides execution mode and uses background
   assert.match(source, /supports working-tree review, branch review, and `--base <ref>`/i);
   assert.match(source, /does not support `--scope staged` or `--scope unstaged`/i);
   assert.match(source, /can still take extra focus text after the flags/i);
+  assert.match(source, /Flags must come before the focus text/i);
 });
 
 test("deep review command auto-decides execution mode and uses background Bash while staying review-only", () => {
@@ -103,6 +104,7 @@ test("deep review command auto-decides execution mode and uses background Bash w
   assert.match(source, /conciseness/i);
   assert.match(source, /code quality/i);
   assert.match(source, /can take extra focus text after the flags/i);
+  assert.match(source, /Flags must come before the focus text/i);
   // Argument hint advertises the model/effort override flags.
   assert.match(source, /\[--model <model\|spark>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh>\]/);
   // README documents the deep-review defaults so command + docs cannot drift.
@@ -222,6 +224,10 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(readme, /--model gpt-5\.4-mini --effort medium/i);
   assert.match(readme, /`spark`, the plugin maps that to `gpt-5\.3-codex-spark`/i);
   assert.match(readme, /continue a previous Codex task/i);
+  assert.match(
+    readme,
+    /for `task` and the review commands, flags must precede the prompt\/focus text \(anything after it is literal, not a flag\); `\/codex:status`, `\/codex:result`, and `\/codex:cancel` instead take their job id first and flags after/i
+  );
   assert.match(readme, /### `\/codex:setup`/);
   assert.match(readme, /### `\/codex:review`/);
   assert.match(readme, /### `\/codex:adversarial-review`/);

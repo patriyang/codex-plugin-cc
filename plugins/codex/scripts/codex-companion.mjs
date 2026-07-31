@@ -593,7 +593,12 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 }
 
 function renderQueuedTaskLaunch(payload) {
-  return `${payload.title} started in the background as ${payload.jobId}. Block on it with \`/codex:status ${payload.jobId} --wait\`, or check progress with \`/codex:status ${payload.jobId}\`.\n`;
+  return [
+    `${payload.title} started in the background as ${payload.jobId}.`,
+    `Block on it with: codex-companion.mjs status ${payload.jobId} --wait --json`,
+    `Snapshot without waiting: /codex:status ${payload.jobId}`,
+    ""
+  ].join("\n");
 }
 
 function getJobKindLabel(kind, jobClass) {

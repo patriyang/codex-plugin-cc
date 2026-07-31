@@ -100,7 +100,7 @@ Examples:
 /codex:review --background
 ```
 
-This command is read-only and will not perform any changes. When run in the background you can use [`/codex:status`](#codexstatus) to check on the progress and [`/codex:cancel`](#codexcancel) to cancel the ongoing task.
+This command is read-only and will not perform any changes. A background review runs as a detached shell rather than a tracked job, and Claude presents the findings itself as soon as it finishes — you should not have to prompt it to continue. Use [`/codex:cancel`](#codexcancel) to cancel an ongoing task.
 
 ### `/codex:adversarial-review`
 
@@ -254,6 +254,8 @@ Examples:
 ```bash
 /codex:status
 /codex:status task-abc123
+/codex:status task-abc123 --wait
+/codex:status task-abc123 --wait --timeout-ms 600000
 ```
 
 Use it to:
@@ -261,6 +263,9 @@ Use it to:
 - check progress on background work
 - see the latest completed job
 - confirm whether a task is still running
+- block until a specific job finishes (`--wait`, which requires a job ID)
+
+`--wait` polls that one job until it reaches a terminal state, reaping the record if the underlying process died. Without a job ID it errors rather than waiting on the whole table.
 
 ### `/codex:result`
 

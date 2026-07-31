@@ -775,6 +775,27 @@ test("deep review sends the deep-review prompt covering all three dimensions", (
   assert.match(state.lastTurnStart.prompt, /focus on auth/);
 });
 
+test("deep-review focus text as a single raw argv element keeps a hyphen-leading token literal", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+
+  const result = run("node", [SCRIPT, "deep-review", "focus on the --dry-run path"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.match(state.lastTurnStart.prompt, /focus on the --dry-run path/);
+});
+
 test("adversarial review accepts the same base-branch targeting as review", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -901,7 +922,7 @@ test("task --resume-id resumes the exact thread it names", () => {
   run("git", ["add", "README.md"], { cwd: repo });
   run("git", ["commit", "-m", "init"], { cwd: repo });
 
-  const firstRun = run("node", [SCRIPT, "task", "initial task", "--json"], {
+  const firstRun = run("node", [SCRIPT, "task", "--json", "initial task"], {
     cwd: repo,
     env: buildEnv(binDir)
   });
@@ -1040,6 +1061,46 @@ test("task --wait sends the prompt without prepending the flag (issue #46)", () 
 
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(fakeState.lastTurnStart.prompt, "do the thing");
+});
+
+test("task prompt as a single raw argv element keeps hyphen-leading words literal (issue #46 regression)", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "fix the --wait bug"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(result.status, 0, result.stderr);
+
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.prompt, "fix the --wait bug");
+});
+
+test("task prompt as a single raw argv element does not crash on an unknown-looking flag", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "add a --dry-run mode"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(result.status, 0, result.stderr);
+
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.prompt, "add a --dry-run mode");
 });
 
 test("task rejects --wait and --background together", () => {

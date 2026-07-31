@@ -2,6 +2,7 @@ export function parseArgs(argv, config = {}) {
   const valueOptions = new Set(config.valueOptions ?? []);
   const booleanOptions = new Set(config.booleanOptions ?? []);
   const aliasMap = config.aliasMap ?? {};
+  const stopAtFirstPositional = config.stopAtFirstPositional ?? false;
   const options = {};
   const positionals = [];
   let passthrough = false;
@@ -21,6 +22,9 @@ export function parseArgs(argv, config = {}) {
 
     if (!token.startsWith("-") || token === "-") {
       positionals.push(token);
+      if (stopAtFirstPositional) {
+        passthrough = true;
+      }
       continue;
     }
 

@@ -755,12 +755,16 @@ function enqueueBackgroundTask(cwd, job, request) {
 }
 
 async function handleReviewCommand(argv, config) {
+  // Trailing positionals here are free-form focus text ("focus on the --dry-run
+  // path"), so option parsing stops at the first positional: everything from
+  // there on is literal, even if it looks like a flag.
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["base", "scope", "model", "effort", "cwd"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
-    }
+    },
+    stopAtFirstPositional: true
   });
 
   if (options.wait && options.background) {
@@ -832,7 +836,11 @@ async function handleTask(argv) {
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "wait"],
     aliasMap: {
       m: "model"
-    }
+    },
+    // Stop parsing options at the first positional: it's the start of the
+    // prompt text, and prose can legitimately contain hyphen-leading words
+    // (e.g. "fix the --wait bug") that must not be consumed as flags.
+    stopAtFirstPositional: true
   });
 
   if (options.wait && options.background) {

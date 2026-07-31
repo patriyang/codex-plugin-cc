@@ -56,3 +56,49 @@ test("missing value for a declared value option still throws", () => {
   assert.throws(() => parseArgs(["--model"], taskLikeConfig), /Missing value for --model/);
   assert.throws(() => parseArgs(["-C"], taskLikeConfig), /Missing value for -C/);
 });
+
+const promptLikeConfig = {
+  ...taskLikeConfig,
+  booleanOptions: [...taskLikeConfig.booleanOptions, "wait"],
+  stopAtFirstPositional: true
+};
+
+test("stopAtFirstPositional: prose after the first positional is literal, not flag-parsed", () => {
+  const { options, positionals } = parseArgs(
+    ["--write", "fix", "the", "--wait", "bug"],
+    promptLikeConfig
+  );
+
+  assert.equal(options.write, true);
+  assert.equal(options.wait, undefined);
+  assert.deepEqual(positionals, ["fix", "the", "--wait", "bug"]);
+  assert.equal(positionals.join(" "), "fix the --wait bug");
+});
+
+test("stopAtFirstPositional: a declared value option after the first positional is also literal", () => {
+  const { options, positionals } = parseArgs(
+    ["--write", "fix", "the", "--model", "thing"],
+    promptLikeConfig
+  );
+
+  assert.equal(options.write, true);
+  assert.equal(options.model, undefined);
+  assert.deepEqual(positionals, ["fix", "the", "--model", "thing"]);
+});
+
+test("stopAtFirstPositional: an unknown flag before the first positional still throws (issue #46)", () => {
+  assert.throws(
+    () => parseArgs(["--wat", "do", "the", "thing"], promptLikeConfig),
+    /Unknown option: --wat\. Pass literal text after a bare "--" if it is not a flag\./
+  );
+});
+
+test("default (stopAtFirstPositional: false) behavior is unchanged for the status shape", () => {
+  const { options, positionals } = parseArgs(["task-abc", "--wait"], {
+    ...taskLikeConfig,
+    booleanOptions: [...taskLikeConfig.booleanOptions, "wait"]
+  });
+
+  assert.equal(options.wait, true);
+  assert.deepEqual(positionals, ["task-abc"]);
+});

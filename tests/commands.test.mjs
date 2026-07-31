@@ -26,7 +26,7 @@ test("review command auto-decides execution mode and uses background Bash while 
   assert.match(source, /run_in_background:\s*true/);
   assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" review "\$ARGUMENTS"`/);
   assert.match(source, /description:\s*"Codex review"/);
-  assert.match(source, /Do not call `BashOutput`/);
+  assert.match(source, /Do not poll `BashOutput` in a loop/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
   assert.match(source, /git status --short --untracked-files=all/);
   assert.match(source, /git diff --shortstat/);
@@ -55,7 +55,7 @@ test("adversarial review command auto-decides execution mode and uses background
   assert.match(source, /run_in_background:\s*true/);
   assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" adversarial-review "\$ARGUMENTS"`/);
   assert.match(source, /description:\s*"Codex adversarial review"/);
-  assert.match(source, /Do not call `BashOutput`/);
+  assert.match(source, /Do not poll `BashOutput` in a loop/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
   assert.match(source, /git status --short --untracked-files=all/);
   assert.match(source, /git diff --shortstat/);
@@ -87,7 +87,7 @@ test("deep review command auto-decides execution mode and uses background Bash w
   assert.match(source, /run_in_background:\s*true/);
   assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" deep-review "\$ARGUMENTS"`/);
   assert.match(source, /description:\s*"Codex deep review"/);
-  assert.match(source, /Do not call `BashOutput`/);
+  assert.match(source, /Do not poll `BashOutput` in a loop/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
   assert.match(source, /git status --short --untracked-files=all/);
   assert.match(source, /git diff --shortstat/);
@@ -297,4 +297,121 @@ test("setup command can offer Codex install and still points users to codex logi
   assert.match(readme, /offer to install Codex for you/i);
   assert.match(readme, /\/codex:setup --enable-review-gate/);
   assert.match(readme, /\/codex:setup --disable-review-gate/);
+});
+
+test("the follow-through mechanism is actually provisioned on every command that requires it", () => {
+  // The pre-change prose said "Do not call `BashOutput`", so omitting it from
+  // allowed-tools was consistent. Now that the follow-through depends on it,
+  // an unprovisioned command fails closed at exactly the moment it used to
+  // hand the user a checkpoint -- and the old escape hatch is gone.
+  for (const file of [
+    "commands/review.md",
+    "commands/adversarial-review.md",
+    "commands/deep-review.md",
+    "commands/implement.md"
+  ]) {
+    const source = read(file);
+    const frontmatter = source.slice(0, source.indexOf("\n---", 4));
+    const allowed = /^allowed-tools:(.*)$/m.exec(frontmatter);
+    assert.ok(allowed, `${file} declares allowed-tools`);
+    assert.match(allowed[1], /\bBashOutput\b/, `${file} may call BashOutput`);
+    assert.match(source, /`BashOutput`/, `${file} names BashOutput as the read mechanism`);
+  }
+});
+
+test("no command tells the model to wait via a command it cannot invoke", () => {
+  // status.md is disable-model-invocation: true, so "/codex:status" is advice
+  // for a human. A flow that names it as *its own* wait mechanism dead-ends.
+  const status = read("commands/status.md");
+  assert.match(status, /^disable-model-invocation:\s*true$/m);
+
+  for (const file of [
+    "commands/review.md",
+    "commands/adversarial-review.md",
+    "commands/deep-review.md",
+    "commands/implement.md",
+    "commands/rescue.md"
+  ]) {
+    const source = read(file);
+    for (const line of source.split("\n")) {
+      if (!/\/codex:status/.test(line)) continue;
+      // Naming it is fine only while telling the model NOT to route through it.
+      assert.match(
+        line,
+        /\bnever\b|\bnot\b|\bno\b|nothing to show/i,
+        `${file} must not offer /codex:status as its own wait mechanism: ${line.trim()}`
+      );
+    }
+  }
+});
+
+test("dispatch is never a stopping point across every async surface", () => {
+  // Regression for the "dispatched, then ended the turn" failure mode: the
+  // background flows used to end at "Check /codex:status for progress", which
+  // trained the controller to hand the user a checkpoint instead of the result.
+  for (const file of ["commands/review.md", "commands/adversarial-review.md", "commands/deep-review.md"]) {
+    const source = read(file);
+    assert.match(source, /re-invokes you when the command exits/i);
+    assert.match(source, /second half of this command/i);
+    assert.match(source, /present the review in that same turn/i);
+    assert.match(source, /never re-dispatch a second review/i);
+    // Broad enough to catch near-miss regressions of the old dead end.
+    assert.doesNotMatch(source, /Check .{0,4}\/codex:status.{0,4} for /i);
+  }
+
+  const rescue = read("commands/rescue.md");
+  assert.match(rescue, /backgrounds the \*subagent\*, not the Codex run/i);
+  assert.match(rescue, /Do not close out a turn with a dispatched-but-unread rescue/i);
+
+  const implement = read("commands/implement.md");
+  assert.match(implement, /## Dispatch and Follow-Through/);
+  assert.match(implement, /\*\*"Dispatched" is never a stopping point\.\*\*/);
+  assert.match(implement, /having to be prompted to resume the loop is a failure of this command/i);
+  // The harness timeout is a moving harness constant; do not pin its value.
+  assert.doesNotMatch(implement, /caps at \d+ ms/);
+});
+
+test("implement never passes --wait to task, which would land in the prompt", () => {
+  // `handleTask` does not declare `wait` as a boolean option, so parseArgs
+  // routes `--wait` into positionals and readTaskPrompt joins it into the
+  // prompt text -- every dispatch would start with a stray "--wait ". See #46.
+  const implement = read("commands/implement.md");
+  for (const line of implement.split("\n")) {
+    if (!/codex-companion\.mjs" task /.test(line)) continue;
+    assert.doesNotMatch(line, /\s--wait\b/, `task invocation must not pass --wait: ${line.trim()}`);
+  }
+
+  const companion = fs.readFileSync(path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs"), "utf8");
+  const taskOptions = /booleanOptions: \["json", "write", "resume-last", "resume", "fresh", "background"\]/;
+  assert.match(companion, taskOptions, "task's boolean options are unchanged; if `wait` was added, relax this test");
+});
+
+test("status documents the job-scoped wait without hardcoding runtime values", () => {
+  const status = read("commands/status.md");
+  const companion = fs.readFileSync(path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs"), "utf8");
+
+  assert.match(status, /status <job-id> --wait --json/);
+  assert.match(status, /`--wait` requires a job ID/i);
+  assert.match(status, /Never hand-roll a poll loop/i);
+  assert.match(status, /Only `task --background` mints a job ID/i);
+
+  // waitTimedOut only reaches the caller through --json: the text renderer is
+  // handed snapshot.job, and the wrapper carrying the flag is discarded.
+  assert.match(status, /waitTimedOut: true/);
+  assert.match(status, /--json/);
+  assert.match(companion, /waitTimedOut: isActiveJobStatus\(snapshot\.job\.status\)/);
+
+  // Pin the constant by name, not by value, so the doc cannot silently rot.
+  assert.match(status, /DEFAULT_STATUS_WAIT_TIMEOUT_MS/);
+  assert.match(companion, /const DEFAULT_STATUS_WAIT_TIMEOUT_MS = \d+;/);
+  assert.doesNotMatch(status, /default timeout is \d+ ms/i);
+
+  // The status vocabulary the doc warns about must match what the runtime emits.
+  for (const emitted of ["queued", "running", "completed", "failed", "cancelled"]) {
+    assert.ok(status.includes(emitted), `status.md names the real "${emitted}" status`);
+  }
+  assert.doesNotMatch(companion, /status: "succeeded"/);
+
+  // The queued-launch line must hand the model a command it can actually run.
+  assert.match(companion, /codex-companion\.mjs status \$\{payload\.jobId\} --wait --json/);
 });

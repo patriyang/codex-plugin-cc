@@ -1,7 +1,7 @@
 ---
 description: Run a Codex code review against local git state
 argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch]'
-allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*)
+allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), BashOutput
 ---
 
 Run a Codex review through the shared built-in reviewer.
@@ -54,5 +54,7 @@ Bash({
   run_in_background: true
 })
 ```
-- Do not call `BashOutput` or wait for completion in this turn.
-- After launching the command, tell the user: "Codex review started in the background. Check `/codex:status` for progress."
+- Launch it, tell the user in one line that the review is running, and end the turn. Do not poll `BashOutput` in a loop while it runs.
+- Claude Code re-invokes you when the command exits. That re-invocation is the second half of this command, not a fresh request: read the output with `BashOutput` and present the review in that same turn. Do not wait to be asked "is it done?" or "continue".
+- If it exited non-zero, or the output is empty or malformed, say so and surface the most actionable stderr lines. A failed review must not vanish silently.
+- Never re-dispatch a second review over the same diff, and never hand the user a "check `/codex:status`" note in place of the findings. A background review is a plain shell — it mints no job id, so `/codex:status` has nothing to show for it.

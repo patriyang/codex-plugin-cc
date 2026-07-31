@@ -420,3 +420,22 @@ test("status documents the job-scoped wait without hardcoding runtime values", (
   // The queued-launch line must hand the model a command it can actually run.
   assert.match(companion, /codex-companion\.mjs status \$\{payload\.jobId\} --wait --json/);
 });
+
+test("every command that returns stdout verbatim also surfaces the [codex] stderr notice", () => {
+  // The warning for a flag typed after the prompt goes to stderr, but these
+  // docs tell Claude to return stdout only -- without this bullet the notice
+  // never reaches the user on the path it exists for. See #46 round 3.
+  for (const name of ["review.md", "adversarial-review.md", "deep-review.md"]) {
+    const doc = read(`commands/${name}`);
+    assert.match(
+      doc,
+      /If the command prints a `\[codex\] ` line on stderr, surface that line above the output/i,
+      `${name} must tell Claude to surface the [codex] stderr notice`
+    );
+  }
+
+  const agent = fs.readFileSync(path.join(PLUGIN_ROOT, "agents", "codex-rescue.md"), "utf8");
+  assert.match(agent, /If the command prints a `\[codex\] ` line on stderr, surface that line above the output/i);
+  // "return nothing" on failure must not swallow a rejected-argument error.
+  assert.match(agent, /Unknown option: \.\.\.`\), which is a caller mistake and must be reported/i);
+});

@@ -762,8 +762,10 @@ function warnLiteralOptionLikePositionals(literalOptionLikePositionals) {
   if (literalOptionLikePositionals.length === 0) {
     return;
   }
+  const tokens = literalOptionLikePositionals.join(" ");
+  const subject = literalOptionLikePositionals.length > 1 ? "they are" : "it is";
   process.stderr.write(
-    `[codex] ${literalOptionLikePositionals.join(" ")} came after the prompt text, so it is kept as literal text, not applied as a flag. Put flags before the prompt.\n`
+    `[codex] ${tokens} came after the prompt text, so ${subject} kept as literal text, not applied as a flag. Put flags before the prompt.\n`
   );
 }
 

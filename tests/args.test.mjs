@@ -183,3 +183,35 @@ test("literalOptionLikePositionals: empty in default (non-stopAtFirstPositional)
   assert.deepEqual(positionals, ["task-abc"]);
   assert.deepEqual(literalOptionLikePositionals, []);
 });
+
+test("literalOptionLikePositionals: reports every flag in a trailing run, not just the first", () => {
+  const { literalOptionLikePositionals, positionals } = parseArgs(
+    ["do the thing", "-C", "/tmp", "--json"],
+    promptLikeConfig
+  );
+
+  // Reporting only --json would make the caller fix it, re-run, and be told
+  // about -C -- the one that silently sent the run to the wrong workspace.
+  assert.deepEqual(literalOptionLikePositionals, ["-C", "--json"]);
+  assert.equal(positionals.join(" "), "do the thing -C /tmp --json");
+});
+
+test("literalOptionLikePositionals: a trailing run of value options reports each one", () => {
+  const { literalOptionLikePositionals } = parseArgs(
+    ["do the thing", "--model", "spark", "--effort", "high"],
+    promptLikeConfig
+  );
+
+  assert.deepEqual(literalOptionLikePositionals, ["--model", "--effort"]);
+});
+
+test("literalOptionLikePositionals: the leftward walk stops at real prose", () => {
+  const { literalOptionLikePositionals } = parseArgs(
+    ["fix", "the", "--wait", "bug", "--json"],
+    promptLikeConfig
+  );
+
+  // --json trails, but --wait is separated from it by the word "bug", so the
+  // walk stops and the mid-prose mention stays quiet.
+  assert.deepEqual(literalOptionLikePositionals, ["--json"]);
+});

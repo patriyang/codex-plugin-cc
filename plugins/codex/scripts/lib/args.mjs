@@ -88,17 +88,33 @@ export function parseArgs(argv, config = {}) {
   //   - the last positional itself looks like a declared option, or
   //   - the second-to-last positional looks like a declared *value* option,
   //     with the last positional as its would-be value (e.g. "-C /tmp").
+  // Several flags can trail at once ("-C /tmp --json"), so keep walking left
+  // while the tokens stay option-like. Reporting only the first would make the
+  // caller fix one, re-run, and be told about the next.
   const literalOptionLikePositionals = [];
   if (passthroughFromFirstPositional && positionals.length > 0) {
-    const lastIndex = positionals.length - 1;
-    const last = positionals[lastIndex];
-    if (looksLikeDeclaredOption(last, valueOptions, booleanOptions, aliasMap)) {
-      literalOptionLikePositionals.push(last);
-    } else if (lastIndex >= 1) {
-      const secondToLast = positionals[lastIndex - 1];
-      if (looksLikeDeclaredValueOption(secondToLast, valueOptions, aliasMap)) {
-        literalOptionLikePositionals.push(secondToLast);
+    let index = positionals.length - 1;
+    if (!looksLikeDeclaredOption(positionals[index], valueOptions, booleanOptions, aliasMap)) {
+      // The final token is the would-be value of the flag before it.
+      index -= 1;
+      if (index < 0 || !looksLikeDeclaredValueOption(positionals[index], valueOptions, aliasMap)) {
+        index = -1;
       }
+    }
+    while (index >= 0) {
+      const token = positionals[index];
+      if (looksLikeDeclaredOption(token, valueOptions, booleanOptions, aliasMap)) {
+        literalOptionLikePositionals.unshift(token);
+        index -= 1;
+        continue;
+      }
+      // A value option one step further left claims this token as its value.
+      if (index >= 1 && looksLikeDeclaredValueOption(positionals[index - 1], valueOptions, aliasMap)) {
+        literalOptionLikePositionals.unshift(positionals[index - 1]);
+        index -= 2;
+        continue;
+      }
+      break;
     }
   }
 

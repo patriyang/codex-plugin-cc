@@ -9,12 +9,16 @@ export function parseArgs(argv, config = {}) {
   // True only while passthrough was entered via stopAtFirstPositional, so a
   // token after an explicit bare "--" (a deliberate escape) is never reported.
   let passthroughFromFirstPositional = false;
+  let lastLiteralPassthroughSeparatorIndex = -1;
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
 
     if (passthrough) {
       positionals.push(token);
+      if (passthroughFromFirstPositional && token === "--") {
+        lastLiteralPassthroughSeparatorIndex = positionals.length - 1;
+      }
       continue;
     }
 
@@ -93,7 +97,13 @@ export function parseArgs(argv, config = {}) {
   // caller fix one, re-run, and be told about the next.
   const literalOptionLikePositionals = [];
   if (passthroughFromFirstPositional && positionals.length > 0) {
-    let index = positionals.length - 1;
+    // A literal "--" after the first positional is prose, but it still serves
+    // as the escape hatch for everything after it. Do not let those tokens
+    // trigger the trailing-flag heuristic.
+    let index =
+      lastLiteralPassthroughSeparatorIndex >= 0
+        ? lastLiteralPassthroughSeparatorIndex - 1
+        : positionals.length - 1;
     if (!looksLikeDeclaredOption(positionals[index], valueOptions, booleanOptions, aliasMap)) {
       // The final token is the would-be value of the flag before it.
       index -= 1;
@@ -138,7 +148,7 @@ function looksLikeDeclaredOption(token, valueOptions, booleanOptions, aliasMap) 
   return valueOptions.has(key) || booleanOptions.has(key);
 }
 
-function looksLikeDeclaredValueOption(token, valueOptions, aliasMap) {
+export function looksLikeDeclaredValueOption(token, valueOptions, aliasMap) {
   if (token === "-" || !token.startsWith("-")) {
     return false;
   }

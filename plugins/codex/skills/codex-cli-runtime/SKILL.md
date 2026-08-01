@@ -9,7 +9,9 @@ user-invocable: false
 Use this skill only inside the `codex:codex-rescue` subagent.
 
 Primary helper:
-- `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task "<raw arguments>"`
+- `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task [--write] [--model <m>] [--effort <e>] [--resume-last|--fresh] -- "<prompt text>"`
+
+The bare `--` guarantees the prompt reaches Codex verbatim even when its first word is a flag name like `--write`, which would otherwise be consumed as a real flag and silently flip the sandbox to workspace-write.
 
 Execution rules:
 - The rescue subagent is a forwarder, not an orchestrator. Its only job is to invoke `task` once and return that stdout unchanged.
@@ -25,7 +27,7 @@ Execution rules:
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
-- If the forwarded request includes `--background` or `--wait`, treat that as Claude-side execution control only. Strip it before calling `task`, and do not treat it as part of the natural-language task text. `codex-companion.mjs` rejects unrecognized flags outright, but only before the prompt text starts — anything from the first word of the prompt onward is passed through verbatim, so a flag you mean to forward must precede the prompt, not be embedded inside it.
+- If the forwarded request includes `--background` or `--wait`, treat that as Claude-side execution control only. Strip it before calling `task`, and do not treat it as part of the natural-language task text. The `task` contract is flags first, then a bare `--`, then the prompt, which makes the whole prompt literal regardless of its first word.
 - If the forwarded request includes `--model`, normalize `spark` to `gpt-5.3-codex-spark` and pass it through to `task`.
 - If the forwarded request includes `--effort`, pass it through to `task`.
 - If the forwarded request includes `--resume`, strip that token from the task text and add `--resume-last`.

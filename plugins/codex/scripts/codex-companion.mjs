@@ -6,7 +6,11 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
+import {
+  looksLikeDeclaredValueOption,
+  parseArgs,
+  splitRawArgumentString
+} from "./lib/args.mjs";
 import {
     buildPersistentTaskThreadName,
     DEFAULT_CONTINUE_PROMPT,
@@ -82,20 +86,82 @@ const DEFAULT_CODEX_REASONING_EFFORT = "high";
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+const SUBCOMMAND_USAGE = new Map([
+  ["setup", "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]"],
+  ["review", "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]"],
+  ["adversarial-review", "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]"],
+  ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]"],
+  ["task", "  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]"],
+  ["transfer", "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]"],
+  ["status", "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]"],
+  ["result", "  node scripts/codex-companion.mjs result [job-id] [--json]"],
+  ["cancel", "  node scripts/codex-companion.mjs cancel [job-id] [--json]"]
+]);
+const REVIEW_PARSE_CONFIG = {
+  valueOptions: ["base", "scope", "model", "effort", "cwd"],
+  booleanOptions: ["json", "background", "wait"],
+  aliasMap: {
+    m: "model"
+  },
+  // When the prompt arrived as a single raw string, trailing positionals here
+  // are free-form focus text ("focus on the --dry-run path"), so option parsing
+  // stops at the first positional: everything from there on is literal, even
+  // if it looks like a flag.
+  stopAtFirstPositional: true
+};
+const TASK_PARSE_CONFIG = {
+  valueOptions: ["model", "effort", "cwd", "prompt-file", "resume-id"],
+  booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "wait"],
+  aliasMap: {
+    m: "model"
+  },
+  // When the prompt arrived as a single raw string, stop parsing options at
+  // the first positional: it's the start of the prompt text, and prose can
+  // legitimately contain hyphen-leading words (e.g. "fix the --wait bug")
+  // that must not be consumed as flags.
+  stopAtFirstPositional: true
+};
+const SETUP_PARSE_CONFIG = {
+  valueOptions: ["cwd"],
+  booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+};
+const TRANSFER_PARSE_CONFIG = {
+  valueOptions: ["cwd", "source"],
+  booleanOptions: ["json"]
+};
+const STATUS_PARSE_CONFIG = {
+  valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
+  booleanOptions: ["json", "all", "wait"]
+};
+const RESULT_PARSE_CONFIG = {
+  valueOptions: ["cwd"],
+  booleanOptions: ["json"]
+};
+const CANCEL_PARSE_CONFIG = {
+  valueOptions: ["cwd"],
+  booleanOptions: ["json"]
+};
+// SUBCOMMAND_USAGE and SUBCOMMAND_PARSE_CONFIGS intentionally cover the same public subcommands.
+const SUBCOMMAND_PARSE_CONFIGS = new Map([
+  ["setup", SETUP_PARSE_CONFIG],
+  ["task", TASK_PARSE_CONFIG],
+  ["review", REVIEW_PARSE_CONFIG],
+  ["adversarial-review", REVIEW_PARSE_CONFIG],
+  ["deep-review", REVIEW_PARSE_CONFIG],
+  ["transfer", TRANSFER_PARSE_CONFIG],
+  ["status", STATUS_PARSE_CONFIG],
+  ["result", RESULT_PARSE_CONFIG],
+  ["cancel", CANCEL_PARSE_CONFIG]
+]);
 
-function printUsage() {
+function printUsage(subcommand) {
+  const usageLines = SUBCOMMAND_USAGE.has(subcommand)
+    ? [SUBCOMMAND_USAGE.get(subcommand)]
+    : [...SUBCOMMAND_USAGE.values()];
   console.log(
     [
       "Usage:",
-      "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
-      "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
-      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]",
-      "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
-      "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
-      "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
-      "  node scripts/codex-companion.mjs result [job-id] [--json]",
-      "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
+      ...usageLines
     ].join("\n")
   );
 }
@@ -151,16 +217,53 @@ function normalizeArgv(argv) {
   if (argv.length === 1) {
     const [raw] = argv;
     if (!raw || !raw.trim()) {
-      return [];
+      return { argv: [], split: false };
     }
-    return splitRawArgumentString(raw);
+    return { argv: splitRawArgumentString(raw), split: true };
   }
-  return argv;
+  return { argv, split: false };
+}
+
+function requestsHelp(argv, subcommand) {
+  const { argv: normalizedArgv, split } = normalizeArgv(argv);
+  const parseConfig = SUBCOMMAND_PARSE_CONFIGS.get(subcommand);
+  if (!parseConfig) {
+    return false;
+  }
+
+  const stopAtFirstPositional = Boolean(parseConfig.stopAtFirstPositional) && split;
+  const valueOptions = new Set(parseConfig.valueOptions ?? []);
+  const aliasMap = {
+    C: "cwd",
+    ...(parseConfig.aliasMap ?? {})
+  };
+  for (let index = 0; index < normalizedArgv.length; index += 1) {
+    const token = normalizedArgv[index];
+    if (token === "--") {
+      return false;
+    }
+    if (token === "--help" || token === "-h") {
+      return true;
+    }
+    if (!token.includes("=") && looksLikeDeclaredValueOption(token, valueOptions, aliasMap)) {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("-") && token !== "-") {
+      continue;
+    }
+    if (stopAtFirstPositional) {
+      return false;
+    }
+  }
+  return false;
 }
 
 function parseCommandInput(argv, config = {}) {
-  return parseArgs(normalizeArgv(argv), {
+  const { argv: normalizedArgv, split } = normalizeArgv(argv);
+  return parseArgs(normalizedArgv, {
     ...config,
+    stopAtFirstPositional: Boolean(config.stopAtFirstPositional) && split,
     aliasMap: {
       C: "cwd",
       ...(config.aliasMap ?? {})
@@ -233,10 +336,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
 }
 
 async function handleSetup(argv) {
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
-  });
+  const { options } = parseCommandInput(argv, SETUP_PARSE_CONFIG);
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw new Error("Choose either --enable-review-gate or --disable-review-gate.");
@@ -809,10 +909,10 @@ function enqueueBackgroundTask(cwd, job, request) {
   };
 }
 
-// Prose after the first positional is literal, not flag-parsed (see
-// stopAtFirstPositional above) -- but a token that looks like a flag the
-// handler actually declares is a likely typo, so warn instead of silently
-// swallowing it.
+// When stopAtFirstPositional applies, prose after the first positional is
+// literal, not flag-parsed -- but a token that looks like a flag the handler
+// actually declares is a likely typo, so warn instead of silently swallowing
+// it.
 function warnLiteralOptionLikePositionals(literalOptionLikePositionals) {
   if (literalOptionLikePositionals.length === 0) {
     return;
@@ -825,17 +925,7 @@ function warnLiteralOptionLikePositionals(literalOptionLikePositionals) {
 }
 
 async function handleReviewCommand(argv, config) {
-  // Trailing positionals here are free-form focus text ("focus on the --dry-run
-  // path"), so option parsing stops at the first positional: everything from
-  // there on is literal, even if it looks like a flag.
-  const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "effort", "cwd"],
-    booleanOptions: ["json", "background", "wait"],
-    aliasMap: {
-      m: "model"
-    },
-    stopAtFirstPositional: true
-  });
+  const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, REVIEW_PARSE_CONFIG);
   warnLiteralOptionLikePositionals(literalOptionLikePositionals);
 
   if (options.wait && options.background) {
@@ -902,17 +992,7 @@ async function handleReview(argv) {
 }
 
 async function handleTask(argv) {
-  const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "resume-id"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "wait"],
-    aliasMap: {
-      m: "model"
-    },
-    // Stop parsing options at the first positional: it's the start of the
-    // prompt text, and prose can legitimately contain hyphen-leading words
-    // (e.g. "fix the --wait bug") that must not be consumed as flags.
-    stopAtFirstPositional: true
-  });
+  const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, TASK_PARSE_CONFIG);
   warnLiteralOptionLikePositionals(literalOptionLikePositionals);
 
   if (options.wait && options.background) {
@@ -984,10 +1064,7 @@ async function handleTask(argv) {
 }
 
 async function handleTransfer(argv) {
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "source"],
-    booleanOptions: ["json"]
-  });
+  const { options } = parseCommandInput(argv, TRANSFER_PARSE_CONFIG);
 
   const cwd = resolveCommandCwd(options);
   const { payload, rendered } = await executeTransfer(cwd, {
@@ -1042,10 +1119,7 @@ async function handleTaskWorker(argv) {
 }
 
 async function handleStatus(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
-    booleanOptions: ["json", "all", "wait"]
-  });
+  const { options, positionals } = parseCommandInput(argv, STATUS_PARSE_CONFIG);
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
@@ -1069,10 +1143,7 @@ async function handleStatus(argv) {
 }
 
 function handleResult(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
+  const { options, positionals } = parseCommandInput(argv, RESULT_PARSE_CONFIG);
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
@@ -1122,10 +1193,7 @@ function handleTaskResumeCandidate(argv) {
 }
 
 async function handleCancel(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
+  const { options, positionals } = parseCommandInput(argv, CANCEL_PARSE_CONFIG);
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
@@ -1217,8 +1285,13 @@ async function handleCancel(argv) {
 
 async function main() {
   const [subcommand, ...argv] = process.argv.slice(2);
-  if (!subcommand || subcommand === "help" || subcommand === "--help") {
+  if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
     printUsage();
+    return;
+  }
+
+  if (SUBCOMMAND_USAGE.has(subcommand) && requestsHelp(argv, subcommand)) {
+    printUsage(subcommand);
     return;
   }
 

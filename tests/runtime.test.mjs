@@ -1132,7 +1132,7 @@ test("task prompt as a single raw argv element does not crash on an unknown-look
   assert.equal(fakeState.lastTurnStart.prompt, "add a --dry-run mode");
 });
 
-test("task warns on stderr when a declared flag lands after the prompt text, but keeps it literal (issue #46 round 2)", () => {
+test("task applies trailing --json after a multi-element prompt", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const statePath = path.join(binDir, "fake-codex-state.json");
@@ -1147,10 +1147,30 @@ test("task warns on stderr when a declared flag lands after the prompt text, but
     env: buildEnv(binDir)
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /^\[codex\] --json came after the prompt text, so it is kept as literal text/m);
 
-  // The warning does not flip --json on: stdout is still the human report,
-  // not the JSON payload a caller would try to parse.
+  JSON.parse(result.stdout);
+  assert.doesNotMatch(result.stderr, /^\[codex\]/m);
+
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.prompt, "do the thing");
+});
+
+test("task keeps --json literal when it arrives inside a single raw prompt", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "do the thing --json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /^\[codex\] --json came after the prompt text, so it is kept as literal text/m);
   assert.doesNotMatch(result.stdout, /^\{/);
 
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));

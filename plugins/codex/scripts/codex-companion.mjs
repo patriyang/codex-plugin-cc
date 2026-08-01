@@ -151,16 +151,18 @@ function normalizeArgv(argv) {
   if (argv.length === 1) {
     const [raw] = argv;
     if (!raw || !raw.trim()) {
-      return [];
+      return { argv: [], split: false };
     }
-    return splitRawArgumentString(raw);
+    return { argv: splitRawArgumentString(raw), split: true };
   }
-  return argv;
+  return { argv, split: false };
 }
 
 function parseCommandInput(argv, config = {}) {
-  return parseArgs(normalizeArgv(argv), {
+  const { argv: normalizedArgv, split } = normalizeArgv(argv);
+  return parseArgs(normalizedArgv, {
     ...config,
+    stopAtFirstPositional: Boolean(config.stopAtFirstPositional) && split,
     aliasMap: {
       C: "cwd",
       ...(config.aliasMap ?? {})
@@ -809,10 +811,10 @@ function enqueueBackgroundTask(cwd, job, request) {
   };
 }
 
-// Prose after the first positional is literal, not flag-parsed (see
-// stopAtFirstPositional above) -- but a token that looks like a flag the
-// handler actually declares is a likely typo, so warn instead of silently
-// swallowing it.
+// When stopAtFirstPositional applies, prose after the first positional is
+// literal, not flag-parsed -- but a token that looks like a flag the handler
+// actually declares is a likely typo, so warn instead of silently swallowing
+// it.
 function warnLiteralOptionLikePositionals(literalOptionLikePositionals) {
   if (literalOptionLikePositionals.length === 0) {
     return;
@@ -825,9 +827,10 @@ function warnLiteralOptionLikePositionals(literalOptionLikePositionals) {
 }
 
 async function handleReviewCommand(argv, config) {
-  // Trailing positionals here are free-form focus text ("focus on the --dry-run
-  // path"), so option parsing stops at the first positional: everything from
-  // there on is literal, even if it looks like a flag.
+  // When the prompt arrived as a single raw string, trailing positionals here
+  // are free-form focus text ("focus on the --dry-run path"), so option parsing
+  // stops at the first positional: everything from there on is literal, even
+  // if it looks like a flag.
   const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, {
     valueOptions: ["base", "scope", "model", "effort", "cwd"],
     booleanOptions: ["json", "background", "wait"],
@@ -908,9 +911,10 @@ async function handleTask(argv) {
     aliasMap: {
       m: "model"
     },
-    // Stop parsing options at the first positional: it's the start of the
-    // prompt text, and prose can legitimately contain hyphen-leading words
-    // (e.g. "fix the --wait bug") that must not be consumed as flags.
+    // When the prompt arrived as a single raw string, stop parsing options at
+    // the first positional: it's the start of the prompt text, and prose can
+    // legitimately contain hyphen-leading words (e.g. "fix the --wait bug")
+    // that must not be consumed as flags.
     stopAtFirstPositional: true
   });
   warnLiteralOptionLikePositionals(literalOptionLikePositionals);

@@ -103,6 +103,24 @@ test("default (stopAtFirstPositional: false) behavior is unchanged for the statu
   assert.deepEqual(positionals, ["task-abc"]);
 });
 
+test("default mode parses trailing flags after a multi-element prompt", () => {
+  const { literalOptionLikePositionals, options, positionals } = parseArgs(
+    ["do the thing", "--json"],
+    taskLikeConfig
+  );
+
+  assert.equal(options.json, true);
+  assert.deepEqual(positionals, ["do the thing"]);
+  assert.deepEqual(literalOptionLikePositionals, []);
+});
+
+test("default mode applies a trailing cwd option after a multi-element prompt", () => {
+  const { options, positionals } = parseArgs(["do the thing", "-C", "/tmp"], taskLikeConfig);
+
+  assert.equal(options.cwd, "/tmp");
+  assert.deepEqual(positionals, ["do the thing"]);
+});
+
 test("literalOptionLikePositionals: reports a declared flag that is the LAST positional (issue #46 round 2)", () => {
   const { literalOptionLikePositionals } = parseArgs(
     ["do", "the", "thing", "--wait"],
@@ -169,6 +187,18 @@ test("literalOptionLikePositionals: empty for tokens after an explicit bare --",
 
   assert.deepEqual(literalOptionLikePositionals, []);
   assert.deepEqual(positionals, ["--wait", "do the thing"]);
+});
+
+test("literalOptionLikePositionals: empty for tokens after a bare -- following the first positional", () => {
+  const { literalOptionLikePositionals, positionals } = parseArgs(
+    ["do", "the", "thing", "--", "--json"],
+    promptLikeConfig
+  );
+  const withoutEscapeHatch = parseArgs(["do", "the", "thing", "--json"], promptLikeConfig);
+
+  assert.deepEqual(literalOptionLikePositionals, []);
+  assert.deepEqual(positionals, ["do", "the", "thing", "--", "--json"]);
+  assert.deepEqual(withoutEscapeHatch.literalOptionLikePositionals, ["--json"]);
 });
 
 test("literalOptionLikePositionals: empty in default (non-stopAtFirstPositional) mode", () => {

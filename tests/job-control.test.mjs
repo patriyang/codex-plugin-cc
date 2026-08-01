@@ -63,16 +63,17 @@ test("reapDeadJobs reports an in-memory reap when the persistence lock fails", (
   }
 });
 
-test("resolveCancelableJob reports an in-memory reap when the job-file write fails", () => {
+test("resolveCancelableJob reports an in-memory reap when the stored job file cannot be read", () => {
   const workspace = makeTempDir();
   ensureStateDir(workspace);
-  const jobId = "task-write-failure";
+  const jobId = "task-read-failure";
   const jobFile = resolveJobFile(workspace, jobId);
   const job = {
     id: jobId,
     status: "running",
     pid: 1234
   };
+  // A directory at the job-file path makes readStoredJob throw, exercising the stored-file read failure branch.
   fs.mkdirSync(jobFile);
   upsertJob(workspace, job);
 

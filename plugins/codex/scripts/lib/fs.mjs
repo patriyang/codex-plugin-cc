@@ -22,7 +22,7 @@ export function writeJsonFile(filePath, value) {
 export function writeJsonFileAtomic(filePath, value) {
   const tempPath = `${filePath}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
   try {
-    fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
     fs.renameSync(tempPath, filePath);
   } catch (error) {
     try {

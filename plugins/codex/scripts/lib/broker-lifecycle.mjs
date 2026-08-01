@@ -200,7 +200,10 @@ export async function ensureBrokerSession(cwd, options = {}) {
     saveBrokerSession(cwd, session, lockOptions);
   } catch {
     // A broker nobody can discover is a leak, so an unpublishable session is torn
-    // down exactly like one that never became ready.
+    // down exactly like one that never became ready. The child handle is signalled
+    // directly because production callers pass no `killProcess`, and teardown below
+    // removes the socket and pid file that would otherwise let anyone find it.
+    child.kill();
     teardownBrokerSession({
       endpoint,
       pidFile,

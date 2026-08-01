@@ -106,14 +106,15 @@ test("saveBrokerSession and clearBrokerSession serialize on the broker lock", ()
   assert.equal(JSON.parse(fs.readFileSync(lockFile, "utf8")).token, "live-owner");
 });
 
-test("ensureBrokerSession tears down the broker when publishing the session fails", async (t) => {
+// A broker that comes up on its endpoint but cannot publish its record: the lock is
+// held by a live owner, so `saveBrokerSession` times out after the readiness check.
+function startContendedBroker(t) {
   const workspace = makeTempDir();
   const fakeBroker = path.join(makeTempDir(), "fake-broker.mjs");
   const startedPidFile = path.join(makeTempDir(), "started.pid");
   const readyFile = path.join(makeTempDir(), "ready");
   const lockFile = path.join(resolveStateDir(workspace), "broker.lock");
   const pidStartTime = "live-start";
-  const killedPids = [];
 
   writeExecutable(
     fakeBroker,
@@ -153,23 +154,51 @@ server.listen(socketPath, () => fs.writeFileSync(${JSON.stringify(readyFile)}, "
     }
   });
 
-  const session = await ensureBrokerSession(workspace, {
-    scriptPath: fakeBroker,
-    timeoutMs: 2000,
+  return {
+    workspace,
+    readyFile,
+    spawnedPid,
+    connect: (options = {}) =>
+      ensureBrokerSession(workspace, {
+        scriptPath: fakeBroker,
+        timeoutMs: 2000,
+        lockOptions: {
+          timeoutMs: 25,
+          isProcessAlive: () => true,
+          getProcessStartTime: () => pidStartTime
+        },
+        ...options
+      })
+  };
+}
+
+test("ensureBrokerSession tears down the broker when publishing the session fails", async (t) => {
+  const broker = startContendedBroker(t);
+  const killedPids = [];
+
+  const session = await broker.connect({
     killProcess: (pid) => {
       killedPids.push(pid);
       process.kill(pid, "SIGTERM");
-    },
-    lockOptions: {
-      timeoutMs: 25,
-      isProcessAlive: () => true,
-      getProcessStartTime: () => pidStartTime
     }
   });
 
   assert.equal(session, null);
-  assert.equal(fs.existsSync(readyFile), true);
-  assert.deepEqual(killedPids, [spawnedPid()]);
-  await waitForProcessExit(spawnedPid());
-  assert.equal(fs.existsSync(brokerStateFile(workspace)), false);
+  assert.equal(fs.existsSync(broker.readyFile), true);
+  assert.deepEqual(killedPids, [broker.spawnedPid()]);
+  await waitForProcessExit(broker.spawnedPid());
+  assert.equal(fs.existsSync(brokerStateFile(broker.workspace)), false);
+});
+
+// Production callers (`CodexAppServerClient.connect`) pass no `killProcess`, so the
+// injected spy above must not be what kills the broker.
+test("ensureBrokerSession kills an unpublishable broker without a killProcess override", async (t) => {
+  const broker = startContendedBroker(t);
+
+  const session = await broker.connect();
+
+  assert.equal(session, null);
+  assert.equal(fs.existsSync(broker.readyFile), true);
+  await waitForProcessExit(broker.spawnedPid());
+  assert.equal(fs.existsSync(brokerStateFile(broker.workspace)), false);
 });

@@ -76,7 +76,15 @@ function runGit(root, args) {
 }
 
 function changedFiles(root, base, head) {
-  return runGit(root, ["diff", "--name-only", "--diff-filter=ACMRD", `${base}...${head}`])
+  return changedFilesForGitArgs(root, [`${base}...${head}`]);
+}
+
+function changedFilesAtEndpoints(root, base, head) {
+  return changedFilesForGitArgs(root, [base, head]);
+}
+
+function changedFilesForGitArgs(root, rangeArgs) {
+  return runGit(root, ["diff", "--name-only", "--diff-filter=ACMRD", ...rangeArgs])
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
@@ -140,7 +148,7 @@ function checkVersionBumps(root, base, head, baseTip) {
   });
   const baseTipPluginSourceFiles = baseTip === null
     ? []
-    : changedFiles(root, baseTip, head).filter(isPluginSource);
+    : changedFilesAtEndpoints(root, baseTip, head).filter(isPluginSource);
 
   const missingBumps = headValues
     .map((headValue, index) => ({ baseValue: baseValues[index], headValue }))

@@ -133,6 +133,39 @@ test("passes when the base branch moved to a different version", () => {
   assert.match(result.stdout, /Plugin source changes include version bumps to 1\.0\.2/);
 });
 
+test("passes when independent branches produce an identical plugin tree", () => {
+  const { base, root } = makeRepo();
+  const sharedSource = "console.log('same change');\n";
+
+  assert.equal(run("git", ["checkout", "-b", "pr-a", base], { cwd: root }).status, 0);
+  writeFile(root, "plugins/codex/scripts/codex-companion.mjs", sharedSource);
+  writeVersionFiles(root, "1.0.1");
+  const prA = commitAll(root, "bump pr-a to 1.0.1");
+
+  assert.equal(run("git", ["checkout", "-b", "pr-b", base], { cwd: root }).status, 0);
+  writeFile(root, "plugins/codex/scripts/codex-companion.mjs", sharedSource);
+  writeVersionFiles(root, "1.0.1");
+  commitAll(root, "bump pr-b to 1.0.1");
+
+  assert.equal(run("git", ["checkout", "main"], { cwd: root }).status, 0);
+  assert.equal(run("git", ["merge", "--ff-only", prA], { cwd: root }).status, 0);
+
+  const result = run("node", [
+    SCRIPT,
+    "--root",
+    root,
+    "--base",
+    base,
+    "--base-tip",
+    "main",
+    "--head",
+    "pr-b"
+  ], { cwd: ROOT });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Plugin source changes include version bumps to 1\.0\.1/);
+});
+
 test("passes when the head plugin source is already contained in the base branch tip", () => {
   const { base, root } = makeRepo();
   const sharedSource = "console.log('shared change');\n";

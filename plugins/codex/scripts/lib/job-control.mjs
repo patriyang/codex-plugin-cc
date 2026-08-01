@@ -1,13 +1,14 @@
 import fs from "node:fs";
 
 import { getSessionRuntimeStatus } from "./codex.mjs";
-import { isProcessAlive } from "./process.mjs";
+import { getProcessStartTime, isProcessAlive } from "./process.mjs";
 import {
   getConfig,
   listJobs,
   readJobFile,
   resolveJobFile,
   upsertJob,
+  withJobPersistenceLock,
   writeJobFile
 } from "./state.mjs";
 import { appendLogLine, nowIso, SESSION_ID_ENV } from "./tracked-jobs.mjs";
@@ -15,13 +16,96 @@ import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 export const DEFAULT_MAX_STATUS_JOBS = 8;
 export const DEFAULT_MAX_PROGRESS_LINES = 4;
+const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 export function sortJobsNewestFirst(jobs) {
   return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
 }
 
+function isTerminalJobStatus(status) {
+  return TERMINAL_JOB_STATUSES.has(status);
+}
+
+function isActiveJobStatus(status) {
+  return status === "queued" || status === "running";
+}
+
+function normalizeJobStartTime(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || null;
+}
+
+function hasSameWorkerIdentity(left, right) {
+  const leftPid = Number.isFinite(left?.pid) ? left.pid : null;
+  const rightPid = Number.isFinite(right?.pid) ? right.pid : null;
+  return (
+    leftPid === rightPid &&
+    normalizeJobStartTime(left?.pidStartTime) === normalizeJobStartTime(right?.pidStartTime)
+  );
+}
+
+function resolveReapCompletedAt(job, fallback = nowIso()) {
+  let completedAt = job.updatedAt ?? fallback;
+  try {
+    if (job.logFile && fs.existsSync(job.logFile)) {
+      const mtime = fs.statSync(job.logFile).mtime;
+      const startedAt = Date.parse(job.startedAt ?? "");
+      if (Number.isFinite(startedAt) && mtime.getTime() >= startedAt) {
+        completedAt = mtime.toISOString();
+      }
+    }
+  } catch {
+    // Fall back to the last recorded update time.
+  }
+  return completedAt;
+}
+
+export function persistJobCancellation(workspaceRoot, job, options = {}) {
+  const withPersistenceLockImpl = options.withPersistenceLock ?? withJobPersistenceLock;
+  let terminalJob = null;
+  let cancelledJob = null;
+  let activeJob = null;
+  let latestJob = null;
+
+  withPersistenceLockImpl(workspaceRoot, job.id, () => {
+    const latestStoredJob = readStoredJob(workspaceRoot, job.id);
+    const latestIndexedJob = listJobs(workspaceRoot).find((candidate) => candidate.id === job.id) ?? null;
+    latestJob = latestStoredJob ?? latestIndexedJob;
+    terminalJob = [latestStoredJob, latestIndexedJob].find((candidate) => isTerminalJobStatus(candidate?.status)) ?? null;
+    if (terminalJob || ![latestStoredJob, latestIndexedJob].some((candidate) => isActiveJobStatus(candidate?.status))) {
+      return;
+    }
+
+    activeJob = {
+      ...(latestIndexedJob ?? {}),
+      ...(latestStoredJob ?? {})
+    };
+    const completedAt = nowIso();
+    cancelledJob = {
+      ...activeJob,
+      status: "cancelled",
+      phase: "cancelled",
+      pid: null,
+      completedAt,
+      errorMessage: "Cancelled by user."
+    };
+    writeJobFile(workspaceRoot, job.id, {
+      ...cancelledJob,
+      cancelledAt: completedAt
+    });
+    upsertJob(workspaceRoot, cancelledJob);
+  });
+
+  return {
+    cancelled: Boolean(cancelledJob),
+    job: terminalJob ?? cancelledJob ?? latestJob,
+    activeJob
+  };
+}
+
 export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
   const isProcessAliveImpl = options.isProcessAlive ?? isProcessAlive;
+  const getProcessStartTimeImpl = options.getProcessStartTime ?? getProcessStartTime;
 
   return jobs.map((job) => {
     if (
@@ -31,20 +115,33 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
       return job;
     }
 
+    const probedWorker = {
+      pid: job.pid,
+      pidStartTime: job.pidStartTime
+    };
     try {
-      if (isProcessAliveImpl(job.pid)) {
-        return job;
+      if (isProcessAliveImpl(probedWorker.pid)) {
+        const storedStartTime = typeof job.pidStartTime === "string" ? job.pidStartTime.trim() : "";
+        if (!storedStartTime) {
+          return job;
+        }
+
+        const currentStartTime = getProcessStartTimeImpl(probedWorker.pid);
+        const normalizedCurrentStartTime =
+          typeof currentStartTime === "string" ? currentStartTime.trim() : "";
+        if (!normalizedCurrentStartTime || normalizedCurrentStartTime === storedStartTime) {
+          return job;
+        }
       }
     } catch {
       return job;
     }
 
     let storedJob = null;
-    let storedReadFailed = false;
     try {
       storedJob = readStoredJob(workspaceRoot, job.id);
     } catch {
-      storedReadFailed = true;
+      // Re-read under the persistence lock before deciding whether to reap.
     }
 
     if (
@@ -59,20 +156,9 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
       ...job,
       ...(storedJob ?? {})
     };
-    const pid = job.pid;
+    const pid = probedWorker.pid;
     const logFile = currentJob.logFile ?? null;
-    let completedAt = currentJob.updatedAt ?? nowIso();
-    try {
-      if (logFile && fs.existsSync(logFile)) {
-        const mtime = fs.statSync(logFile).mtime;
-        const startedAt = Date.parse(currentJob.startedAt ?? "");
-        if (Number.isFinite(startedAt) && mtime.getTime() >= startedAt) {
-          completedAt = mtime.toISOString();
-        }
-      }
-    } catch {
-      // Fall back to the last recorded update time.
-    }
+    const completedAt = resolveReapCompletedAt(currentJob);
 
     const reapedJob = {
       ...currentJob,
@@ -84,29 +170,100 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
       reaped: true
     };
 
-    if (!storedReadFailed) {
-      try {
-        writeJobFile(workspaceRoot, job.id, reapedJob);
-      } catch {
-        // Status should still report the in-memory terminal record.
-      }
-    }
-
+    let latestTerminalJob = null;
+    let latestActiveJob = null;
+    let persistedReapJob = reapedJob;
+    let reapLogFile = logFile;
+    let persistedReap = false;
     try {
-      upsertJob(workspaceRoot, reapedJob);
+      withJobPersistenceLock(workspaceRoot, job.id, () => {
+        let latestStoredJob = null;
+        let latestStoredReadFailed = false;
+        try {
+          latestStoredJob = readStoredJob(workspaceRoot, job.id);
+        } catch {
+          latestStoredReadFailed = true;
+        }
+
+        const latestIndexedJob =
+          listJobs(workspaceRoot).find((candidate) => candidate.id === job.id) ?? null;
+        latestTerminalJob =
+          [latestStoredJob, latestIndexedJob].find((candidate) => isTerminalJobStatus(candidate?.status)) ??
+          null;
+        if (latestTerminalJob) {
+          return;
+        }
+
+        const latestActiveJobs = [latestStoredJob, latestIndexedJob].filter((candidate) =>
+          isActiveJobStatus(candidate?.status)
+        );
+        const changedActiveJob = latestActiveJobs.find(
+          (candidate) => !hasSameWorkerIdentity(candidate, probedWorker)
+        );
+        if (changedActiveJob) {
+          latestActiveJob = {
+            ...(latestIndexedJob ?? {}),
+            ...(latestStoredJob ?? {}),
+            ...changedActiveJob
+          };
+          return;
+        }
+
+        const activeJob = latestActiveJobs.length
+          ? {
+              ...(latestIndexedJob ?? {}),
+              ...(latestStoredJob ?? {})
+            }
+          : currentJob;
+        const activePid = activeJob.pid ?? pid;
+        persistedReapJob = {
+          ...activeJob,
+          status: "failed",
+          phase: "failed",
+          pid: null,
+          errorMessage: `Worker process ${activePid} is no longer running; the job ended without recording a result.`,
+          completedAt: resolveReapCompletedAt(activeJob),
+          reaped: true
+        };
+        reapLogFile = activeJob.logFile ?? null;
+
+        if (!latestStoredReadFailed) {
+          try {
+            writeJobFile(workspaceRoot, job.id, persistedReapJob);
+          } catch {
+            // Status should still report the in-memory terminal record.
+          }
+        }
+
+        try {
+          upsertJob(workspaceRoot, persistedReapJob);
+        } catch {
+          // Status should still report the in-memory terminal record.
+        }
+        persistedReap = true;
+      });
     } catch {
       // Status should still report the in-memory terminal record.
     }
 
-    try {
-      if (logFile && fs.existsSync(logFile)) {
-        appendLogLine(logFile, `Job reaped: worker process ${pid} is gone; marking failed.`);
-      }
-    } catch {
-      // A missing or unwritable log must not break status.
+    if (latestTerminalJob) {
+      return latestTerminalJob;
     }
 
-    return reapedJob;
+    if (latestActiveJob) {
+      return latestActiveJob;
+    }
+
+    if (persistedReap) {
+      try {
+        if (reapLogFile && fs.existsSync(reapLogFile)) {
+          appendLogLine(reapLogFile, `Job reaped: worker process ${pid} is gone; marking failed.`);
+        }
+      } catch {
+        // A missing or unwritable log must not break status.
+      }
+    }
+    return persistedReapJob;
   });
 }
 
@@ -286,7 +443,36 @@ export function readStoredJob(workspaceRoot, jobId) {
   return readJobFile(jobFile);
 }
 
+function readPersistedReapedJob(workspaceRoot, jobId) {
+  let storedJob = null;
+  try {
+    storedJob = readStoredJob(workspaceRoot, jobId);
+  } catch {
+    // The workspace index may still provide a persisted terminal record.
+  }
+  if (storedJob?.status === "failed" && storedJob.reaped === true) {
+    return storedJob;
+  }
+
+  let indexedJob = null;
+  try {
+    indexedJob = listJobs(workspaceRoot).find((candidate) => candidate.id === jobId) ?? null;
+  } catch {
+    // Neither persistence source was readable.
+  }
+  return indexedJob?.status === "failed" && indexedJob.reaped === true ? indexedJob : null;
+}
+
 function matchJobReference(jobs, reference, predicate = () => true) {
+  const selected = findJobReference(jobs, reference, predicate);
+  if (selected) {
+    return selected;
+  }
+
+  throw new Error(`No job found for "${reference}". Run /codex:status to list known jobs.`);
+}
+
+function findJobReference(jobs, reference, predicate = () => true) {
   const filtered = jobs.filter(predicate);
   if (!reference) {
     return filtered[0] ?? null;
@@ -304,8 +490,7 @@ function matchJobReference(jobs, reference, predicate = () => true) {
   if (prefixMatches.length > 1) {
     throw new Error(`Job reference "${reference}" is ambiguous. Use a longer job id.`);
   }
-
-  throw new Error(`No job found for "${reference}". Run /codex:status to list known jobs.`);
+  return null;
 }
 
 export function buildStatusSnapshot(cwd, options = {}) {
@@ -356,7 +541,7 @@ export function resolveResultJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const allJobs = reapDeadJobs(workspaceRoot, sortJobsNewestFirst(listJobs(workspaceRoot)));
   const jobs = reference ? allJobs : filterJobsForCurrentSession(allJobs);
-  const selected = matchJobReference(
+  const selected = findJobReference(
     jobs,
     reference,
     (job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled"
@@ -366,7 +551,7 @@ export function resolveResultJob(cwd, reference) {
     return { workspaceRoot, job: selected };
   }
 
-  const active = matchJobReference(jobs, reference, (job) => job.status === "queued" || job.status === "running");
+  const active = findJobReference(jobs, reference, (job) => job.status === "queued" || job.status === "running");
   if (active) {
     throw new Error(`Job ${active.id} is still ${active.status}. Check /codex:status and try again once it finishes.`);
   }
@@ -380,10 +565,29 @@ export function resolveResultJob(cwd, reference) {
 
 export function resolveCancelableJob(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = reapDeadJobs(workspaceRoot, sortJobsNewestFirst(listJobs(workspaceRoot)), options);
+  const listedJobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = reapDeadJobs(workspaceRoot, listedJobs, options);
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
 
   if (reference) {
+    const listedActiveJobs = listedJobs.filter((job) => job.status === "queued" || job.status === "running");
+    const requested = findJobReference(listedActiveJobs, reference);
+    if (requested) {
+      const selected = activeJobs.find((job) => job.id === requested.id);
+      if (selected) {
+        return { workspaceRoot, job: selected };
+      }
+
+      const reaped = jobs.find((job) => job.id === requested.id);
+      if (reaped?.status === "failed" && reaped.reaped === true) {
+        const persistedReapedJob = readPersistedReapedJob(workspaceRoot, requested.id);
+        if (persistedReapedJob) {
+          return { workspaceRoot, job: persistedReapedJob, outcome: "reaped" };
+        }
+        throw new Error(`Job ${requested.id} was reaped in memory but its failed state could not be persisted.`);
+      }
+    }
+
     const selected = matchJobReference(activeJobs, reference);
     if (!selected) {
       throw new Error(`No active job found for "${reference}".`);

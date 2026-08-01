@@ -71,6 +71,68 @@ export function isProcessAlive(pid, options = {}) {
   }
 }
 
+function normalizeProcessStartTimeOutput(output) {
+  const lines = String(output ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length !== 1) {
+    return null;
+  }
+
+  const normalized = lines[0].replace(/\s+/g, " ");
+  return normalized && normalized !== "?" ? normalized : null;
+}
+
+export function getProcessStartTime(pid, options = {}) {
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return null;
+  }
+
+  const platform = options.platform ?? process.platform;
+  let command;
+  let args;
+  if (platform === "win32") {
+    command = "powershell.exe";
+    args = [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${String(pid)}'; if ($null -ne $process) { $process.CreationDate.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) }`
+    ];
+  } else if (["aix", "darwin", "freebsd", "linux", "netbsd", "openbsd", "sunos"].includes(platform)) {
+    command = "ps";
+    args = ["-o", "lstart=", "-p", String(pid)];
+  } else {
+    return null;
+  }
+
+  const runCommandImpl = options.runCommandImpl ?? runCommand;
+  const commandEnv =
+    platform === "win32"
+      ? options.env
+      : {
+          ...process.env,
+          ...(options.env ?? {}),
+          LC_ALL: "C",
+          LANG: "C"
+        };
+  try {
+    const result = runCommandImpl(command, args, {
+      cwd: options.cwd,
+      env: commandEnv,
+      shell: false
+    });
+    if (!result || result.error || result.signal || result.status !== 0) {
+      return null;
+    }
+    return normalizeProcessStartTimeOutput(result.stdout);
+  } catch {
+    return null;
+  }
+}
+
 export function terminateProcessTree(pid, options = {}) {
   if (!Number.isFinite(pid)) {
     return { attempted: false, delivered: false, method: null };

@@ -459,10 +459,11 @@ export function renderStoredJobResult(job, storedJob) {
 }
 
 export function renderCancelReport(job) {
+  const wasReaped = job.status === "failed" && job.reaped === true;
   const lines = [
     "# Codex Cancel",
     "",
-    `Cancelled ${job.id}.`,
+    wasReaped ? `Job ${job.id} already ended; it was reaped and marked failed.` : `Cancelled ${job.id}.`,
     ""
   ];
 

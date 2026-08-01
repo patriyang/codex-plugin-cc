@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  renderCancelReport,
   renderNativeReviewResult,
   renderReviewResult,
   renderStatusReport,
@@ -99,6 +100,19 @@ test("renderStatusReport explains why a reaped job failed", () => {
 
   assert.match(output, /Latest finished:/);
   assert.match(output, new RegExp(`Error: ${errorMessage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+});
+
+test("renderCancelReport explains an explicit cancel that reaped a failed job", () => {
+  const output = renderCancelReport({
+    id: "task-dead",
+    status: "failed",
+    title: "Codex Task",
+    reaped: true
+  });
+
+  assert.match(output, /already ended/);
+  assert.match(output, /reaped and marked failed/);
+  assert.doesNotMatch(output, /No job found|Cancelled/);
 });
 
 test("renderReviewResult degrades gracefully when JSON is missing required review fields", () => {

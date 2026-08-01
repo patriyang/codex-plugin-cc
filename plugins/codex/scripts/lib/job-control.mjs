@@ -106,6 +106,7 @@ export function persistJobCancellation(workspaceRoot, job, options = {}) {
 export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
   const isProcessAliveImpl = options.isProcessAlive ?? isProcessAlive;
   const getProcessStartTimeImpl = options.getProcessStartTime ?? getProcessStartTime;
+  const writeJobFileImpl = options.writeJobFile ?? writeJobFile;
 
   return jobs.map((job) => {
     if (
@@ -229,7 +230,7 @@ export function reapDeadJobs(workspaceRoot, jobs, options = {}) {
 
         if (!latestStoredReadFailed) {
           try {
-            writeJobFile(workspaceRoot, job.id, persistedReapJob);
+            writeJobFileImpl(workspaceRoot, job.id, persistedReapJob);
           } catch {
             // Status should still report the in-memory terminal record.
           }

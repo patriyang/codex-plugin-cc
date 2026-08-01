@@ -63,6 +63,42 @@ test("reapDeadJobs reports an in-memory reap when the persistence lock fails", (
   }
 });
 
+test("reapDeadJobs preserves the stored job when writing the reap fails", () => {
+  const workspace = makeTempDir();
+  ensureStateDir(workspace);
+  const jobId = "task-write-failure";
+  const runningJob = {
+    id: jobId,
+    status: "running",
+    phase: "running",
+    pid: 1234,
+    updatedAt: "2026-07-26T08:00:00.000Z"
+  };
+  writeJobFile(workspace, jobId, runningJob);
+  upsertJob(workspace, runningJob);
+  const jobFile = resolveJobFile(workspace, jobId);
+  const storedBefore = fs.readFileSync(jobFile, "utf8");
+
+  const [job] = reapDeadJobs(workspace, [runningJob], {
+    isProcessAlive: () => false,
+    writeJobFile: () => {
+      throw new Error("simulated job-file write failure");
+    }
+  });
+
+  assert.equal(job.status, "failed");
+  assert.equal(job.phase, "failed");
+  assert.equal(job.pid, null);
+  assert.equal(job.reaped, true);
+  const indexedJob = listJobs(workspace).find((candidate) => candidate.id === jobId);
+  assert.equal(indexedJob.status, "failed");
+  assert.equal(indexedJob.phase, "failed");
+  assert.equal(indexedJob.pid, null);
+  assert.equal(indexedJob.reaped, true);
+  assert.equal(fs.readFileSync(jobFile, "utf8"), storedBefore);
+  assert.equal(JSON.parse(fs.readFileSync(jobFile, "utf8")).status, "running");
+});
+
 test("resolveCancelableJob reports an in-memory reap when the stored job file cannot be read", () => {
   const workspace = makeTempDir();
   ensureStateDir(workspace);

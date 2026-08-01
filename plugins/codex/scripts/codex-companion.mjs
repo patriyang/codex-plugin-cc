@@ -803,7 +803,6 @@ function assertTaskPromptSourcesExclusive(options, positionals) {
 }
 
 function readTaskPrompt(cwd, options, positionals) {
-  assertTaskPromptSourcesExclusive(options, positionals);
   if (options["prompt-file"]) {
     return fs.readFileSync(path.resolve(cwd, options["prompt-file"]), "utf8");
   }

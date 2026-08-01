@@ -133,6 +133,28 @@ export function getProcessStartTime(pid, options = {}) {
   }
 }
 
+export function matchesRecordedProcess(pid, recordedStartTime, options = {}) {
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return false;
+  }
+
+  const normalizedRecordedStartTime =
+    typeof recordedStartTime === "string" ? recordedStartTime.trim() : "";
+  if (!normalizedRecordedStartTime) {
+    return false;
+  }
+
+  const getProcessStartTimeImpl = options.getProcessStartTime ?? getProcessStartTime;
+  try {
+    const observedStartTime = getProcessStartTimeImpl(pid);
+    const normalizedObservedStartTime =
+      typeof observedStartTime === "string" ? observedStartTime.trim() : "";
+    return Boolean(normalizedObservedStartTime) && normalizedObservedStartTime === normalizedRecordedStartTime;
+  } catch {
+    return false;
+  }
+}
+
 export function terminateProcessTree(pid, options = {}) {
   if (!Number.isFinite(pid)) {
     return { attempted: false, delivered: false, method: null };

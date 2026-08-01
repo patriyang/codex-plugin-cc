@@ -24,7 +24,13 @@ import {
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
-import { binaryAvailable, getProcessStartTime, isProcessAlive, terminateProcessTree } from "./lib/process.mjs";
+import {
+  binaryAvailable,
+  getProcessStartTime,
+  isProcessAlive,
+  matchesRecordedProcess,
+  terminateProcessTree
+} from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
   generateJobId,
@@ -1188,17 +1194,7 @@ async function handleCancel(argv) {
     delivered: false,
     method: null
   };
-  const storedStartTime = typeof activeJob.pidStartTime === "string" ? activeJob.pidStartTime.trim() : "";
-  let currentStartTime = "";
-  if (Number.isFinite(activeJob.pid) && storedStartTime) {
-    try {
-      const observedStartTime = getProcessStartTime(activeJob.pid);
-      currentStartTime = typeof observedStartTime === "string" ? observedStartTime.trim() : "";
-    } catch {
-      currentStartTime = "";
-    }
-  }
-  if (storedStartTime && currentStartTime === storedStartTime) {
+  if (matchesRecordedProcess(activeJob.pid, activeJob.pidStartTime)) {
     workerSignal = terminateProcessTree(activeJob.pid);
   } else {
     appendLogLine(activeJob.logFile, "No verified worker was signalled.");

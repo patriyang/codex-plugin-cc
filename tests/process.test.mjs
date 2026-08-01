@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   getProcessStartTime,
   isProcessAlive,
+  matchesRecordedProcess,
   terminateProcessTree
 } from "../plugins/codex/scripts/lib/process.mjs";
 import { spawnDeadPid } from "./helpers.mjs";
@@ -31,6 +32,73 @@ test("isProcessAlive treats a permission error as evidence the process exists", 
       throw error;
     }
   }), true);
+});
+
+test("matchesRecordedProcess accepts an exact start-time match", () => {
+  assert.equal(
+    matchesRecordedProcess(1234, " Mon Jul 27 12:34:56 2026 ", {
+      getProcessStartTime: () => "Mon Jul 27 12:34:56 2026"
+    }),
+    true
+  );
+});
+
+test("matchesRecordedProcess rejects a mismatched start time", () => {
+  assert.equal(
+    matchesRecordedProcess(1234, "Mon Jul 27 12:34:55 2026", {
+      getProcessStartTime: () => "Mon Jul 27 12:34:56 2026"
+    }),
+    false
+  );
+});
+
+test("matchesRecordedProcess rejects a missing or blank recorded start time", () => {
+  const getProcessStartTime = () => {
+    throw new Error("probe should not run");
+  };
+
+  for (const recordedStartTime of [undefined, null, "", " \t "]) {
+    assert.equal(
+      matchesRecordedProcess(1234, recordedStartTime, { getProcessStartTime }),
+      false,
+      `recordedStartTime=${String(recordedStartTime)}`
+    );
+  }
+});
+
+test("matchesRecordedProcess rejects non-finite and non-positive pids", () => {
+  for (const pid of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1]) {
+    assert.equal(
+      matchesRecordedProcess(pid, "Mon Jul 27 12:34:56 2026", {
+        getProcessStartTime: () => "Mon Jul 27 12:34:56 2026"
+      }),
+      false,
+      `pid=${String(pid)}`
+    );
+  }
+});
+
+test("matchesRecordedProcess rejects an unavailable observed start time", () => {
+  for (const observedStartTime of [null, "", " \t "]) {
+    assert.equal(
+      matchesRecordedProcess(1234, "Mon Jul 27 12:34:56 2026", {
+        getProcessStartTime: () => observedStartTime
+      }),
+      false,
+      `observedStartTime=${String(observedStartTime)}`
+    );
+  }
+});
+
+test("matchesRecordedProcess rejects a throwing start-time probe", () => {
+  assert.equal(
+    matchesRecordedProcess(1234, "Mon Jul 27 12:34:56 2026", {
+      getProcessStartTime: () => {
+        throw new Error("probe failed");
+      }
+    }),
+    false
+  );
 });
 
 test("isProcessAlive fails open on an unknown error", () => {

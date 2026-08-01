@@ -3999,12 +3999,23 @@ test("session end fully cleans up jobs for the ending session", async (t) => {
   fs.writeFileSync(completedJobFile, JSON.stringify({ id: "review-completed" }, null, 2), "utf8");
   fs.writeFileSync(otherJobFile, JSON.stringify({ id: "review-other" }, null, 2), "utf8");
 
+  const processBinDir = makeTempDir();
+  writeExecutable(
+    path.join(processBinDir, "ps"),
+    "#!/bin/sh\nprintf 'Mon Jul 27 12:34:56 2026\\n'\n"
+  );
+  const processEnv = {
+    ...process.env,
+    PATH: `${processBinDir}:${process.env.PATH ?? ""}`
+  };
+
   const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     cwd: repo,
     detached: true,
     stdio: "ignore"
   });
   sleeper.unref();
+  const pidStartTime = await waitFor(() => getProcessStartTime(sleeper.pid, { env: processEnv }));
   fs.writeFileSync(runningJobFile, JSON.stringify({ id: "review-running" }, null, 2), "utf8");
 
   t.after(() => {
@@ -4041,6 +4052,7 @@ test("session end fully cleans up jobs for the ending session", async (t) => {
             title: "Codex Review",
             sessionId: "sess-current",
             pid: sleeper.pid,
+            pidStartTime,
             logFile: runningLog,
             createdAt: "2026-03-18T15:32:00.000Z",
             updatedAt: "2026-03-18T15:33:00.000Z"
@@ -4065,7 +4077,7 @@ test("session end fully cleans up jobs for the ending session", async (t) => {
   const result = run("node", [SESSION_HOOK, "SessionEnd"], {
     cwd: repo,
     env: {
-      ...process.env,
+      ...processEnv,
       CODEX_COMPANION_SESSION_ID: "sess-current"
     },
     input: JSON.stringify({
@@ -4096,6 +4108,96 @@ test("session end fully cleans up jobs for the ending session", async (t) => {
   assert.deepEqual(state.jobs.map((job) => job.id), ["review-other"]);
   const otherJob = state.jobs[0];
   assert.equal(otherJob.logFile, otherSessionLog);
+});
+
+test("session end does not signal a worker with an unverified identity", async (t) => {
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  ensureStateDir(repo);
+
+  const processBinDir = makeTempDir();
+  writeExecutable(
+    path.join(processBinDir, "ps"),
+    "#!/bin/sh\nprintf 'Mon Jul 28 12:34:56 2026\\n'\n"
+  );
+  const env = {
+    ...process.env,
+    PATH: `${processBinDir}:${process.env.PATH ?? ""}`
+  };
+  const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: repo,
+    detached: true,
+    stdio: "ignore"
+  });
+  sleeper.unref();
+
+  t.after(() => {
+    try {
+      process.kill(-sleeper.pid, "SIGTERM");
+    } catch {
+      try {
+        process.kill(sleeper.pid, "SIGTERM");
+      } catch {
+        // Ignore missing process.
+      }
+    }
+  });
+
+  fs.writeFileSync(
+    path.join(resolveStateDir(repo), "state.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "review-unverified-worker",
+            status: "running",
+            title: "Codex Review",
+            sessionId: "sess-unverified",
+            pid: sleeper.pid,
+            pidStartTime: "1970-01-01T00:00:00.000Z",
+            createdAt: "2026-03-18T15:30:00.000Z",
+            updatedAt: "2026-03-18T15:31:00.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SESSION_HOOK, "SessionEnd"], {
+    cwd: repo,
+    env,
+    input: JSON.stringify({
+      hook_event_name: "SessionEnd",
+      session_id: "sess-unverified",
+      cwd: repo
+    })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  await assert.rejects(
+    waitFor(
+      () => {
+        try {
+          process.kill(sleeper.pid, 0);
+          return false;
+        } catch (error) {
+          if (error?.code === "ESRCH") {
+            return true;
+          }
+          throw error;
+        }
+      },
+      { timeoutMs: 500, intervalMs: 25 }
+    ),
+    /Timed out waiting for condition/
+  );
+  const state = JSON.parse(fs.readFileSync(path.join(resolveStateDir(repo), "state.json"), "utf8"));
+  assert.deepEqual(state.jobs, []);
 });
 
 test("stop hook runs a stop-time review task and blocks on findings when the review gate is enabled", () => {

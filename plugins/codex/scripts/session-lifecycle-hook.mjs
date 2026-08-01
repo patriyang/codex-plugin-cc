@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import process from "node:process";
 
-import { terminateProcessTree } from "./lib/process.mjs";
+import { matchesRecordedProcess, terminateProcessTree } from "./lib/process.mjs";
 import { BROKER_ENDPOINT_ENV } from "./lib/app-server.mjs";
 import {
   clearBrokerSession,
@@ -61,8 +61,11 @@ function cleanupSessionJobs(cwd, sessionId) {
     if (!stillRunning) {
       continue;
     }
+    if (!matchesRecordedProcess(job.pid, job.pidStartTime)) {
+      continue;
+    }
     try {
-      terminateProcessTree(job.pid ?? Number.NaN);
+      terminateProcessTree(job.pid);
     } catch {
       // Ignore teardown failures during session shutdown.
     }

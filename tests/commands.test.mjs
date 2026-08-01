@@ -216,6 +216,9 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(runtimeSkill, /Map `spark` to `--model gpt-5\.3-codex-spark`/i);
   assert.match(runtimeSkill, /If the forwarded request includes `--background` or `--wait`, treat that as Claude-side execution control only/i);
   assert.match(runtimeSkill, /Strip it before calling `task`/i);
+  assert.match(runtimeSkill, /codex-companion\.mjs" task \[--write\] \[--model <m>\] \[--effort <e>\] \[--resume-last\|--fresh\] -- "<prompt text>"/);
+  assert.match(runtimeSkill, /The bare `--` guarantees the prompt reaches Codex verbatim even when its first word is a flag name like `--write`/i);
+  assert.match(runtimeSkill, /flags first, then a bare `--`, then the prompt/i);
   assert.match(runtimeSkill, /`--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`/i);
   assert.match(runtimeSkill, /Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own/i);
   assert.match(runtimeSkill, /If the Bash call fails or Codex cannot be invoked, return nothing/i);
@@ -226,8 +229,9 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(readme, /continue a previous Codex task/i);
   assert.match(
     readme,
-    /for `task` and the review commands, flags must precede the prompt\/focus text \(anything after it is literal, not a flag\); `\/codex:status`, `\/codex:result`, and `\/codex:cancel` instead take their job id first and flags after/i
+    /for `task` and the review commands, flags must precede the prompt\/focus text \(anything after it is literal, not a flag\); a prompt whose first word is a flag name must be passed after a bare `--` \(for example, `task -- --write access is missing`\), otherwise it is consumed as a real flag; `\/codex:status`, `\/codex:result`, and `\/codex:cancel` instead take their job id first and flags after/i
   );
+  assert.match(readme, /a prompt whose first word is a flag name must be passed after a bare `--` \(for example, `task -- --write access is missing`\), otherwise it is consumed as a real flag/i);
   assert.match(readme, /### `\/codex:setup`/);
   assert.match(readme, /### `\/codex:review`/);
   assert.match(readme, /### `\/codex:adversarial-review`/);
@@ -273,7 +277,7 @@ test("internal docs use task terminology for rescue runs", () => {
   const promptingSkill = read("skills/gpt-5-4-prompting/SKILL.md");
   const promptRecipes = read("skills/gpt-5-4-prompting/references/codex-prompt-recipes.md");
 
-  assert.match(runtimeSkill, /codex-companion\.mjs" task "<raw arguments>"/);
+  assert.match(runtimeSkill, /codex-companion\.mjs" task \[--write\] \[--model <m>\] \[--effort <e>\] \[--resume-last\|--fresh\] -- "<prompt text>"/);
   assert.match(runtimeSkill, /Use `task` for every rescue request/i);
   assert.match(runtimeSkill, /task --resume-last/i);
   assert.match(promptingSkill, /Use `task` when the task is diagnosis/i);

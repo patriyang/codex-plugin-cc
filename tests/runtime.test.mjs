@@ -1163,6 +1163,27 @@ test("task -- --help keeps the escape hatch prompt literal", () => {
   assert.doesNotMatch(result.stdout, /^Usage:/);
 });
 
+test("task -- keeps a flag-looking prompt literal and read-only", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "--", "--write", "access", "is", "missing", "in", "prod"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.prompt, "--write access is missing in prod");
+  assert.equal(fakeState.lastTurnStart.sandboxPolicy?.type, "readOnly");
+});
+
 test("single-string task prose containing --help stays literal", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

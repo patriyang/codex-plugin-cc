@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,32 @@ export function readJsonFile(filePath) {
 
 export function writeJsonFile(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+export function writeJsonFileAtomic(filePath, value) {
+  const contents = `${JSON.stringify(value, null, 2)}\n`;
+  const tempPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+  // Creating the temp file exclusively before the try block is what makes the
+  // cleanup below safe: a failure here means the path was never ours to remove.
+  const handle = fs.openSync(tempPath, "wx");
+
+  try {
+    fs.writeFileSync(handle, contents, "utf8");
+    fs.closeSync(handle);
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    try {
+      fs.closeSync(handle);
+    } catch {
+      // Already closed; the unlink below is the cleanup that matters.
+    }
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Best effort cleanup; preserve the original write error.
+    }
+    throw error;
+  }
 }
 
 export function safeReadFile(filePath) {

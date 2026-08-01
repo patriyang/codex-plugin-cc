@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,21 @@ export function readJsonFile(filePath) {
 
 export function writeJsonFile(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+export function writeJsonFileAtomic(filePath, value) {
+  const tempPath = `${filePath}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
+  try {
+    fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Best effort cleanup; preserve the original write error.
+    }
+    throw error;
+  }
 }
 
 export function safeReadFile(filePath) {

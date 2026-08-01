@@ -73,8 +73,7 @@ test("resolveCancelableJob reports an in-memory reap when the job-file write fai
     status: "running",
     pid: 1234
   };
-  fs.writeFileSync(jobFile, `${JSON.stringify(job)}\n`, "utf8");
-  fs.chmodSync(jobFile, 0o444);
+  fs.mkdirSync(jobFile);
   upsertJob(workspace, job);
 
   const resolution = resolveCancelableJob(workspace, jobId, { isProcessAlive: () => false });
@@ -83,12 +82,10 @@ test("resolveCancelableJob reports an in-memory reap when the job-file write fai
   assert.equal(resolution.outcome, "reaped");
   assert.equal(reapedJob.status, "failed");
   assert.equal(reapedJob.reaped, true);
-  assert.equal(JSON.parse(fs.readFileSync(jobFile, "utf8")).status, "running");
-  assert.equal(fs.statSync(jobFile).mode & 0o222, 0);
+  assert.equal(fs.statSync(jobFile).isDirectory(), true);
   const indexedJob = listJobs(workspace).find((candidate) => candidate.id === jobId);
   assert.equal(indexedJob.status, "failed");
   assert.equal(indexedJob.reaped, true);
-  fs.chmodSync(jobFile, 0o644);
 });
 
 test("resolveCancelableJob reports persistence failure when lock and both reap stores fail", () => {

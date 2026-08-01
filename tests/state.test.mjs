@@ -211,6 +211,41 @@ test("persistence lock preserves a live owner even when its file is old", () => 
   assert.equal(JSON.parse(fs.readFileSync(lockFile, "utf8")).token, "live-owner");
 });
 
+test("persistence lock removes its file when owner metadata writing fails", () => {
+  const workspace = makeTempDir();
+  const lockFile = path.join(resolveJobsDir(workspace), "metadata-failure.lock");
+  const originalWriteFileSync = fs.writeFileSync;
+  const injectedError = new Error("injected owner metadata write failure");
+  let callbackRan = false;
+
+  fs.writeFileSync = (...args) => {
+    if (typeof args[0] === "number") {
+      throw injectedError;
+    }
+    return originalWriteFileSync.apply(fs, args);
+  };
+
+  try {
+    assert.throws(
+      () => withJobPersistenceLock(workspace, "metadata-failure", () => {}),
+      (error) => error === injectedError
+    );
+    assert.equal(fs.existsSync(lockFile), false);
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
+  }
+
+  withJobPersistenceLock(
+    workspace,
+    "metadata-failure",
+    () => {
+      callbackRan = true;
+    },
+    { timeoutMs: 1500, retryMs: 100 }
+  );
+  assert.equal(callbackRan, true);
+});
+
 test("persistence lock preserves an owner with an unavailable identity", () => {
   const workspace = makeTempDir();
   const lockFile = path.join(resolveJobsDir(workspace), "ambiguous-owner.lock");

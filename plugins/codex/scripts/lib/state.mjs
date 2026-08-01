@@ -331,8 +331,13 @@ function withPersistenceLock(lockFile, callback, options = {}, description = loc
     try {
       fs.writeFileSync(lockHandle, `${JSON.stringify(owner)}\n`, "utf8");
     } catch (error) {
-      fs.closeSync(lockHandle);
+      try {
+        fs.closeSync(lockHandle);
+      } catch {}
       lockHandle = null;
+      try {
+        fs.unlinkSync(lockFile);
+      } catch {}
       throw error;
     }
   }

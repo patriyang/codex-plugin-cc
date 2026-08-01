@@ -20,11 +20,22 @@ export function writeJsonFile(filePath, value) {
 }
 
 export function writeJsonFileAtomic(filePath, value) {
-  const tempPath = `${filePath}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
+  const contents = `${JSON.stringify(value, null, 2)}\n`;
+  const tempPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+  // Creating the temp file exclusively before the try block is what makes the
+  // cleanup below safe: a failure here means the path was never ours to remove.
+  const handle = fs.openSync(tempPath, "wx");
+
   try {
-    fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    fs.writeFileSync(handle, contents, "utf8");
+    fs.closeSync(handle);
     fs.renameSync(tempPath, filePath);
   } catch (error) {
+    try {
+      fs.closeSync(handle);
+    } catch {
+      // Already closed; the unlink below is the cleanup that matters.
+    }
     try {
       fs.unlinkSync(tempPath);
     } catch {

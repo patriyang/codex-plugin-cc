@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 
 import { makeTempDir } from "./helpers.mjs";
+import { writeJsonFileAtomic } from "../plugins/codex/scripts/lib/fs.mjs";
 import {
   loadState,
   resolveJobFile,
@@ -128,6 +129,20 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
     Array.from({ length: 50 }, (_, index) => `job-${index + 1}`)
       .flatMap((jobId) => [`${jobId}.json`, `${jobId}.log`])
       .sort()
+  );
+});
+
+test("writeJsonFileAtomic leaves no temp file behind when the write cannot land", () => {
+  const directory = makeTempDir();
+  // A directory at the destination fails the rename, which is the only failure
+  // path where this call owns a temp file that still needs cleaning up.
+  const target = path.join(directory, "blocked.json");
+  fs.mkdirSync(target);
+
+  assert.throws(() => writeJsonFileAtomic(target, { hello: "world" }));
+  assert.deepEqual(
+    fs.readdirSync(directory).filter((entry) => entry.includes(".tmp-")),
+    []
   );
 });
 

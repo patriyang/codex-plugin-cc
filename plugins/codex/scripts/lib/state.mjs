@@ -333,11 +333,17 @@ function withPersistenceLock(lockFile, callback, options = {}, description = loc
     } catch (error) {
       try {
         fs.closeSync(lockHandle);
-      } catch {}
+      } catch {
+        // A failed close must not stop the unlink below from running.
+      }
       lockHandle = null;
       try {
+        // The exclusive create above makes this file ours, so an unowned
+        // lock left behind here would never be reclaimable.
         fs.unlinkSync(lockFile);
-      } catch {}
+      } catch {
+        // Surface the original write failure rather than a cleanup failure.
+      }
       throw error;
     }
   }

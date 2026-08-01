@@ -4179,7 +4179,23 @@ test("session end does not signal a worker with an unverified identity", async (
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.doesNotThrow(() => process.kill(sleeper.pid, 0));
+  await assert.rejects(
+    waitFor(
+      () => {
+        try {
+          process.kill(sleeper.pid, 0);
+          return false;
+        } catch (error) {
+          if (error?.code === "ESRCH") {
+            return true;
+          }
+          throw error;
+        }
+      },
+      { timeoutMs: 500, intervalMs: 25 }
+    ),
+    /Timed out waiting for condition/
+  );
   const state = JSON.parse(fs.readFileSync(path.join(resolveStateDir(repo), "state.json"), "utf8"));
   assert.deepEqual(state.jobs, []);
 });

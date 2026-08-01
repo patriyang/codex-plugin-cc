@@ -1087,6 +1087,103 @@ test("task --wait sends the prompt without prepending the flag (issue #46)", () 
   assert.equal(fakeState.lastTurnStart.prompt, "do the thing");
 });
 
+test("task --help prints task usage without starting a turn or registering a job", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+
+  const result = run("node", [SCRIPT, "task", "--help"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]\n");
+  assert.equal(fs.existsSync(statePath), false);
+  assert.equal(fs.existsSync(resolveStateDir(repo)), false);
+});
+
+test("unknown subcommand --help remains an error", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+
+  const result = run("node", [SCRIPT, "bogus", "--help"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unknown subcommand: bogus/);
+  assert.doesNotMatch(result.stdout, /^Usage:/);
+});
+
+test("subcommand --help prints only that subcommand's usage", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+
+  const cases = [
+    ["status", "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]"],
+    ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]"],
+    ["cancel", "  node scripts/codex-companion.mjs cancel [job-id] [--json]"]
+  ];
+
+  for (const [subcommand, usage] of cases) {
+    const result = run("node", [SCRIPT, subcommand, "--help"], {
+      cwd: repo,
+      env: buildEnv(binDir)
+    });
+
+    assert.equal(result.status, 0, `${subcommand}: ${result.stderr}`);
+    assert.equal(result.stdout, `Usage:\n${usage}\n`);
+    assert.equal(result.stderr, "");
+  }
+});
+
+test("task -- --help keeps the escape hatch prompt literal", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "--", "--help"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.prompt, "--help");
+  assert.doesNotMatch(result.stdout, /^Usage:/);
+});
+
+test("single-string task prose containing --help stays literal", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "fix the --help flag"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.prompt, "fix the --help flag");
+  assert.doesNotMatch(result.stdout, /^Usage:/);
+});
+
 test("task prompt as a single raw argv element keeps hyphen-leading words literal (issue #46 regression)", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

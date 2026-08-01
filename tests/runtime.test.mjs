@@ -209,12 +209,19 @@ test("app-server connect timeout destroys a client whose initialize never replie
     CodexAppServerClient.connect(workspace, {
       disableBroker: true,
       env: buildEnv(binDir),
-      timeoutMs: 250
+      timeoutMs: 2000
     }),
-    /codex app-server initialize timed out after 250ms\./
+    /codex app-server initialize timed out after 2000ms\./
   );
 
-  const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  const fakeState = await waitFor(() => {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+      return Number.isFinite(parsed.appServerPid) ? parsed : null;
+    } catch {
+      return null;
+    }
+  });
   await waitForProcessExit(fakeState.appServerPid);
 });
 

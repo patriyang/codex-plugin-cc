@@ -9,10 +9,11 @@ const MARKETPLACE_MANIFEST = ".claude-plugin/marketplace.json";
 function usage() {
   return [
     "Usage:",
-    "  node scripts/check-plugin-version-bump.mjs --base <ref> [--head <ref>]",
+    "  node scripts/check-plugin-version-bump.mjs --base <ref> [--base-tip <ref>] [--head <ref>]",
     "",
     "Options:",
     "  --base <ref>  Base git ref to compare against.",
+    "  --base-tip <ref>  Base branch tip git ref to compare published plugin source against.",
     "  --head <ref>  Head git ref to compare. Defaults to HEAD.",
     "  --root <dir>  Run against a different repository root.",
     "  --help        Print this help."
@@ -22,6 +23,7 @@ function usage() {
 function parseArgs(argv) {
   const options = {
     base: null,
+    baseTip: null,
     head: "HEAD",
     root: process.cwd()
   };
@@ -31,6 +33,9 @@ function parseArgs(argv) {
 
     if (arg === "--base") {
       options.base = argv[i + 1];
+      i += 1;
+    } else if (arg === "--base-tip") {
+      options.baseTip = argv[i + 1];
       i += 1;
     } else if (arg === "--head") {
       options.head = argv[i + 1];
@@ -44,7 +49,7 @@ function parseArgs(argv) {
       throw new Error(`Unknown argument: ${arg}`);
     }
 
-    if (options.base === undefined || options.head === undefined || options.root === undefined) {
+    if (options.base === undefined || options.baseTip === undefined || options.head === undefined || options.root === undefined) {
       throw new Error(`${arg} requires a value.`);
     }
   }
@@ -71,7 +76,15 @@ function runGit(root, args) {
 }
 
 function changedFiles(root, base, head) {
-  return runGit(root, ["diff", "--name-only", "--diff-filter=ACMRD", `${base}...${head}`])
+  return changedFilesForGitArgs(root, [`${base}...${head}`]);
+}
+
+function changedFilesAtEndpoints(root, base, head) {
+  return changedFilesForGitArgs(root, [base, head]);
+}
+
+function changedFilesForGitArgs(root, rangeArgs) {
+  return runGit(root, ["diff", "--name-only", "--diff-filter=ACMRD", ...rangeArgs])
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
@@ -106,9 +119,13 @@ function versionValues(jsonByFile) {
   ];
 }
 
-function checkVersionBumps(root, base, head) {
+function checkVersionBumps(root, base, head, baseTip) {
   const files = changedFiles(root, base, head);
   const pluginSourceFiles = files.filter(isPluginSource);
+
+  if (baseTip !== null) {
+    runGit(root, ["rev-parse", "--verify", baseTip]);
+  }
 
   if (pluginSourceFiles.length === 0) {
     return {
@@ -125,6 +142,13 @@ function checkVersionBumps(root, base, head) {
     plugin: readJsonAtRef(root, head, PLUGIN_MANIFEST),
     marketplace: readJsonAtRef(root, head, MARKETPLACE_MANIFEST)
   });
+  const baseTipValues = baseTip === null ? null : versionValues({
+    plugin: readJsonAtRef(root, baseTip, PLUGIN_MANIFEST),
+    marketplace: readJsonAtRef(root, baseTip, MARKETPLACE_MANIFEST)
+  });
+  const baseTipPluginSourceFiles = baseTip === null
+    ? []
+    : changedFilesAtEndpoints(root, baseTip, head).filter(isPluginSource);
 
   const missingBumps = headValues
     .map((headValue, index) => ({ baseValue: baseValues[index], headValue }))
@@ -133,20 +157,27 @@ function checkVersionBumps(root, base, head) {
 
   const headVersionSet = new Set(headValues.map(({ value }) => value));
   const inconsistentVersions = headVersionSet.size !== 1;
+  const versionCollision = baseTipValues !== null
+    && headValues[0].value === baseTipValues[0].value
+    && baseTipPluginSourceFiles.length > 0;
 
-  if (missingBumps.length === 0 && !inconsistentVersions) {
+  if (missingBumps.length === 0 && !inconsistentVersions && !versionCollision) {
     return {
       ok: true,
       message: `Plugin source changes include version bumps to ${headValues[0].value}.`
     };
   }
 
-  const details = [
-    "Plugin source changed without the required version bump.",
-    "",
-    "Changed plugin source files:",
-    ...pluginSourceFiles.map((file) => `- ${file}`)
-  ];
+  const details = [];
+
+  if (missingBumps.length > 0 || inconsistentVersions) {
+    details.push(
+      "Plugin source changed without the required version bump.",
+      "",
+      "Changed plugin source files:",
+      ...pluginSourceFiles.map((file) => `- ${file}`)
+    );
+  }
 
   if (missingBumps.length > 0) {
     details.push("", "Versions that must change from the base ref:", ...missingBumps.map((label) => `- ${label}`));
@@ -154,6 +185,17 @@ function checkVersionBumps(root, base, head) {
 
   if (inconsistentVersions) {
     details.push("", "Head plugin and marketplace versions must match:", ...headValues.map(({ label, value }) => `- ${label}: ${value ?? "<missing>"}`));
+  }
+
+  if (versionCollision) {
+    details.push(
+      ...(details.length > 0 ? [""] : []),
+      `Version collision: the base branch already publishes version ${headValues[0].value} with different plugin source.`,
+      "Bump the version further or rebase this branch.",
+      "",
+      "Plugin source files differing from the base branch tip:",
+      ...baseTipPluginSourceFiles.map((file) => `- ${file}`)
+    );
   }
 
   return {
@@ -169,7 +211,7 @@ function main() {
     return;
   }
 
-  const result = checkVersionBumps(options.root, options.base, options.head);
+  const result = checkVersionBumps(options.root, options.base, options.head, options.baseTip);
   if (!result.ok) {
     throw new Error(result.message);
   }

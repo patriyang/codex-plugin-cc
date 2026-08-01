@@ -229,9 +229,9 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(readme, /continue a previous Codex task/i);
   assert.match(
     readme,
-    /for `task` and the review commands, flags must precede the prompt\/focus text \(anything after it is literal, not a flag\); a prompt whose first word is a flag name must be passed after a bare `--` \(for example, `task -- --write access is missing`\), otherwise it is consumed as a real flag; `\/codex:status`, `\/codex:result`, and `\/codex:cancel` instead take their job id first and flags after/i
+    /for `task` and the review commands, flags must precede the prompt\/focus text \(anything after it is literal, not a flag\); `\/codex:status`, `\/codex:result`, and `\/codex:cancel` instead take their job id first and flags after/i
   );
-  assert.match(readme, /a prompt whose first word is a flag name must be passed after a bare `--` \(for example, `task -- --write access is missing`\), otherwise it is consumed as a real flag/i);
+  assert.match(readme, /a prompt whose \*first\* word is a flag name must be passed after a bare `--` \(for example, `task -- --write access is missing`\), otherwise it is consumed as a real flag/i);
   assert.match(readme, /### `\/codex:setup`/);
   assert.match(readme, /### `\/codex:review`/);
   assert.match(readme, /### `\/codex:adversarial-review`/);

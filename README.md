@@ -195,7 +195,8 @@ Ask Codex to redesign the database connection to be more resilient.
 - if you do not pass `--model` or `--effort`, the plugin uses `gpt-5.5` with `high` reasoning effort.
 - if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
 - follow-up rescue requests can continue the latest Codex task in the repo
-- for `task` and the review commands, flags must precede the prompt/focus text (anything after it is literal, not a flag); a prompt whose first word is a flag name must be passed after a bare `--` (for example, `task -- --write access is missing`), otherwise it is consumed as a real flag; `/codex:status`, `/codex:result`, and `/codex:cancel` instead take their job id first and flags after.
+- for `task` and the review commands, flags must precede the prompt/focus text (anything after it is literal, not a flag); `/codex:status`, `/codex:result`, and `/codex:cancel` instead take their job id first and flags after.
+- a prompt whose *first* word is a flag name must be passed after a bare `--` (for example, `task -- --write access is missing`), otherwise it is consumed as a real flag.
 
 ### `/codex:implement`
 

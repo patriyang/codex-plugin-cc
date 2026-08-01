@@ -13,6 +13,7 @@ const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 const STATE_LOCK_FILE_NAME = "state.lock";
+const BROKER_LOCK_FILE_NAME = "broker.lock";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
 const JOB_LOCK_TIMEOUT_MS = 10000;
@@ -190,6 +191,11 @@ function resolveStateLockFile(cwd) {
   return path.join(resolveStateDir(cwd), STATE_LOCK_FILE_NAME);
 }
 
+function resolveBrokerLockFile(cwd) {
+  ensureStateDir(cwd);
+  return path.join(resolveStateDir(cwd), BROKER_LOCK_FILE_NAME);
+}
+
 function resolveJobLockFile(cwd, jobId) {
   ensureStateDir(cwd);
   return path.join(resolveJobsDir(cwd), `${jobId}.lock`);
@@ -359,6 +365,10 @@ function withPersistenceLock(lockFile, callback, options = {}, description = loc
 
 export function withStatePersistenceLock(cwd, callback, options = {}) {
   return withPersistenceLock(resolveStateLockFile(cwd), callback, options, "for workspace state");
+}
+
+export function withBrokerPersistenceLock(cwd, callback, options = {}) {
+  return withPersistenceLock(resolveBrokerLockFile(cwd), callback, options, "for the broker session");
 }
 
 export function withJobPersistenceLock(cwd, jobId, callback, options = {}) {

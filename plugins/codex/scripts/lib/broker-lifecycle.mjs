@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createBrokerEndpoint, parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { writeJsonFileAtomic } from "./fs.mjs";
-import { resolveStateDir } from "./state.mjs";
+import { resolveStateDir, withBrokerPersistenceLock } from "./state.mjs";
 
 export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
 export const LOG_FILE_ENV = "CODEX_COMPANION_APP_SERVER_LOG_FILE";
@@ -87,17 +87,41 @@ export function loadBrokerSession(cwd) {
   }
 }
 
-export function saveBrokerSession(cwd, session) {
-  const stateDir = resolveStateDir(cwd);
-  fs.mkdirSync(stateDir, { recursive: true });
-  writeJsonFileAtomic(resolveBrokerStateFile(cwd), session);
+export function saveBrokerSession(cwd, session, options = {}) {
+  return withBrokerPersistenceLock(cwd, () => {
+    const stateDir = resolveStateDir(cwd);
+    fs.mkdirSync(stateDir, { recursive: true });
+    writeJsonFileAtomic(resolveBrokerStateFile(cwd), session);
+  }, options);
 }
 
-export function clearBrokerSession(cwd) {
-  const stateFile = resolveBrokerStateFile(cwd);
-  if (fs.existsSync(stateFile)) {
+export function clearBrokerSession(cwd, expectedSession = null, options = {}) {
+  return withBrokerPersistenceLock(cwd, () => {
+    const stateFile = resolveBrokerStateFile(cwd);
+    if (!fs.existsSync(stateFile)) {
+      return false;
+    }
+
+    let session;
+    try {
+      session = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    } catch {
+      fs.unlinkSync(stateFile);
+      return true;
+    }
+
+    if (typeof session?.endpoint !== "string" || !session.endpoint) {
+      fs.unlinkSync(stateFile);
+      return true;
+    }
+
+    if (session.endpoint !== expectedSession?.endpoint) {
+      return false;
+    }
+
     fs.unlinkSync(stateFile);
-  }
+    return true;
+  }, options);
 }
 
 async function isBrokerEndpointReady(endpoint) {
@@ -112,6 +136,7 @@ async function isBrokerEndpointReady(endpoint) {
 }
 
 export async function ensureBrokerSession(cwd, options = {}) {
+  const lockOptions = options.lockOptions ?? {};
   const existing = loadBrokerSession(cwd);
   if (existing && (await isBrokerEndpointReady(existing.endpoint))) {
     return existing;
@@ -126,7 +151,11 @@ export async function ensureBrokerSession(cwd, options = {}) {
       pid: existing.pid ?? null,
       killProcess: options.killProcess ?? null
     });
-    clearBrokerSession(cwd);
+    try {
+      clearBrokerSession(cwd, existing, lockOptions);
+    } catch {
+      // A clear failure must not abort broker startup; the save below republishes the record anyway.
+    }
   }
 
   const sessionDir = createBrokerSessionDir();
@@ -167,7 +196,24 @@ export async function ensureBrokerSession(cwd, options = {}) {
     sessionDir,
     pid: child.pid ?? null
   };
-  saveBrokerSession(cwd, session);
+  try {
+    saveBrokerSession(cwd, session, lockOptions);
+  } catch {
+    // A broker nobody can discover is a leak, so an unpublishable session is torn
+    // down exactly like one that never became ready. The child handle is signalled
+    // directly because production callers pass no `killProcess`, and teardown below
+    // removes the socket and pid file that would otherwise let anyone find it.
+    child.kill();
+    teardownBrokerSession({
+      endpoint,
+      pidFile,
+      logFile,
+      sessionDir,
+      pid: child.pid ?? null,
+      killProcess: options.killProcess ?? null
+    });
+    return null;
+  }
   return session;
 }
 

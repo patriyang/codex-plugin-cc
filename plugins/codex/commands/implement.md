@@ -1,7 +1,7 @@
 ---
 description: Implement a plan via Codex subagent-driven development — dispatch fresh Codex implementer + spec reviewer + code quality reviewer per task
 argument-hint: "[--sequential|--single-shot] [--background|--wait] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [plan or path to plan]"
-allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion, TaskCreate, TaskUpdate, TaskList
+allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), BashOutput, AskUserQuestion, TaskCreate, TaskUpdate, TaskList
 ---
 
 Execute a plan via subagent-driven development with Codex agents in the implementer + spec-reviewer + code-quality-reviewer roles.
@@ -41,6 +41,17 @@ Before extracting tasks:
 4. Confirm we are NOT on `main` / `master`. If we are, tell the user and ask before proceeding — you (the controller) will be committing each task.
 
 All `git` commands in this loop, and all `codex-companion.mjs` invocations, run against `WORKTREE_ROOT` (via `git -C` / `-C`) rather than the controller's ambient cwd — this keeps the tree Codex edits and the tree the controller commits to in sync.
+
+## Dispatch and Follow-Through
+
+This loop is sequential: the controller cannot take the next step until the current dispatch returns. But implementer and reviewer runs at `xhigh` routinely exceed the foreground `Bash` timeout ceiling, so a foreground call will be killed mid-run and lose the work.
+
+- Dispatch each step with `Bash(..., run_in_background: true)` and let Claude Code re-invoke you when the command exits. Keep foreground `Bash` only for steps you expect to finish well inside the timeout.
+- `--json` suppresses progress output to stderr, so stdout stays a single JSON blob. Reading it back with `BashOutput` still parses cleanly for `.rawOutput` and `.threadId`.
+- The re-invocation is the next step of this loop, not a fresh request. Read the output, parse the report, and continue through the remaining steps in the same turn.
+- **"Dispatched" is never a stopping point.** Do not end a turn with an unread Codex run and a note that you will check back, and do not wait to be told "continue" or "keep going". The loop advances only when you advance it.
+- Never abandon a still-running dispatch and re-dispatch on top of it. Two live Codex threads mutating `WORKTREE_ROOT` will corrupt each other's work.
+- If a dispatch exits non-zero or returns empty or malformed output, treat it as `BLOCKED` (step 3) rather than assuming the step succeeded.
 
 ## Task Extraction
 
@@ -83,10 +94,10 @@ Substitute placeholders:
 Invoke Codex with `--json` so the controller can read the structured payload:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --wait --write --fresh --json [--model <m>] [--effort <e>] "<filled prompt>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --write --fresh --json [--model <m>] [--effort <e>] "<filled prompt>"
 ```
 
-- Use `--wait` (foreground) so the controller can react. The orchestration is inherently sequential.
+- The controller must have the implementer's report before it can act, so this step blocks the loop. Run it per Dispatch and Follow-Through above rather than as a plain foreground call.
 - Use `--fresh` so the implementer gets a clean Codex thread.
 - Use `--json` and parse the returned JSON: read `.rawOutput` for the report body (the `## Status` section step 3 inspects) and record `.threadId` as `IMPLEMENTER_THREAD_ID` for this task — it stays fixed for the whole task's fix loop.
 - For `--model`, use the user's value if they passed one; otherwise pass `--model gpt-5.6-luna` explicitly. `/codex:implement` defaults to `gpt-5.6-luna` rather than the runtime default of `gpt-5.5`.
@@ -137,7 +148,7 @@ Load `${CLAUDE_PLUGIN_ROOT}/prompts/sdd-spec-reviewer.md`. Substitute:
 Invoke Codex read-only (same `--model`/`--effort` resolution as step 2 — default `--model gpt-5.6-luna`, `--effort xhigh`):
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --wait --fresh [--model <m>] [--effort <e>] "<filled prompt>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --fresh [--model <m>] [--effort <e>] "<filled prompt>"
 ```
 
 (No `--write`. Spec reviewer must not edit code.)
@@ -158,7 +169,7 @@ Load `${CLAUDE_PLUGIN_ROOT}/prompts/sdd-code-quality-reviewer.md`. Substitute:
 Invoke read-only (same `--model`/`--effort` resolution as step 2 — default `--model gpt-5.6-luna`, `--effort xhigh`):
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --wait --fresh [--model <m>] [--effort <e>] "<filled prompt>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --fresh [--model <m>] [--effort <e>] "<filled prompt>"
 ```
 
 ### 8. Parse code quality verdict
@@ -178,6 +189,8 @@ Once you start, **do not pause to check in with the user between tasks**. Execut
 - All tasks complete.
 
 Do not emit "Should I continue?" prompts or progress summaries between tasks. The user asked you to execute the plan.
+
+Waiting on a dispatched Codex run is not one of those reasons. If a step is still running, wait it out (see Dispatch and Follow-Through); having to be prompted to resume the loop is a failure of this command.
 
 ## Final Review
 
@@ -224,7 +237,7 @@ This is the aggregate of every implementer/reviewer report and is what Claude us
 If the user passed `--single-shot`, skip task extraction and the per-task loop. Instead, wrap the full plan in the legacy implementer prompt (asking for the four-section report: Accomplished / Bugs Flagged / Deviations From Plan / Next Steps) and invoke Codex once:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --wait --write --fresh [--model <m>] [--effort <e>] "<wrapped plan>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --write --fresh [--model <m>] [--effort <e>] "<wrapped plan>"
 ```
 
 (Same `--model`/`--effort` resolution as sequential mode — default `--model gpt-5.6-luna`, `--effort xhigh` unless the user passed one.)
@@ -242,7 +255,7 @@ Show the report. Propose next steps.
 
 - `--single-shot` → legacy one-Codex-agent mode.
 - `--sequential` → explicit SDD mode (also the default).
-- `--background` / `--wait` → forwarded to individual `task` invocations. Default is `--wait` for SDD (the orchestration is sequential).
+- `--background` / `--wait` → Claude-side execution control only. Do not forward either to `task`: `task` now accepts `--wait` as an explicit no-op (foreground is `task`'s default), so there is nothing to forward — SDD always blocks on each dispatch regardless, see Dispatch and Follow-Through.
 - `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run. If omitted, `--model` defaults to `gpt-5.6-luna` and `--effort` defaults to `xhigh` (both passed explicitly by this command, overriding the runtime defaults of `gpt-5.5` / `high`).
 - `-C "${WORKTREE_ROOT}"` → applied to every Codex invocation in this run (established in Pre-flight Checks). Pins the implementer/reviewer workspace to the task's worktree instead of `codex-companion.mjs`'s default of the controller's own process cwd.
 - `--resume` / `--fresh` → ignored in SDD mode (the orchestrator picks per-step). SDD resumes the implementer by explicit thread id via `--resume-id "${IMPLEMENTER_THREAD_ID}"` (not `--resume-last`, which would resolve to whichever `task`-class thread was dispatched most recently — often a reviewer, not the implementer).

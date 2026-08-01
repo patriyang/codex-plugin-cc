@@ -1,7 +1,7 @@
 ---
 description: Run a deep Codex review covering correctness, conciseness, and code quality
 argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [focus ...]'
-allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*)
+allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), BashOutput
 ---
 
 Run a deep Codex review through the shared plugin runtime.
@@ -39,6 +39,7 @@ Argument handling:
 - It supports working-tree review, branch review, and `--base <ref>`.
 - It does not support `--scope staged` or `--scope unstaged`.
 - Like `/codex:adversarial-review`, it can take extra focus text after the flags.
+- Flags must come before the focus text; once the focus text starts, anything after it (including something that looks like a flag) is treated as literal text.
 
 Foreground flow:
 - Run:
@@ -46,6 +47,7 @@ Foreground flow:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" deep-review "$ARGUMENTS"
 ```
 - Return the command stdout verbatim, exactly as-is.
+- If the command prints a `[codex] ` line on stderr, surface that line above the output before returning stdout verbatim. Those lines report an argument the script could not honor, and the run still exits 0.
 - Do not paraphrase, summarize, or add commentary before or after it.
 - Do not fix any issues mentioned in the review output.
 
@@ -58,5 +60,7 @@ Bash({
   run_in_background: true
 })
 ```
-- Do not call `BashOutput` or wait for completion in this turn.
-- After launching the command, tell the user: "Codex deep review started in the background. Check `/codex:status` for progress."
+- Launch it, tell the user in one line that the review is running, and end the turn. Do not poll `BashOutput` in a loop while it runs.
+- Claude Code re-invokes you when the command exits. That re-invocation is the second half of this command, not a fresh request: read the output with `BashOutput` and present the review in that same turn. Do not wait to be asked "is it done?" or "continue".
+- If it exited non-zero, or the output is empty or malformed, say so and surface the most actionable stderr lines. A failed review must not vanish silently.
+- Never re-dispatch a second review over the same diff, and never hand the user a "check `/codex:status`" note in place of the findings. A background review is a plain shell — it mints no job id, so `/codex:status` has nothing to show for it.

@@ -39,7 +39,8 @@ Forwarding rules:
 - Otherwise forward the task as a fresh `task` run.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Return the stdout of the `codex-companion` command exactly as-is.
-- If the Bash call fails or Codex cannot be invoked, return nothing.
+- If the command prints a `[codex] ` line on stderr, surface that line above the output. Those lines report an argument the script could not honor, and the run still exits 0.
+- If the Bash call fails or Codex cannot be invoked, return nothing — except when stderr names a rejected argument (`Unknown option: ...`), which is a caller mistake and must be reported rather than swallowed.
 
 Response style:
 

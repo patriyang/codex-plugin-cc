@@ -85,7 +85,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]",
       "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -596,7 +596,12 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 }
 
 function renderQueuedTaskLaunch(payload) {
-  return `${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.\n`;
+  return [
+    `${payload.title} started in the background as ${payload.jobId}.`,
+    `Block on it with: codex-companion.mjs status ${payload.jobId} --wait --json`,
+    `Snapshot without waiting: /codex:status ${payload.jobId}`,
+    ""
+  ].join("\n");
 }
 
 function getJobKindLabel(kind, jobClass) {
@@ -798,14 +803,34 @@ function enqueueBackgroundTask(cwd, job, request) {
   };
 }
 
+// Prose after the first positional is literal, not flag-parsed (see
+// stopAtFirstPositional above) -- but a token that looks like a flag the
+// handler actually declares is a likely typo, so warn instead of silently
+// swallowing it.
+function warnLiteralOptionLikePositionals(literalOptionLikePositionals) {
+  if (literalOptionLikePositionals.length === 0) {
+    return;
+  }
+  const tokens = literalOptionLikePositionals.join(" ");
+  const subject = literalOptionLikePositionals.length > 1 ? "they are" : "it is";
+  process.stderr.write(
+    `[codex] ${tokens} came after the prompt text, so ${subject} kept as literal text, not applied as a flag. Put flags before the prompt.\n`
+  );
+}
+
 async function handleReviewCommand(argv, config) {
-  const { options, positionals } = parseCommandInput(argv, {
+  // Trailing positionals here are free-form focus text ("focus on the --dry-run
+  // path"), so option parsing stops at the first positional: everything from
+  // there on is literal, even if it looks like a flag.
+  const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, {
     valueOptions: ["base", "scope", "model", "effort", "cwd"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
-    }
+    },
+    stopAtFirstPositional: true
   });
+  warnLiteralOptionLikePositionals(literalOptionLikePositionals);
 
   if (options.wait && options.background) {
     throw new Error("Choose either --wait or --background.");
@@ -871,13 +896,23 @@ async function handleReview(argv) {
 }
 
 async function handleTask(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
+  const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file", "resume-id"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "wait"],
     aliasMap: {
       m: "model"
-    }
+    },
+    // Stop parsing options at the first positional: it's the start of the
+    // prompt text, and prose can legitimately contain hyphen-leading words
+    // (e.g. "fix the --wait bug") that must not be consumed as flags.
+    stopAtFirstPositional: true
   });
+  warnLiteralOptionLikePositionals(literalOptionLikePositionals);
+
+  if (options.wait && options.background) {
+    throw new Error("Choose either --wait or --background.");
+  }
+  // --wait is a no-op: task already runs in the foreground by default.
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);

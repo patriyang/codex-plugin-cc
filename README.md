@@ -100,7 +100,7 @@ Examples:
 /codex:review --background
 ```
 
-This command is read-only and will not perform any changes. When run in the background you can use [`/codex:status`](#codexstatus) to check on the progress and [`/codex:cancel`](#codexcancel) to cancel the ongoing task.
+This command is read-only and will not perform any changes. A background review runs as a detached shell rather than a tracked job, and Claude presents the findings itself as soon as it finishes — you should not have to prompt it to continue. Use [`/codex:cancel`](#codexcancel) to cancel an ongoing task.
 
 ### `/codex:adversarial-review`
 
@@ -195,6 +195,7 @@ Ask Codex to redesign the database connection to be more resilient.
 - if you do not pass `--model` or `--effort`, the plugin uses `gpt-5.5` with `high` reasoning effort.
 - if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
 - follow-up rescue requests can continue the latest Codex task in the repo
+- for `task` and the review commands, flags must precede the prompt/focus text (anything after it is literal, not a flag); `/codex:status`, `/codex:result`, and `/codex:cancel` instead take their job id first and flags after.
 
 ### `/codex:implement`
 
@@ -254,6 +255,8 @@ Examples:
 ```bash
 /codex:status
 /codex:status task-abc123
+/codex:status task-abc123 --wait
+/codex:status task-abc123 --wait --timeout-ms 600000
 ```
 
 Use it to:
@@ -261,6 +264,9 @@ Use it to:
 - check progress on background work
 - see the latest completed job
 - confirm whether a task is still running
+- block until a specific job finishes (`--wait`, which requires a job ID)
+
+`--wait` polls that one job until it reaches a terminal state, reaping the record if the underlying process died. Without a job ID it errors rather than waiting on the whole table.
 
 ### `/codex:result`
 

@@ -1104,6 +1104,38 @@ test("task --help prints task usage without starting a turn or registering a job
   assert.equal(fs.existsSync(resolveStateDir(repo)), false);
 });
 
+test("task prompt followed by --help as separate argv elements prints task usage without starting a turn or registering a job", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+
+  const result = run("node", [SCRIPT, "task", "do the thing", "--help"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]\n");
+  assert.equal(fs.existsSync(statePath), false);
+  assert.equal(fs.existsSync(resolveStateDir(repo)), false);
+});
+
+test("transfer consumes --help as the --source value instead of printing usage", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+
+  const result = run("node", [SCRIPT, "transfer", "--source", "--help"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stdout, /^Usage:/);
+  assert.match(result.stderr, /Claude session source must be a JSONL file: .*--help/);
+});
+
 test("help scanning skips values for declared options in prose subcommands", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

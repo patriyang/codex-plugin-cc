@@ -121,12 +121,37 @@ const TASK_PARSE_CONFIG = {
   // that must not be consumed as flags.
   stopAtFirstPositional: true
 };
-// These are exactly the handlers that pass stopAtFirstPositional: true.
-const PROSE_SUBCOMMANDS = new Map([
+const SETUP_PARSE_CONFIG = {
+  valueOptions: ["cwd"],
+  booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+};
+const TRANSFER_PARSE_CONFIG = {
+  valueOptions: ["cwd", "source"],
+  booleanOptions: ["json"]
+};
+const STATUS_PARSE_CONFIG = {
+  valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
+  booleanOptions: ["json", "all", "wait"]
+};
+const RESULT_PARSE_CONFIG = {
+  valueOptions: ["cwd"],
+  booleanOptions: ["json"]
+};
+const CANCEL_PARSE_CONFIG = {
+  valueOptions: ["cwd"],
+  booleanOptions: ["json"]
+};
+// SUBCOMMAND_USAGE and SUBCOMMAND_PARSE_CONFIGS intentionally cover the same public subcommands.
+const SUBCOMMAND_PARSE_CONFIGS = new Map([
+  ["setup", SETUP_PARSE_CONFIG],
   ["task", TASK_PARSE_CONFIG],
   ["review", REVIEW_PARSE_CONFIG],
   ["adversarial-review", REVIEW_PARSE_CONFIG],
-  ["deep-review", REVIEW_PARSE_CONFIG]
+  ["deep-review", REVIEW_PARSE_CONFIG],
+  ["transfer", TRANSFER_PARSE_CONFIG],
+  ["status", STATUS_PARSE_CONFIG],
+  ["result", RESULT_PARSE_CONFIG],
+  ["cancel", CANCEL_PARSE_CONFIG]
 ]);
 
 function printUsage(subcommand) {
@@ -200,20 +225,13 @@ function normalizeArgv(argv) {
 }
 
 function requestsHelp(argv, subcommand) {
-  const { argv: normalizedArgv } = normalizeArgv(argv);
-  const parseConfig = PROSE_SUBCOMMANDS.get(subcommand);
+  const { argv: normalizedArgv, split } = normalizeArgv(argv);
+  const parseConfig = SUBCOMMAND_PARSE_CONFIGS.get(subcommand);
   if (!parseConfig) {
-    for (const token of normalizedArgv) {
-      if (token === "--") {
-        return false;
-      }
-      if (token === "--help" || token === "-h") {
-        return true;
-      }
-    }
     return false;
   }
 
+  const stopAtFirstPositional = Boolean(parseConfig.stopAtFirstPositional) && split;
   const valueOptions = new Set(parseConfig.valueOptions ?? []);
   const aliasMap = {
     C: "cwd",
@@ -234,7 +252,9 @@ function requestsHelp(argv, subcommand) {
     if (token.startsWith("-") && token !== "-") {
       continue;
     }
-    return false;
+    if (stopAtFirstPositional) {
+      return false;
+    }
   }
   return false;
 }
@@ -316,10 +336,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
 }
 
 async function handleSetup(argv) {
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
-  });
+  const { options } = parseCommandInput(argv, SETUP_PARSE_CONFIG);
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw new Error("Choose either --enable-review-gate or --disable-review-gate.");
@@ -1047,10 +1064,7 @@ async function handleTask(argv) {
 }
 
 async function handleTransfer(argv) {
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "source"],
-    booleanOptions: ["json"]
-  });
+  const { options } = parseCommandInput(argv, TRANSFER_PARSE_CONFIG);
 
   const cwd = resolveCommandCwd(options);
   const { payload, rendered } = await executeTransfer(cwd, {
@@ -1105,10 +1119,7 @@ async function handleTaskWorker(argv) {
 }
 
 async function handleStatus(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
-    booleanOptions: ["json", "all", "wait"]
-  });
+  const { options, positionals } = parseCommandInput(argv, STATUS_PARSE_CONFIG);
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
@@ -1132,10 +1143,7 @@ async function handleStatus(argv) {
 }
 
 function handleResult(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
+  const { options, positionals } = parseCommandInput(argv, RESULT_PARSE_CONFIG);
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
@@ -1185,10 +1193,7 @@ function handleTaskResumeCandidate(argv) {
 }
 
 async function handleCancel(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
+  const { options, positionals } = parseCommandInput(argv, CANCEL_PARSE_CONFIG);
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";

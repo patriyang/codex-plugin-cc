@@ -79,13 +79,17 @@ test("reapDeadJobs preserves the stored job when writing the reap fails", () => 
   const jobFile = resolveJobFile(workspace, jobId);
   const storedBefore = fs.readFileSync(jobFile, "utf8");
 
+  let writeAttempts = 0;
   const [job] = reapDeadJobs(workspace, [runningJob], {
     isProcessAlive: () => false,
     writeJobFile: () => {
+      writeAttempts += 1;
       throw new Error("simulated job-file write failure");
     }
   });
 
+  // Without this the test would still pass if the write were skipped entirely.
+  assert.equal(writeAttempts, 1);
   assert.equal(job.status, "failed");
   assert.equal(job.phase, "failed");
   assert.equal(job.pid, null);

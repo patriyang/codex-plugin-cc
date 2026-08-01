@@ -4,9 +4,10 @@ import process from "node:process";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { makeTempDir } from "./helpers.mjs";
+import { makeTempDir, writeExecutable } from "./helpers.mjs";
 import {
   clearBrokerSession,
+  ensureBrokerSession,
   loadBrokerSession,
   saveBrokerSession
 } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
@@ -18,6 +19,22 @@ process.env.CLAUDE_PLUGIN_DATA = makeTempDir();
 
 function brokerStateFile(cwd) {
   return path.join(resolveStateDir(cwd), "broker.json");
+}
+
+async function waitForProcessExit(pid, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") {
+        return;
+      }
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for process ${pid} to exit.`);
 }
 
 test("clearBrokerSession does not remove a newer broker session", () => {
@@ -87,4 +104,72 @@ test("saveBrokerSession and clearBrokerSession serialize on the broker lock", ()
     /Timed out acquiring persistence lock/
   );
   assert.equal(JSON.parse(fs.readFileSync(lockFile, "utf8")).token, "live-owner");
+});
+
+test("ensureBrokerSession tears down the broker when publishing the session fails", async (t) => {
+  const workspace = makeTempDir();
+  const fakeBroker = path.join(makeTempDir(), "fake-broker.mjs");
+  const startedPidFile = path.join(makeTempDir(), "started.pid");
+  const readyFile = path.join(makeTempDir(), "ready");
+  const lockFile = path.join(resolveStateDir(workspace), "broker.lock");
+  const pidStartTime = "live-start";
+  const killedPids = [];
+
+  writeExecutable(
+    fakeBroker,
+    `import fs from "node:fs";
+import net from "node:net";
+import process from "node:process";
+
+const args = process.argv.slice(2);
+const endpoint = args[args.indexOf("--endpoint") + 1];
+const pidFile = args[args.indexOf("--pid-file") + 1];
+const socketPath = endpoint.startsWith("unix:") ? endpoint.slice("unix:".length) : endpoint;
+fs.writeFileSync(${JSON.stringify(startedPidFile)}, String(process.pid));
+fs.writeFileSync(pidFile, String(process.pid));
+const server = net.createServer();
+server.listen(socketPath, () => fs.writeFileSync(${JSON.stringify(readyFile)}, "ready"));
+`
+  );
+
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+  fs.writeFileSync(
+    lockFile,
+    `${JSON.stringify({ token: "live-owner", pid: process.pid, pidStartTime })}\n`,
+    "utf8"
+  );
+
+  const spawnedPid = () => Number(fs.readFileSync(startedPidFile, "utf8"));
+  t.after(async () => {
+    let pid;
+    try {
+      pid = spawnedPid();
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // The broker was already torn down by the test.
+    }
+    if (pid) {
+      await waitForProcessExit(pid).catch(() => {});
+    }
+  });
+
+  const session = await ensureBrokerSession(workspace, {
+    scriptPath: fakeBroker,
+    timeoutMs: 2000,
+    killProcess: (pid) => {
+      killedPids.push(pid);
+      process.kill(pid, "SIGTERM");
+    },
+    lockOptions: {
+      timeoutMs: 25,
+      isProcessAlive: () => true,
+      getProcessStartTime: () => pidStartTime
+    }
+  });
+
+  assert.equal(session, null);
+  assert.equal(fs.existsSync(readyFile), true);
+  assert.deepEqual(killedPids, [spawnedPid()]);
+  await waitForProcessExit(spawnedPid());
+  assert.equal(fs.existsSync(brokerStateFile(workspace)), false);
 });

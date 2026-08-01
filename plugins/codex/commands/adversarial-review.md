@@ -40,6 +40,7 @@ Argument handling:
 - It supports working-tree review, branch review, and `--base <ref>`.
 - It does not support `--scope staged` or `--scope unstaged`.
 - Unlike `/codex:review`, it can still take extra focus text after the flags.
+- Flags must come before the focus text; once the focus text starts, anything after it (including something that looks like a flag) is treated as literal text.
 
 Foreground flow:
 - Run:
@@ -47,6 +48,7 @@ Foreground flow:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review "$ARGUMENTS"
 ```
 - Return the command stdout verbatim, exactly as-is.
+- If the command prints a `[codex] ` line on stderr, surface that line above the output before returning stdout verbatim. Those lines report an argument the script could not honor, and the run still exits 0.
 - Do not paraphrase, summarize, or add commentary before or after it.
 - Do not fix any issues mentioned in the review output.
 

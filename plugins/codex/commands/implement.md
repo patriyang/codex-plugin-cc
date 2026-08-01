@@ -255,7 +255,7 @@ Show the report. Propose next steps.
 
 - `--single-shot` → legacy one-Codex-agent mode.
 - `--sequential` → explicit SDD mode (also the default).
-- `--background` / `--wait` → Claude-side execution control only. Do not forward either to `task`: `task` runs in the foreground by default and does not accept `--wait`, so passing it prepends a stray `--wait ` token to the Codex prompt (issue #46). SDD always blocks on each dispatch regardless — see Dispatch and Follow-Through.
+- `--background` / `--wait` → Claude-side execution control only. Do not forward either to `task`: `task` now accepts `--wait` as an explicit no-op (foreground is `task`'s default), so there is nothing to forward — SDD always blocks on each dispatch regardless, see Dispatch and Follow-Through.
 - `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run. If omitted, `--model` defaults to `gpt-5.6-luna` and `--effort` defaults to `xhigh` (both passed explicitly by this command, overriding the runtime defaults of `gpt-5.5` / `high`).
 - `-C "${WORKTREE_ROOT}"` → applied to every Codex invocation in this run (established in Pre-flight Checks). Pins the implementer/reviewer workspace to the task's worktree instead of `codex-companion.mjs`'s default of the controller's own process cwd.
 - `--resume` / `--fresh` → ignored in SDD mode (the orchestrator picks per-step). SDD resumes the implementer by explicit thread id via `--resume-id "${IMPLEMENTER_THREAD_ID}"` (not `--resume-last`, which would resolve to whichever `task`-class thread was dispatched most recently — often a reviewer, not the implementer).

@@ -70,6 +70,7 @@ test("adversarial review command auto-decides execution mode and uses background
   assert.match(source, /supports working-tree review, branch review, and `--base <ref>`/i);
   assert.match(source, /does not support `--scope staged` or `--scope unstaged`/i);
   assert.match(source, /can still take extra focus text after the flags/i);
+  assert.match(source, /Flags must come before the focus text/i);
 });
 
 test("deep review command auto-decides execution mode and uses background Bash while staying review-only", () => {
@@ -103,6 +104,7 @@ test("deep review command auto-decides execution mode and uses background Bash w
   assert.match(source, /conciseness/i);
   assert.match(source, /code quality/i);
   assert.match(source, /can take extra focus text after the flags/i);
+  assert.match(source, /Flags must come before the focus text/i);
   // Argument hint advertises the model/effort override flags.
   assert.match(source, /\[--model <model\|spark>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh>\]/);
   // README documents the deep-review defaults so command + docs cannot drift.
@@ -222,6 +224,10 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(readme, /--model gpt-5\.4-mini --effort medium/i);
   assert.match(readme, /`spark`, the plugin maps that to `gpt-5\.3-codex-spark`/i);
   assert.match(readme, /continue a previous Codex task/i);
+  assert.match(
+    readme,
+    /for `task` and the review commands, flags must precede the prompt\/focus text \(anything after it is literal, not a flag\); `\/codex:status`, `\/codex:result`, and `\/codex:cancel` instead take their job id first and flags after/i
+  );
   assert.match(readme, /### `\/codex:setup`/);
   assert.match(readme, /### `\/codex:review`/);
   assert.match(readme, /### `\/codex:adversarial-review`/);
@@ -371,10 +377,9 @@ test("dispatch is never a stopping point across every async surface", () => {
   assert.doesNotMatch(implement, /caps at \d+ ms/);
 });
 
-test("implement never passes --wait to task, which would land in the prompt", () => {
-  // `handleTask` does not declare `wait` as a boolean option, so parseArgs
-  // routes `--wait` into positionals and readTaskPrompt joins it into the
-  // prompt text -- every dispatch would start with a stray "--wait ". See #46.
+test("implement never passes --wait to task, which is redundant with its foreground default", () => {
+  // `handleTask` declares `wait` as an accepted no-op boolean (foreground is
+  // already `task`'s default; see #46), so SDD dispatches don't need it.
   const implement = read("commands/implement.md");
   for (const line of implement.split("\n")) {
     if (!/codex-companion\.mjs" task /.test(line)) continue;
@@ -382,8 +387,8 @@ test("implement never passes --wait to task, which would land in the prompt", ()
   }
 
   const companion = fs.readFileSync(path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs"), "utf8");
-  const taskOptions = /booleanOptions: \["json", "write", "resume-last", "resume", "fresh", "background"\]/;
-  assert.match(companion, taskOptions, "task's boolean options are unchanged; if `wait` was added, relax this test");
+  const taskOptions = /booleanOptions: \["json", "write", "resume-last", "resume", "fresh", "background", "wait"\]/;
+  assert.match(companion, taskOptions, "task's boolean options should include `wait`");
 });
 
 test("status documents the job-scoped wait without hardcoding runtime values", () => {
@@ -414,4 +419,23 @@ test("status documents the job-scoped wait without hardcoding runtime values", (
 
   // The queued-launch line must hand the model a command it can actually run.
   assert.match(companion, /codex-companion\.mjs status \$\{payload\.jobId\} --wait --json/);
+});
+
+test("every command that returns stdout verbatim also surfaces the [codex] stderr notice", () => {
+  // The warning for a flag typed after the prompt goes to stderr, but these
+  // docs tell Claude to return stdout only -- without this bullet the notice
+  // never reaches the user on the path it exists for. See #46 round 3.
+  for (const name of ["review.md", "adversarial-review.md", "deep-review.md"]) {
+    const doc = read(`commands/${name}`);
+    assert.match(
+      doc,
+      /If the command prints a `\[codex\] ` line on stderr, surface that line above the output/i,
+      `${name} must tell Claude to surface the [codex] stderr notice`
+    );
+  }
+
+  const agent = fs.readFileSync(path.join(PLUGIN_ROOT, "agents", "codex-rescue.md"), "utf8");
+  assert.match(agent, /If the command prints a `\[codex\] ` line on stderr, surface that line above the output/i);
+  // "return nothing" on failure must not swallow a rejected-argument error.
+  assert.match(agent, /Unknown option: \.\.\.`\), which is a caller mistake and must be reported/i);
 });

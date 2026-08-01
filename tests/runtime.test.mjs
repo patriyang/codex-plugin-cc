@@ -1142,6 +1142,43 @@ test("subcommand --help prints only that subcommand's usage", () => {
   }
 });
 
+test("job-id subcommand --help prints only that subcommand's usage", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+
+  const cases = [
+    ["status", "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]"],
+    ["result", "  node scripts/codex-companion.mjs result [job-id] [--json]"],
+    ["cancel", "  node scripts/codex-companion.mjs cancel [job-id] [--json]"]
+  ];
+
+  for (const [subcommand, usage] of cases) {
+    const result = run("node", [SCRIPT, subcommand, "abc", "--help"], {
+      cwd: repo,
+      env: buildEnv(binDir)
+    });
+
+    assert.equal(result.status, 0, `${subcommand}: ${result.stderr}`);
+    assert.equal(result.stdout, `Usage:\n${usage}\n`);
+    assert.equal(result.stderr, "");
+  }
+});
+
+test("job-id subcommand bare -- stops help scanning", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+
+  const result = run("node", [SCRIPT, "status", "abc", "--", "--help"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stdout, /^Usage:/);
+});
+
 test("task -- --help keeps the escape hatch prompt literal", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

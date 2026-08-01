@@ -93,6 +93,8 @@ const SUBCOMMAND_USAGE = new Map([
   ["result", "  node scripts/codex-companion.mjs result [job-id] [--json]"],
   ["cancel", "  node scripts/codex-companion.mjs cancel [job-id] [--json]"]
 ]);
+// These are exactly the handlers that pass stopAtFirstPositional: true.
+const PROSE_SUBCOMMANDS = new Set(["task", "review", "adversarial-review", "deep-review"]);
 
 function printUsage(subcommand) {
   const usageLines = SUBCOMMAND_USAGE.has(subcommand)
@@ -164,10 +166,14 @@ function normalizeArgv(argv) {
   return { argv, split: false };
 }
 
-function requestsHelp(argv) {
+function requestsHelp(argv, subcommand) {
   const { argv: normalizedArgv } = normalizeArgv(argv);
+  const stopAtFirstPositional = PROSE_SUBCOMMANDS.has(subcommand);
   for (const token of normalizedArgv) {
-    if (token === "--" || !token.startsWith("-") || token === "-") {
+    if (token === "--") {
+      return false;
+    }
+    if (stopAtFirstPositional && (!token.startsWith("-") || token === "-")) {
       return false;
     }
     if (token === "--help" || token === "-h") {
@@ -1245,7 +1251,7 @@ async function main() {
     return;
   }
 
-  if (SUBCOMMAND_USAGE.has(subcommand) && requestsHelp(argv)) {
+  if (SUBCOMMAND_USAGE.has(subcommand) && requestsHelp(argv, subcommand)) {
     printUsage(subcommand);
     return;
   }

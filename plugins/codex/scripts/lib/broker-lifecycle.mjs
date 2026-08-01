@@ -136,6 +136,7 @@ async function isBrokerEndpointReady(endpoint) {
 }
 
 export async function ensureBrokerSession(cwd, options = {}) {
+  const lockOptions = options.lockOptions ?? {};
   const existing = loadBrokerSession(cwd);
   if (existing && (await isBrokerEndpointReady(existing.endpoint))) {
     return existing;
@@ -151,7 +152,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
       killProcess: options.killProcess ?? null
     });
     try {
-      clearBrokerSession(cwd, existing);
+      clearBrokerSession(cwd, existing, lockOptions);
     } catch {
       // A clear failure must not abort broker startup; the save below republishes the record anyway.
     }
@@ -195,7 +196,21 @@ export async function ensureBrokerSession(cwd, options = {}) {
     sessionDir,
     pid: child.pid ?? null
   };
-  saveBrokerSession(cwd, session);
+  try {
+    saveBrokerSession(cwd, session, lockOptions);
+  } catch {
+    // A broker nobody can discover is a leak, so an unpublishable session is torn
+    // down exactly like one that never became ready.
+    teardownBrokerSession({
+      endpoint,
+      pidFile,
+      logFile,
+      sessionDir,
+      pid: child.pid ?? null,
+      killProcess: options.killProcess ?? null
+    });
+    return null;
+  }
   return session;
 }
 

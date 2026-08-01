@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createBrokerEndpoint, parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { writeJsonFileAtomic } from "./fs.mjs";
-import { resolveStateDir } from "./state.mjs";
+import { resolveStateDir, withBrokerPersistenceLock } from "./state.mjs";
 
 export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
 export const LOG_FILE_ENV = "CODEX_COMPANION_APP_SERVER_LOG_FILE";
@@ -87,17 +87,41 @@ export function loadBrokerSession(cwd) {
   }
 }
 
-export function saveBrokerSession(cwd, session) {
-  const stateDir = resolveStateDir(cwd);
-  fs.mkdirSync(stateDir, { recursive: true });
-  writeJsonFileAtomic(resolveBrokerStateFile(cwd), session);
+export function saveBrokerSession(cwd, session, options = {}) {
+  return withBrokerPersistenceLock(cwd, () => {
+    const stateDir = resolveStateDir(cwd);
+    fs.mkdirSync(stateDir, { recursive: true });
+    writeJsonFileAtomic(resolveBrokerStateFile(cwd), session);
+  }, options);
 }
 
-export function clearBrokerSession(cwd) {
-  const stateFile = resolveBrokerStateFile(cwd);
-  if (fs.existsSync(stateFile)) {
+export function clearBrokerSession(cwd, expectedSession = null, options = {}) {
+  return withBrokerPersistenceLock(cwd, () => {
+    const stateFile = resolveBrokerStateFile(cwd);
+    if (!fs.existsSync(stateFile)) {
+      return false;
+    }
+
+    let session;
+    try {
+      session = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    } catch {
+      fs.unlinkSync(stateFile);
+      return true;
+    }
+
+    if (typeof session?.endpoint !== "string" || !session.endpoint) {
+      fs.unlinkSync(stateFile);
+      return true;
+    }
+
+    if (session.endpoint !== expectedSession?.endpoint) {
+      return false;
+    }
+
     fs.unlinkSync(stateFile);
-  }
+    return true;
+  }, options);
 }
 
 async function isBrokerEndpointReady(endpoint) {
@@ -126,7 +150,11 @@ export async function ensureBrokerSession(cwd, options = {}) {
       pid: existing.pid ?? null,
       killProcess: options.killProcess ?? null
     });
-    clearBrokerSession(cwd);
+    try {
+      clearBrokerSession(cwd, existing);
+    } catch {
+      // A clear failure must not abort broker startup; the save below republishes the record anyway.
+    }
   }
 
   const sessionDir = createBrokerSessionDir();

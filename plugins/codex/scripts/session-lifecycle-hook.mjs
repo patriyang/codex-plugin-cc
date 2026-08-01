@@ -112,7 +112,11 @@ async function handleSessionEnd(input) {
     pid,
     killProcess: terminateProcessTree
   });
-  clearBrokerSession(cwd);
+  try {
+    clearBrokerSession(cwd, brokerSession);
+  } catch {
+    // A lock timeout must not make session shutdown fail, matching the surrounding teardown handling.
+  }
 }
 
 async function main() {

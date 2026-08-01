@@ -1104,6 +1104,30 @@ test("task --help prints task usage without starting a turn or registering a job
   assert.equal(fs.existsSync(resolveStateDir(repo)), false);
 });
 
+test("help scanning skips values for declared options in prose subcommands", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+
+  const cases = [
+    ["task", ["--model", "gpt-5.5", "--help"], "task"],
+    ["task", ["-C", "/tmp", "--help"], "task"],
+    ["review", ["--base", "main", "--help"], "review"],
+    ["task", ["--model=gpt-5.5", "--help"], "task"]
+  ];
+
+  for (const [subcommand, args, usageSubcommand] of cases) {
+    const result = run("node", [SCRIPT, subcommand, ...args], {
+      cwd: repo,
+      env: buildEnv(binDir)
+    });
+
+    assert.equal(result.status, 0, `${subcommand} ${args.join(" ")}: ${result.stderr}`);
+    assert.match(result.stdout, new RegExp(`^Usage:\\n  node scripts/codex-companion\\.mjs ${usageSubcommand} `));
+    assert.equal(result.stderr, "");
+  }
+});
+
 test("unknown subcommand --help remains an error", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

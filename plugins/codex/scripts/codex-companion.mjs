@@ -6,7 +6,11 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
+import {
+  looksLikeDeclaredValueOption,
+  parseArgs,
+  splitRawArgumentString
+} from "./lib/args.mjs";
 import {
     buildPersistentTaskThreadName,
     DEFAULT_CONTINUE_PROMPT,
@@ -93,8 +97,37 @@ const SUBCOMMAND_USAGE = new Map([
   ["result", "  node scripts/codex-companion.mjs result [job-id] [--json]"],
   ["cancel", "  node scripts/codex-companion.mjs cancel [job-id] [--json]"]
 ]);
+const REVIEW_PARSE_CONFIG = {
+  valueOptions: ["base", "scope", "model", "effort", "cwd"],
+  booleanOptions: ["json", "background", "wait"],
+  aliasMap: {
+    m: "model"
+  },
+  // When the prompt arrived as a single raw string, trailing positionals here
+  // are free-form focus text ("focus on the --dry-run path"), so option parsing
+  // stops at the first positional: everything from there on is literal, even
+  // if it looks like a flag.
+  stopAtFirstPositional: true
+};
+const TASK_PARSE_CONFIG = {
+  valueOptions: ["model", "effort", "cwd", "prompt-file", "resume-id"],
+  booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "wait"],
+  aliasMap: {
+    m: "model"
+  },
+  // When the prompt arrived as a single raw string, stop parsing options at
+  // the first positional: it's the start of the prompt text, and prose can
+  // legitimately contain hyphen-leading words (e.g. "fix the --wait bug")
+  // that must not be consumed as flags.
+  stopAtFirstPositional: true
+};
 // These are exactly the handlers that pass stopAtFirstPositional: true.
-const PROSE_SUBCOMMANDS = new Set(["task", "review", "adversarial-review", "deep-review"]);
+const PROSE_SUBCOMMANDS = new Map([
+  ["task", TASK_PARSE_CONFIG],
+  ["review", REVIEW_PARSE_CONFIG],
+  ["adversarial-review", REVIEW_PARSE_CONFIG],
+  ["deep-review", REVIEW_PARSE_CONFIG]
+]);
 
 function printUsage(subcommand) {
   const usageLines = SUBCOMMAND_USAGE.has(subcommand)
@@ -168,17 +201,40 @@ function normalizeArgv(argv) {
 
 function requestsHelp(argv, subcommand) {
   const { argv: normalizedArgv } = normalizeArgv(argv);
-  const stopAtFirstPositional = PROSE_SUBCOMMANDS.has(subcommand);
-  for (const token of normalizedArgv) {
-    if (token === "--") {
-      return false;
+  const parseConfig = PROSE_SUBCOMMANDS.get(subcommand);
+  if (!parseConfig) {
+    for (const token of normalizedArgv) {
+      if (token === "--") {
+        return false;
+      }
+      if (token === "--help" || token === "-h") {
+        return true;
+      }
     }
-    if (stopAtFirstPositional && (!token.startsWith("-") || token === "-")) {
+    return false;
+  }
+
+  const valueOptions = new Set(parseConfig.valueOptions ?? []);
+  const aliasMap = {
+    C: "cwd",
+    ...(parseConfig.aliasMap ?? {})
+  };
+  for (let index = 0; index < normalizedArgv.length; index += 1) {
+    const token = normalizedArgv[index];
+    if (token === "--") {
       return false;
     }
     if (token === "--help" || token === "-h") {
       return true;
     }
+    if (!token.includes("=") && looksLikeDeclaredValueOption(token, valueOptions, aliasMap)) {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("-") && token !== "-") {
+      continue;
+    }
+    return false;
   }
   return false;
 }
@@ -852,18 +908,7 @@ function warnLiteralOptionLikePositionals(literalOptionLikePositionals) {
 }
 
 async function handleReviewCommand(argv, config) {
-  // When the prompt arrived as a single raw string, trailing positionals here
-  // are free-form focus text ("focus on the --dry-run path"), so option parsing
-  // stops at the first positional: everything from there on is literal, even
-  // if it looks like a flag.
-  const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "effort", "cwd"],
-    booleanOptions: ["json", "background", "wait"],
-    aliasMap: {
-      m: "model"
-    },
-    stopAtFirstPositional: true
-  });
+  const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, REVIEW_PARSE_CONFIG);
   warnLiteralOptionLikePositionals(literalOptionLikePositionals);
 
   if (options.wait && options.background) {
@@ -930,18 +975,7 @@ async function handleReview(argv) {
 }
 
 async function handleTask(argv) {
-  const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "resume-id"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "wait"],
-    aliasMap: {
-      m: "model"
-    },
-    // When the prompt arrived as a single raw string, stop parsing options at
-    // the first positional: it's the start of the prompt text, and prose can
-    // legitimately contain hyphen-leading words (e.g. "fix the --wait bug")
-    // that must not be consumed as flags.
-    stopAtFirstPositional: true
-  });
+  const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, TASK_PARSE_CONFIG);
   warnLiteralOptionLikePositionals(literalOptionLikePositionals);
 
   if (options.wait && options.background) {

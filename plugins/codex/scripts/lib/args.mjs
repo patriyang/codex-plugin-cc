@@ -148,7 +148,7 @@ function looksLikeDeclaredOption(token, valueOptions, booleanOptions, aliasMap) 
   return valueOptions.has(key) || booleanOptions.has(key);
 }
 
-function looksLikeDeclaredValueOption(token, valueOptions, aliasMap) {
+export function looksLikeDeclaredValueOption(token, valueOptions, aliasMap) {
   if (token === "-" || !token.startsWith("-")) {
     return false;
   }

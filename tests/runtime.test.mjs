@@ -1087,6 +1087,68 @@ test("task --wait sends the prompt without prepending the flag (issue #46)", () 
   assert.equal(fakeState.lastTurnStart.prompt, "do the thing");
 });
 
+test("task rejects --prompt-file with an inline prompt before starting a turn (issue #52)", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  fs.writeFileSync(path.join(repo, "plan.md"), "do the thing\n");
+
+  const result = run("node", [SCRIPT, "task", "--prompt-file", "plan.md", "and also check retries"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /Choose either --prompt-file or an inline prompt, not both; the prompt file is read verbatim, so text after it would be discarded\./
+  );
+  assert.equal(fs.existsSync(statePath), false);
+});
+
+test("task --prompt-file sends the file contents when no inline prompt is given", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "plan.md"), "do the thing\n");
+
+  const result = run("node", [SCRIPT, "task", "--prompt-file", "plan.md"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.prompt, "do the thing");
+});
+
+test("task --prompt-file conflict does not emit a literal-text warning for flag-like inline text", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  fs.writeFileSync(path.join(repo, "plan.md"), "do the thing\n");
+
+  const result = run("node", [SCRIPT, "task", "--prompt-file", "plan.md", "text --wait more"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /Choose either --prompt-file or an inline prompt, not both; the prompt file is read verbatim, so text after it would be discarded\./
+  );
+  assert.doesNotMatch(result.stderr, /kept as literal text/);
+  assert.equal(fs.existsSync(statePath), false);
+});
+
 test("task --help prints task usage without starting a turn or registering a job", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

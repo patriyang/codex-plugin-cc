@@ -794,7 +794,16 @@ async function executeTransfer(cwd, options = {}) {
   };
 }
 
+function assertTaskPromptSourcesExclusive(options, positionals) {
+  if (options["prompt-file"] && positionals.length > 0) {
+    throw new Error(
+      "Choose either --prompt-file or an inline prompt, not both; the prompt file is read verbatim, so text after it would be discarded."
+    );
+  }
+}
+
 function readTaskPrompt(cwd, options, positionals) {
+  assertTaskPromptSourcesExclusive(options, positionals);
   if (options["prompt-file"]) {
     return fs.readFileSync(path.resolve(cwd, options["prompt-file"]), "utf8");
   }
@@ -993,6 +1002,7 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals, literalOptionLikePositionals } = parseCommandInput(argv, TASK_PARSE_CONFIG);
+  assertTaskPromptSourcesExclusive(options, positionals);
   warnLiteralOptionLikePositionals(literalOptionLikePositionals);
 
   if (options.wait && options.background) {

@@ -1,6 +1,6 @@
 ---
 description: Implement a plan via Codex subagent-driven development — dispatch fresh Codex implementer + spec reviewer + code quality reviewer per task
-argument-hint: "[--sequential|--single-shot] [--background|--wait] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [plan or path to plan]"
+argument-hint: "[--sequential|--single-shot] [--background|--wait] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [plan or path to plan]"
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), BashOutput, AskUserQuestion, TaskCreate, TaskUpdate, TaskList
 ---
 
@@ -110,7 +110,7 @@ The report body is the `.rawOutput` field of the JSON payload from step 2. Locat
 
 - **NEEDS_CONTEXT** → The operator can unblock with a reply. If Codex listed discrete options, present them via `AskUserQuestion`; otherwise show the questions inline and collect answers. Re-dispatch step 2 with `{{TASK_CONTEXT}}` augmented (or with the operator's decision appended) and `--resume-id "${IMPLEMENTER_THREAD_ID}"` so the implementer keeps its working context.
 - **BLOCKED** → The operator alone cannot unblock. Diagnose the specific reason Codex gave:
-  - Model/capacity issue → re-dispatch one effort step above the run's current effort. The `xhigh` default is already the top step, so skip the effort bump and escalate straight to a stronger model; a lower user-supplied effort steps up one level first.
+  - Model/capacity issue → re-dispatch one effort step above the run's current effort when the run's model supports the next level; otherwise escalate to a stronger model. The `gpt-5.6-luna` default supports one step above `xhigh` (`max`) but not `ultra`.
   - Codex sandbox or permission denial → check the error, decide whether to grant access or re-scope. Surface to user if unsure.
   - Plan internally inconsistent or wrong → stop and surface to user.
   - Repeated failed attempts → break the task into smaller pieces or escalate.

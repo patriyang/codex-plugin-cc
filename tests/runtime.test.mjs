@@ -1099,7 +1099,7 @@ test("task --help prints task usage without starting a turn or registering a job
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]\n");
+  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]\n");
   assert.equal(fs.existsSync(statePath), false);
   assert.equal(fs.existsSync(resolveStateDir(repo)), false);
 });
@@ -1116,7 +1116,7 @@ test("task prompt followed by --help as separate argv elements prints task usage
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]\n");
+  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]\n");
   assert.equal(fs.existsSync(statePath), false);
   assert.equal(fs.existsSync(resolveStateDir(repo)), false);
 });
@@ -1182,7 +1182,7 @@ test("subcommand --help prints only that subcommand's usage", () => {
 
   const cases = [
     ["status", "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]"],
-    ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]"],
+    ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
     ["cancel", "  node scripts/codex-companion.mjs cancel [job-id] [--json]"]
   ];
 
@@ -1682,6 +1682,40 @@ test("task forwards model selection and reasoning effort to app-server turn/star
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(fakeState.lastTurnStart.model, "gpt-5.3-codex-spark");
   assert.equal(fakeState.lastTurnStart.effort, "low");
+});
+
+test("task accepts max and ultra efforts and rejects invalid efforts", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  for (const effort of ["max", "ultra"]) {
+    const result = run("node", [SCRIPT, "task", "--model", "gpt-5.6-sol", "--effort", effort, `reply ${effort}`], {
+      cwd: repo,
+      env: buildEnv(binDir)
+    });
+
+    assert.equal(result.status, 0, `${effort}: ${result.stderr}`);
+    const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(fakeState.lastTurnStart.model, "gpt-5.6-sol");
+    assert.equal(fakeState.lastTurnStart.effort, effort);
+  }
+
+  const invalid = run("node", [SCRIPT, "task", "--effort", "insane", "reply no"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(invalid.status, 0);
+  assert.match(
+    invalid.stderr,
+    /Unsupported reasoning effort "insane"\. Use one of: none, minimal, low, medium, high, xhigh, max, ultra\./
+  );
 });
 
 test("task logs reasoning summaries and assistant messages to the job log", () => {

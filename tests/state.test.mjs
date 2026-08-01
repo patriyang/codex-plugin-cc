@@ -131,6 +131,91 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
   );
 });
 
+test("unlocked readers never observe a partially written state file", async () => {
+  const workspace = makeTempDir();
+  const stateFile = resolveStateFile(workspace);
+  const stateModuleUrl = new URL(
+    "../plugins/codex/scripts/lib/state.mjs",
+    import.meta.url
+  ).href;
+  const jobCount = 50;
+  const payloadLength = 2048;
+  const iterations = 75;
+  const makeState = (iteration) => ({
+    version: 1,
+    config: { stopReviewGate: false },
+    jobs: Array.from({ length: jobCount }, (_, index) => ({
+      id: `job-${index}`,
+      status: "running",
+      iteration,
+      payload: "x".repeat(payloadLength)
+    }))
+  });
+
+  saveState(workspace, makeState(0));
+
+  const childScript = [
+    `const { saveState } = await import(${JSON.stringify(stateModuleUrl)});`,
+    `const jobCount = ${jobCount};`,
+    `const payloadLength = ${payloadLength};`,
+    `const iterations = ${iterations};`,
+    "for (let iteration = 0; iteration < iterations; iteration += 1) {",
+    "  saveState(process.env.WORKSPACE, {",
+    "    version: 1,",
+    "    config: { stopReviewGate: false },",
+    "    jobs: Array.from({ length: jobCount }, (_, index) => ({",
+    "      id: `job-${index}`,",
+    "      status: \"running\",",
+    "      iteration,",
+    "      payload: \"x\".repeat(payloadLength)",
+    "    }))",
+    "  });",
+    "}"
+  ].join("\n");
+  const child = spawn(process.execPath, ["--input-type=module", "-e", childScript], {
+    env: {
+      ...process.env,
+      WORKSPACE: workspace
+    },
+    stdio: "ignore"
+  });
+  const childExit = new Promise((resolve) => {
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  const tornReads = [];
+  let completeReads = 0;
+
+  while (child.exitCode === null) {
+    try {
+      const raw = fs.readFileSync(stateFile, "utf8");
+      try {
+        const parsed = JSON.parse(raw);
+        completeReads += 1;
+        if (!parsed || !Array.isArray(parsed.jobs) || parsed.jobs.length < jobCount) {
+          tornReads.push(`jobs=${parsed?.jobs?.length ?? "missing"} tail=${JSON.stringify(raw.slice(-120))}`);
+        }
+      } catch (error) {
+        tornReads.push(`${error.message} tail=${JSON.stringify(raw.slice(-120))}`);
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  const { code, signal } = await childExit;
+  assert.equal(code, 0, `state writer exited with code ${code} and signal ${signal}`);
+  // Without this the test would pass vacuously if the reader never saw the file at all.
+  assert.ok(completeReads > 0, "expected the reader to observe the state file while the writer ran");
+  assert.equal(
+    tornReads.length,
+    0,
+    `observed ${tornReads.length} torn reads:\n${tornReads.slice(0, 10).join("\n")}`
+  );
+});
+
 test("config and different-job updates retain both results under the workspace state lock", () => {
   const workspace = makeTempDir();
   const readyFile = path.join(workspace, "state-writer-ready");

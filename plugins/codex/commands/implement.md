@@ -110,7 +110,7 @@ The report body is the `.rawOutput` field of the JSON payload from step 2. Locat
 
 - **NEEDS_CONTEXT** → The operator can unblock with a reply. If Codex listed discrete options, present them via `AskUserQuestion`; otherwise show the questions inline and collect answers. Re-dispatch step 2 with `{{TASK_CONTEXT}}` augmented (or with the operator's decision appended) and `--resume-id "${IMPLEMENTER_THREAD_ID}"` so the implementer keeps its working context.
 - **BLOCKED** → The operator alone cannot unblock. Diagnose the specific reason Codex gave:
-  - Model/capacity issue → re-dispatch one effort step above the run's current effort when the run's model supports the next level; otherwise escalate to a stronger model. The `gpt-5.6-luna` default supports one step above `xhigh` (`max`) but not `ultra`.
+  - Model/capacity issue → re-dispatch one effort step above the run's current effort when the run's model supports the next level; otherwise escalate to a stronger model. The `gpt-5.6-luna` default supports one step above `xhigh` (`max`) but not `ultra`. The run now warns when the model does not advertise the requested level; treat that warning as the escalation not taking effect rather than assuming it did.
   - Codex sandbox or permission denial → check the error, decide whether to grant access or re-scope. Surface to user if unsure.
   - Plan internally inconsistent or wrong → stop and surface to user.
   - Repeated failed attempts → break the task into smaller pieces or escalate.

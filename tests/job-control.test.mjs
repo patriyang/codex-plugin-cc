@@ -24,13 +24,16 @@ import { runTrackedJob } from "../plugins/codex/scripts/lib/tracked-jobs.mjs";
 import { initGitRepo, makeTempDir, spawnDeadPid } from "./helpers.mjs";
 
 delete process.env.CLAUDE_PLUGIN_DATA;
+delete process.env.CODEX_COMPANION_PLUGIN_DATA;
 delete process.env.CODEX_COMPANION_SESSION_ID;
 
 test("reapDeadJobs reports an in-memory reap when the persistence lock fails", () => {
   const pluginDataFile = path.join(makeTempDir(), "not-a-directory");
   fs.writeFileSync(pluginDataFile, "", "utf8");
   const previousPluginData = process.env.CLAUDE_PLUGIN_DATA;
+  const previousCodexPluginData = process.env.CODEX_COMPANION_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = pluginDataFile;
+  delete process.env.CODEX_COMPANION_PLUGIN_DATA;
 
   try {
     const updatedAt = "2026-07-26T08:00:00.000Z";
@@ -59,6 +62,11 @@ test("reapDeadJobs reports an in-memory reap when the persistence lock fails", (
       delete process.env.CLAUDE_PLUGIN_DATA;
     } else {
       process.env.CLAUDE_PLUGIN_DATA = previousPluginData;
+    }
+    if (previousCodexPluginData == null) {
+      delete process.env.CODEX_COMPANION_PLUGIN_DATA;
+    } else {
+      process.env.CODEX_COMPANION_PLUGIN_DATA = previousCodexPluginData;
     }
   }
 });

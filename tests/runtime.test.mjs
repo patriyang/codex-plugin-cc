@@ -20,6 +20,10 @@ import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoin
 import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import { getProcessStartTime } from "../plugins/codex/scripts/lib/process.mjs";
 import {
+  resolveClaudeSessionPath,
+  TRANSCRIPT_PATH_ENV
+} from "../plugins/codex/scripts/lib/claude-session-transfer.mjs";
+import {
   ensureStateDir,
   resolveJobFile,
   resolveJobLogFile,
@@ -35,6 +39,7 @@ const STOP_HOOK = path.join(PLUGIN_ROOT, "scripts", "stop-review-gate-hook.mjs")
 const SESSION_HOOK = path.join(PLUGIN_ROOT, "scripts", "session-lifecycle-hook.mjs");
 
 delete process.env.CLAUDE_PLUGIN_DATA;
+delete process.env.CODEX_COMPANION_PLUGIN_DATA;
 delete process.env.CODEX_COMPANION_SESSION_ID;
 
 async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
@@ -592,6 +597,220 @@ test("transfer delegates the current Claude session directly to native import", 
     fakeState.threads[0].visibleMessages.map((message) => message.text),
     ["Initial request", "Initial answer", "/codex:transfer"]
   );
+});
+
+test("transfer recovers the transcript when the session moved into a worktree project dir", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-moved-into-worktree";
+  fs.mkdirSync(repo, { recursive: true });
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+
+  const stalePath = path.join(home, ".claude", "projects", "-repo", `${sessionId}.jsonl`);
+  const worktreeProjectDir = path.join(home, ".claude", "projects", "-repo--worktrees-feature");
+  const actualPath = path.join(worktreeProjectDir, `${sessionId}.jsonl`);
+  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
+  fs.mkdirSync(worktreeProjectDir, { recursive: true });
+  fs.writeFileSync(
+    actualPath,
+    [
+      { type: "custom-title", customTitle: "Worktree transfer" },
+      { type: "user", cwd: repo, message: { role: "user", content: "Initial request" } }
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "transfer", "--json"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      HOME: home,
+      CODEX_HOME: path.join(home, ".codex"),
+      CODEX_COMPANION_TRANSCRIPT_PATH: stalePath
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.sourcePath, fs.realpathSync(actualPath));
+  assert.equal(payload.sessionId, sessionId);
+});
+
+test("transfer refuses to guess when the recorded session id matches several transcripts", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-ambiguous";
+  fs.mkdirSync(repo, { recursive: true });
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+
+  const stalePath = path.join(home, ".claude", "projects", "-repo", `${sessionId}.jsonl`);
+  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
+  for (const projectDir of ["-repo--worktrees-a", "-repo--worktrees-b"]) {
+    const dir = path.join(home, ".claude", "projects", projectDir);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), "{}\n", "utf8");
+  }
+
+  const result = run("node", [SCRIPT, "transfer", "--json"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      HOME: home,
+      CODEX_HOME: path.join(home, ".codex"),
+      CODEX_COMPANION_TRANSCRIPT_PATH: stalePath
+    }
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--source/);
+});
+
+test("transfer rejects recovered transcripts outside the Claude projects directory", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-recovered-outside-projects";
+  const stalePath = path.join(home, ".claude", "projects", "-repo", `${sessionId}.jsonl`);
+  const recoveredPath = path.join(
+    home,
+    ".claude",
+    "projects",
+    "-repo--worktrees-outside",
+    `${sessionId}.jsonl`
+  );
+  const outsidePath = path.join(home, "outside-session.jsonl");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
+  fs.mkdirSync(path.dirname(recoveredPath), { recursive: true });
+  fs.writeFileSync(outsidePath, "{}\n", "utf8");
+  fs.symlinkSync(outsidePath, recoveredPath);
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+
+  const result = run("node", [SCRIPT, "transfer", "--json"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      HOME: home,
+      CODEX_HOME: path.join(home, ".codex"),
+      CODEX_COMPANION_TRANSCRIPT_PATH: stalePath
+    }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Codex can import Claude sessions only from .*\.claude.*projects/);
+});
+
+test("transfer does not search when the source is explicit", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const sessionId = "sess-explicit-source";
+  const stalePath = path.join(home, ".claude", "projects", "-repo", `${sessionId}.jsonl`);
+  const actualPath = path.join(home, ".claude", "projects", "-repo--worktrees-feature", `${sessionId}.jsonl`);
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
+  fs.mkdirSync(path.dirname(actualPath), { recursive: true });
+  fs.writeFileSync(actualPath, "{}\n", "utf8");
+
+  const previousHome = process.env.HOME;
+  const previousTranscriptPath = process.env[TRANSCRIPT_PATH_ENV];
+  try {
+    process.env.HOME = home;
+    process.env[TRANSCRIPT_PATH_ENV] = actualPath;
+    assert.throws(
+      () => resolveClaudeSessionPath(repo, { source: stalePath }),
+      new Error(`Claude session file not found: ${stalePath}`)
+    );
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    if (previousTranscriptPath === undefined) {
+      delete process.env[TRANSCRIPT_PATH_ENV];
+    } else {
+      process.env[TRANSCRIPT_PATH_ENV] = previousTranscriptPath;
+    }
+  }
+});
+
+test("transfer keeps the missing-file error when no matching transcript exists", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const sessionId = "sess-no-candidate";
+  const stalePath = path.join(home, ".claude", "projects", "-repo", `${sessionId}.jsonl`);
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousTranscriptPath = process.env[TRANSCRIPT_PATH_ENV];
+  try {
+    process.env.HOME = home;
+    process.env[TRANSCRIPT_PATH_ENV] = stalePath;
+    assert.throws(
+      () => resolveClaudeSessionPath(repo),
+      new Error(`Claude session file not found: ${stalePath}`)
+    );
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    if (previousTranscriptPath === undefined) {
+      delete process.env[TRANSCRIPT_PATH_ENV];
+    } else {
+      process.env[TRANSCRIPT_PATH_ENV] = previousTranscriptPath;
+    }
+  }
+});
+
+test("transfer lists all matching transcript paths when recovery is ambiguous", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const sessionId = "sess-ambiguous-unit";
+  const stalePath = path.join(home, ".claude", "projects", "-repo", `${sessionId}.jsonl`);
+  const candidatePaths = [
+    path.join(home, ".claude", "projects", "-repo--worktrees-a", `${sessionId}.jsonl`),
+    path.join(home, ".claude", "projects", "-repo--worktrees-b", `${sessionId}.jsonl`)
+  ];
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
+  for (const candidatePath of candidatePaths) {
+    fs.mkdirSync(path.dirname(candidatePath), { recursive: true });
+    fs.writeFileSync(candidatePath, "{}\n", "utf8");
+  }
+
+  const previousHome = process.env.HOME;
+  const previousTranscriptPath = process.env[TRANSCRIPT_PATH_ENV];
+  try {
+    process.env.HOME = home;
+    process.env[TRANSCRIPT_PATH_ENV] = stalePath;
+    assert.throws(() => resolveClaudeSessionPath(repo), (error) => {
+      assert.match(error.message, /matched several transcripts/);
+      assert.match(error.message, /--source/);
+      for (const candidatePath of candidatePaths) {
+        assert.ok(error.message.includes(candidatePath));
+      }
+      return true;
+    });
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    if (previousTranscriptPath === undefined) {
+      delete process.env[TRANSCRIPT_PATH_ENV];
+    } else {
+      process.env[TRANSCRIPT_PATH_ENV] = previousTranscriptPath;
+    }
+  }
 });
 
 test("transfer reports an actionable upgrade error when native import is unsupported", () => {
@@ -1596,8 +1815,35 @@ test("session start hook exports the Claude session id, transcript path, and plu
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     fs.readFileSync(envFile, "utf8"),
-    `export CODEX_COMPANION_SESSION_ID='sess-current'\nexport CODEX_COMPANION_TRANSCRIPT_PATH='${transcriptPath}'\nexport CLAUDE_PLUGIN_DATA='${pluginDataDir}'\n`
+    `export CODEX_COMPANION_SESSION_ID='sess-current'\nexport CODEX_COMPANION_TRANSCRIPT_PATH='${transcriptPath}'\nexport CODEX_COMPANION_PLUGIN_DATA='${pluginDataDir}'\n`
   );
+});
+
+test("session start hook keeps the shared CLAUDE_PLUGIN_DATA untouched for other plugins", () => {
+  const repo = makeTempDir();
+  const envFile = path.join(makeTempDir(), "claude-env.sh");
+  fs.writeFileSync(envFile, "", "utf8");
+  const pluginDataDir = makeTempDir();
+
+  const result = run("node", [SESSION_HOOK, "SessionStart"], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      CLAUDE_ENV_FILE: envFile,
+      CLAUDE_PLUGIN_DATA: pluginDataDir
+    },
+    input: JSON.stringify({
+      hook_event_name: "SessionStart",
+      session_id: "sess-current",
+      transcript_path: path.join(repo, "session.jsonl"),
+      cwd: repo
+    })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const contents = fs.readFileSync(envFile, "utf8");
+  assert.equal(/^export CLAUDE_PLUGIN_DATA=/m.test(contents), false, contents);
+  assert.match(contents, new RegExp(`^export CODEX_COMPANION_PLUGIN_DATA='${pluginDataDir}'$`, "m"));
 });
 
 test("write task output focuses on the Codex result without generic follow-up hints", () => {

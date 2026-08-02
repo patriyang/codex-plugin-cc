@@ -16,6 +16,7 @@ import { getProcessStartTime, isProcessAlive } from "../plugins/codex/scripts/li
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 delete process.env.CLAUDE_PLUGIN_DATA;
+delete process.env.CODEX_COMPANION_PLUGIN_DATA;
 delete process.env.CODEX_COMPANION_SESSION_ID;
 process.env.CLAUDE_PLUGIN_DATA = makeTempDir();
 

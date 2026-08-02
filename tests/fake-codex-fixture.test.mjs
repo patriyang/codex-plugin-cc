@@ -28,8 +28,15 @@ test("fake codex fixture never exposes a half-written state file to a cross-proc
   });
   child.stdout.resume();
   child.stderr.resume();
-  t.after(() => {
+  // The requests below are queued faster than the fixture drains them, so killing it
+  // leaves writes in flight. Their EPIPE lands after the test body returns, where an
+  // unhandled one becomes an uncaughtException and fails the file despite a green
+  // assertion. Swallow it and wait for the child to actually exit.
+  child.stdin.on("error", () => {});
+  const childClosed = new Promise((resolve) => child.on("close", resolve));
+  t.after(async () => {
     child.kill("SIGKILL");
+    await childClosed;
   });
 
   // Each `thread/start` appends a thread and saves twice, so the file grows as the run

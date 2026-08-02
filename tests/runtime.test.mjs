@@ -594,6 +594,76 @@ test("transfer delegates the current Claude session directly to native import", 
   );
 });
 
+test("transfer recovers the transcript when the session moved into a worktree project dir", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-moved-into-worktree";
+  fs.mkdirSync(repo, { recursive: true });
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+
+  const stalePath = path.join(home, ".claude", "projects", "-repo", `${sessionId}.jsonl`);
+  const worktreeProjectDir = path.join(home, ".claude", "projects", "-repo--worktrees-feature");
+  const actualPath = path.join(worktreeProjectDir, `${sessionId}.jsonl`);
+  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
+  fs.mkdirSync(worktreeProjectDir, { recursive: true });
+  fs.writeFileSync(
+    actualPath,
+    [
+      { type: "custom-title", customTitle: "Worktree transfer" },
+      { type: "user", cwd: repo, message: { role: "user", content: "Initial request" } }
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "transfer", "--json"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      HOME: home,
+      CODEX_HOME: path.join(home, ".codex"),
+      CODEX_COMPANION_TRANSCRIPT_PATH: stalePath
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.sourcePath, fs.realpathSync(actualPath));
+  assert.equal(payload.sessionId, sessionId);
+});
+
+test("transfer refuses to guess when the recorded session id matches several transcripts", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-ambiguous";
+  fs.mkdirSync(repo, { recursive: true });
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+
+  const stalePath = path.join(home, ".claude", "projects", "-repo", `${sessionId}.jsonl`);
+  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
+  for (const projectDir of ["-repo--worktrees-a", "-repo--worktrees-b"]) {
+    const dir = path.join(home, ".claude", "projects", projectDir);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), "{}\n", "utf8");
+  }
+
+  const result = run("node", [SCRIPT, "transfer", "--json"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      HOME: home,
+      CODEX_HOME: path.join(home, ".codex"),
+      CODEX_COMPANION_TRANSCRIPT_PATH: stalePath
+    }
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--source/);
+});
+
 test("transfer reports an actionable upgrade error when native import is unsupported", () => {
   const home = makeTempDir();
   const repo = path.join(home, "repo");
@@ -1598,6 +1668,33 @@ test("session start hook exports the Claude session id, transcript path, and plu
     fs.readFileSync(envFile, "utf8"),
     `export CODEX_COMPANION_SESSION_ID='sess-current'\nexport CODEX_COMPANION_TRANSCRIPT_PATH='${transcriptPath}'\nexport CLAUDE_PLUGIN_DATA='${pluginDataDir}'\n`
   );
+});
+
+test("session start hook keeps the shared CLAUDE_PLUGIN_DATA untouched for other plugins", () => {
+  const repo = makeTempDir();
+  const envFile = path.join(makeTempDir(), "claude-env.sh");
+  fs.writeFileSync(envFile, "", "utf8");
+  const pluginDataDir = makeTempDir();
+
+  const result = run("node", [SESSION_HOOK, "SessionStart"], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      CLAUDE_ENV_FILE: envFile,
+      CLAUDE_PLUGIN_DATA: pluginDataDir
+    },
+    input: JSON.stringify({
+      hook_event_name: "SessionStart",
+      session_id: "sess-current",
+      transcript_path: path.join(repo, "session.jsonl"),
+      cwd: repo
+    })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const contents = fs.readFileSync(envFile, "utf8");
+  assert.equal(/^export CLAUDE_PLUGIN_DATA=/m.test(contents), false, contents);
+  assert.match(contents, new RegExp(`^export CODEX_COMPANION_PLUGIN_DATA='${pluginDataDir}'$`, "m"));
 });
 
 test("write task output focuses on the Codex result without generic follow-up hints", () => {

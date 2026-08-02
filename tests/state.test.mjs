@@ -21,6 +21,7 @@ import {
 } from "../plugins/codex/scripts/lib/state.mjs";
 
 delete process.env.CLAUDE_PLUGIN_DATA;
+delete process.env.CODEX_COMPANION_PLUGIN_DATA;
 
 function sleepSynchronously(milliseconds) {
   const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
@@ -48,7 +49,9 @@ test("resolveStateDir uses CLAUDE_PLUGIN_DATA when it is provided", () => {
   const workspace = makeTempDir();
   const pluginDataDir = makeTempDir();
   const previousPluginDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const previousOwnPluginDataDir = process.env.CODEX_COMPANION_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = pluginDataDir;
+  delete process.env.CODEX_COMPANION_PLUGIN_DATA;
 
   try {
     const stateDir = resolveStateDir(workspace);
@@ -64,6 +67,11 @@ test("resolveStateDir uses CLAUDE_PLUGIN_DATA when it is provided", () => {
       delete process.env.CLAUDE_PLUGIN_DATA;
     } else {
       process.env.CLAUDE_PLUGIN_DATA = previousPluginDataDir;
+    }
+    if (previousOwnPluginDataDir == null) {
+      delete process.env.CODEX_COMPANION_PLUGIN_DATA;
+    } else {
+      process.env.CODEX_COMPANION_PLUGIN_DATA = previousOwnPluginDataDir;
     }
   }
 });

@@ -35,6 +35,7 @@ const STOP_HOOK = path.join(PLUGIN_ROOT, "scripts", "stop-review-gate-hook.mjs")
 const SESSION_HOOK = path.join(PLUGIN_ROOT, "scripts", "session-lifecycle-hook.mjs");
 
 delete process.env.CLAUDE_PLUGIN_DATA;
+delete process.env.CODEX_COMPANION_PLUGIN_DATA;
 delete process.env.CODEX_COMPANION_SESSION_ID;
 
 async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {

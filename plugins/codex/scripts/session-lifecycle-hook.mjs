@@ -98,19 +98,21 @@ async function handleSessionEnd(input) {
   const pidFile = brokerSession?.pidFile ?? null;
   const logFile = brokerSession?.logFile ?? null;
   const sessionDir = brokerSession?.sessionDir ?? null;
-  const pid = resolveSignalableBrokerPid(brokerSession);
 
   if (brokerEndpoint) {
     await sendBrokerShutdown(brokerEndpoint);
   }
 
   cleanupSessionJobs(cwd, input.session_id || process.env[SESSION_ID_ENV]);
+  // Resolved here rather than above: the shutdown we just sent is meant to end the broker, so its
+  // pid can go stale — and be recycled — during that await. Verifying identity immediately before
+  // the signal keeps the check/use window as small as it can be.
   teardownBrokerSession({
     endpoint: brokerEndpoint,
     pidFile,
     logFile,
     sessionDir,
-    pid,
+    pid: resolveSignalableBrokerPid(brokerSession),
     killProcess: terminateProcessTree
   });
   try {

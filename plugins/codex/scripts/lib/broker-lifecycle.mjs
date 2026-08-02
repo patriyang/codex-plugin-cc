@@ -182,6 +182,19 @@ export async function ensureBrokerSession(cwd, options = {}) {
   });
   const killSpawnedBroker = options.killProcess ?? terminateProcessTree;
 
+  // Probed before the first await: the child cannot have exited yet, so this is provably the
+  // broker we spawned. Sampling it after the readiness wait would record a replacement process's
+  // start time if the broker died and its pid were recycled in between, and that impostor identity
+  // would then pass validation at teardown.
+  let pidStartTime = null;
+  try {
+    if (Number.isFinite(child.pid)) {
+      pidStartTime = getProcessStartTime(child.pid);
+    }
+  } catch {
+    // A missing process probe must not prevent the broker from being published.
+  }
+
   const ready = await waitForBrokerEndpoint(endpoint, options.timeoutMs ?? 2000);
   if (!ready) {
     teardownBrokerSession({
@@ -193,15 +206,6 @@ export async function ensureBrokerSession(cwd, options = {}) {
       killProcess: killSpawnedBroker
     });
     return null;
-  }
-
-  let pidStartTime = null;
-  try {
-    if (Number.isFinite(child.pid)) {
-      pidStartTime = getProcessStartTime(child.pid);
-    }
-  } catch {
-    // A missing process probe must not prevent the broker from being published.
   }
 
   const session = {

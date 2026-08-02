@@ -4638,6 +4638,156 @@ test("session end does not signal a worker with an unverified identity", async (
   assert.deepEqual(state.jobs, []);
 });
 
+// A broker record read off disk can be arbitrarily old, so its pid may have been recycled by the
+// OS. `terminateProcessTree` signals a whole process group, so a mis-targeted signal takes out an
+// unrelated group. Both shapes below assert SessionEnd refuses to signal an unverifiable pid.
+function startBrokerRecordSleeper(t, repo) {
+  const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: repo,
+    detached: true,
+    stdio: "ignore"
+  });
+  sleeper.unref();
+
+  t.after(() => {
+    try {
+      process.kill(-sleeper.pid, "SIGKILL");
+    } catch {
+      try {
+        process.kill(sleeper.pid, "SIGKILL");
+      } catch {
+        // Ignore missing process.
+      }
+    }
+  });
+
+  return sleeper;
+}
+
+function writeStaleBrokerRecord(repo, record) {
+  const sessionDir = makeTempDir();
+  saveBrokerSession(repo, {
+    endpoint: `unix:${path.join(sessionDir, "broker.sock")}`,
+    pidFile: path.join(sessionDir, "broker.pid"),
+    logFile: path.join(sessionDir, "broker.log"),
+    sessionDir,
+    ...record
+  });
+}
+
+async function assertPidSurvives(pid) {
+  await assert.rejects(
+    waitFor(
+      () => {
+        try {
+          process.kill(pid, 0);
+          return false;
+        } catch (error) {
+          if (error?.code === "ESRCH") {
+            return true;
+          }
+          throw error;
+        }
+      },
+      { timeoutMs: 500, intervalMs: 25 }
+    ),
+    /Timed out waiting for condition/
+  );
+}
+
+test("session end does not signal a broker pid whose recorded start time does not match", async (t) => {
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  ensureStateDir(repo);
+
+  const processBinDir = makeTempDir();
+  writeExecutable(
+    path.join(processBinDir, "ps"),
+    "#!/bin/sh\nprintf 'Mon Jul 28 12:34:56 2026\\n'\n"
+  );
+  const env = {
+    ...process.env,
+    PATH: `${processBinDir}:${process.env.PATH ?? ""}`
+  };
+
+  const sleeper = startBrokerRecordSleeper(t, repo);
+  writeStaleBrokerRecord(repo, {
+    pid: sleeper.pid,
+    pidStartTime: "1970-01-01T00:00:00.000Z"
+  });
+
+  const result = run("node", [SESSION_HOOK, "SessionEnd"], {
+    cwd: repo,
+    env,
+    input: JSON.stringify({
+      hook_event_name: "SessionEnd",
+      session_id: "sess-stale-broker",
+      cwd: repo
+    })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  await assertPidSurvives(sleeper.pid);
+});
+
+// Records written by older plugin versions carry no `pidStartTime`. Absent proof of identity the
+// pid must not be signalled at all — the leak is bounded by the broker's idle self-exit, a
+// mis-targeted process-group SIGTERM is not.
+test("session end does not signal a broker record that carries no recorded start time", async (t) => {
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  ensureStateDir(repo);
+
+  const processBinDir = makeTempDir();
+  writeExecutable(
+    path.join(processBinDir, "ps"),
+    "#!/bin/sh\nprintf 'Mon Jul 28 12:34:56 2026\\n'\n"
+  );
+  const env = {
+    ...process.env,
+    PATH: `${processBinDir}:${process.env.PATH ?? ""}`
+  };
+
+  const sleeper = startBrokerRecordSleeper(t, repo);
+  writeStaleBrokerRecord(repo, { pid: sleeper.pid });
+
+  const result = run("node", [SESSION_HOOK, "SessionEnd"], {
+    cwd: repo,
+    env,
+    input: JSON.stringify({
+      hook_event_name: "SessionEnd",
+      session_id: "sess-legacy-broker",
+      cwd: repo
+    })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  await assertPidSurvives(sleeper.pid);
+});
+
+test("session end signals a broker pid whose recorded start time still matches", async (t) => {
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  ensureStateDir(repo);
+
+  const sleeper = startBrokerRecordSleeper(t, repo);
+  const pidStartTime = await waitFor(() => getProcessStartTime(sleeper.pid));
+  writeStaleBrokerRecord(repo, { pid: sleeper.pid, pidStartTime });
+
+  const result = run("node", [SESSION_HOOK, "SessionEnd"], {
+    cwd: repo,
+    env: process.env,
+    input: JSON.stringify({
+      hook_event_name: "SessionEnd",
+      session_id: "sess-live-broker",
+      cwd: repo
+    })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  await waitForProcessExit(sleeper.pid);
+});
+
 test("stop hook runs a stop-time review task and blocks on findings when the review gate is enabled", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

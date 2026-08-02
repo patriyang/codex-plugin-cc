@@ -92,6 +92,34 @@ function buildModelListResult() {
   };
 }
 
+function buildPaginatedModelListResult(cursor) {
+  const pageIndex = cursor === undefined ? 0 : Number(cursor);
+  const entry = MODEL_CATALOG[pageIndex];
+  return {
+    data: entry ? [
+      {
+        id: entry.model,
+        model: entry.model,
+        upgrade: null,
+        upgradeInfo: null,
+        availabilityNux: null,
+        displayName: entry.model,
+        description: "",
+        hidden: false,
+        supportedReasoningEfforts: entry.efforts.map((effort) => ({ reasoningEffort: effort, description: "" })),
+        defaultReasoningEffort: "medium",
+        inputModalities: ["text"],
+        supportsPersonality: false,
+        additionalSpeedTiers: [],
+        serviceTiers: [],
+        defaultServiceTier: null,
+        isDefault: entry.isDefault
+      }
+    ] : [],
+    nextCursor: entry && pageIndex + 1 < MODEL_CATALOG.length ? String(pageIndex + 1) : null
+  };
+}
+
 function requiresExperimental(field, message, state) {
   if (!(field in (message.params || {}))) {
     return false;
@@ -373,7 +401,12 @@ rl.on("line", (line) => {
         }
         state.modelListCalls = (state.modelListCalls || 0) + 1;
         saveState(state);
-        send({ id: message.id, result: buildModelListResult() });
+        send({
+          id: message.id,
+          result: BEHAVIOR === "model-list-paginated"
+            ? buildPaginatedModelListResult(message.params?.cursor)
+            : buildModelListResult()
+        });
         break;
 
       case "config/read":

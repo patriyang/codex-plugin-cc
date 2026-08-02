@@ -1517,15 +1517,39 @@ export async function runAppServerTurn(cwd, options = {}) {
     // model/list is a conservative advertisement, so an omitted effort is a warning rather than a rejection.
     if (typeof options.effort === "string" && options.effortOverride !== false) {
       try {
-        const modelListResponse = await client.request(
-          "model/list",
-          { includeHidden: true },
-          { timeoutMs: 3000 }
-        );
-        const models = modelListResponse?.data;
-        const modelEntry = typeof resolvedModel === "string" && Array.isArray(models)
-          ? models.find((entry) => entry?.model === resolvedModel || entry?.id === resolvedModel)
-          : null;
+        const modelListDeadline = Date.now() + 3000;
+        const seenCursors = new Set();
+        let cursor = null;
+        let modelEntry = null;
+        // Bound pages and total time so a malformed server cannot delay the turn indefinitely.
+        for (let page = 0; page < 10 && Date.now() < modelListDeadline; page += 1) {
+          const params = { includeHidden: true };
+          if (cursor !== null) {
+            params.cursor = cursor;
+          }
+          const remainingMs = modelListDeadline - Date.now();
+          if (remainingMs <= 0) {
+            break;
+          }
+          const modelListResponse = await client.request(
+            "model/list",
+            params,
+            { timeoutMs: Math.min(3000, remainingMs) }
+          );
+          const models = modelListResponse?.data;
+          const nextCursor = modelListResponse?.nextCursor;
+          if (!Array.isArray(models) || (nextCursor !== null && typeof nextCursor !== "string")) {
+            throw new Error("Unexpected model/list response.");
+          }
+          modelEntry = typeof resolvedModel === "string"
+            ? models.find((entry) => entry?.model === resolvedModel || entry?.id === resolvedModel)
+            : null;
+          if (modelEntry || nextCursor === null || seenCursors.has(nextCursor)) {
+            break;
+          }
+          seenCursors.add(nextCursor);
+          cursor = nextCursor;
+        }
         const advertisedEfforts = modelEntry?.supportedReasoningEfforts;
         if (
           modelEntry &&

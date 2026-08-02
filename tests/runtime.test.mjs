@@ -1787,11 +1787,11 @@ test("task accepts max and ultra efforts and rejects invalid efforts", () => {
   );
 });
 
-function setupEffortRepo() {
+function setupEffortRepo(behavior = "review-ok") {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const statePath = path.join(binDir, "fake-codex-state.json");
-  installFakeCodex(binDir);
+  installFakeCodex(binDir, behavior);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
@@ -1805,6 +1805,22 @@ test("task warns when the resolved model does not advertise the requested effort
   // gpt-5.6-luna advertises up to `max`; `ultra` is accepted by the flat syntax
   // gate but is not a level this model offers. The run must still proceed, but
   // the caller has to be told the effort it asked for is not on the menu.
+  const result = run("node", [SCRIPT, "task", "--model", "gpt-5.6-luna", "--effort", "ultra", "reply ultra"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /gpt-5\.6-luna/);
+  assert.match(result.stderr, /does not advertise reasoning effort "ultra"/);
+  assert.match(result.stderr, /low, medium, high, xhigh, max/);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.effort, "ultra");
+});
+
+test("task warns when the resolved model is found through paginated model/list responses", () => {
+  const { repo, binDir, statePath } = setupEffortRepo("model-list-paginated");
+
   const result = run("node", [SCRIPT, "task", "--model", "gpt-5.6-luna", "--effort", "ultra", "reply ultra"], {
     cwd: repo,
     env: buildEnv(binDir)

@@ -20,6 +20,10 @@ import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoin
 import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import { getProcessStartTime } from "../plugins/codex/scripts/lib/process.mjs";
 import {
+  resolveClaudeSessionPath,
+  TRANSCRIPT_PATH_ENV
+} from "../plugins/codex/scripts/lib/claude-session-transfer.mjs";
+import {
   ensureStateDir,
   resolveJobFile,
   resolveJobLogFile,
@@ -663,6 +667,71 @@ test("transfer refuses to guess when the recorded session id matches several tra
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /--source/);
+});
+
+test("transfer does not search when the source is explicit", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const sessionId = "sess-explicit-source";
+  const stalePath = path.join(home, ".claude", "projects", "-repo", `${sessionId}.jsonl`);
+  const actualPath = path.join(home, ".claude", "projects", "-repo--worktrees-feature", `${sessionId}.jsonl`);
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
+  fs.mkdirSync(path.dirname(actualPath), { recursive: true });
+  fs.writeFileSync(actualPath, "{}\n", "utf8");
+
+  const previousHome = process.env.HOME;
+  const previousTranscriptPath = process.env[TRANSCRIPT_PATH_ENV];
+  try {
+    process.env.HOME = home;
+    process.env[TRANSCRIPT_PATH_ENV] = actualPath;
+    assert.throws(
+      () => resolveClaudeSessionPath(repo, { source: stalePath }),
+      new Error(`Claude session file not found: ${stalePath}`)
+    );
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    if (previousTranscriptPath === undefined) {
+      delete process.env[TRANSCRIPT_PATH_ENV];
+    } else {
+      process.env[TRANSCRIPT_PATH_ENV] = previousTranscriptPath;
+    }
+  }
+});
+
+test("transfer keeps the missing-file error when no matching transcript exists", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const sessionId = "sess-no-candidate";
+  const stalePath = path.join(home, ".claude", "projects", "-repo", `${sessionId}.jsonl`);
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousTranscriptPath = process.env[TRANSCRIPT_PATH_ENV];
+  try {
+    process.env.HOME = home;
+    process.env[TRANSCRIPT_PATH_ENV] = stalePath;
+    assert.throws(
+      () => resolveClaudeSessionPath(repo),
+      new Error(`Claude session file not found: ${stalePath}`)
+    );
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    if (previousTranscriptPath === undefined) {
+      delete process.env[TRANSCRIPT_PATH_ENV];
+    } else {
+      process.env[TRANSCRIPT_PATH_ENV] = previousTranscriptPath;
+    }
+  }
 });
 
 test("transfer reports an actionable upgrade error when native import is unsupported", () => {

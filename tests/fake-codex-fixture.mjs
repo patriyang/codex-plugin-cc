@@ -33,7 +33,27 @@ const readline = require("node:readline");
 	}
 
 function saveState(state) {
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+  const contents = JSON.stringify(state, null, 2);
+  const tempPath = STATE_PATH + ".tmp-" + process.pid + "-" + crypto.randomUUID();
+  const handle = fs.openSync(tempPath, "wx");
+
+  try {
+    fs.writeFileSync(handle, contents, "utf8");
+    fs.closeSync(handle);
+    fs.renameSync(tempPath, STATE_PATH);
+  } catch (error) {
+    try {
+      fs.closeSync(handle);
+    } catch {
+      // Already closed; the unlink below is the cleanup that matters.
+    }
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Best effort cleanup; preserve the original write error.
+    }
+    throw error;
+  }
 }
 
 function requiresExperimental(field, message, state) {

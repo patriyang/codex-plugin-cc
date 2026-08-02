@@ -1,6 +1,7 @@
 /**
  * @typedef {import("./app-server-protocol").AppServerNotification} AppServerNotification
  * @typedef {import("./app-server-protocol").ReviewTarget} ReviewTarget
+ * @typedef {import("./app-server-protocol").RunAppServerTurnOptions} RunAppServerTurnOptions
  * @typedef {import("./app-server-protocol").ThreadItem} ThreadItem
  * @typedef {import("./app-server-protocol").ThreadResumeParams} ThreadResumeParams
  * @typedef {import("./app-server-protocol").ThreadStartParams} ThreadStartParams
@@ -1472,6 +1473,7 @@ export async function importExternalAgentSession(cwd, options = {}) {
   });
 }
 
+/** @param {RunAppServerTurnOptions} [options] */
 export async function runAppServerTurn(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {

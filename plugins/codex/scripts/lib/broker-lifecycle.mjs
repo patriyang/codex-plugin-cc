@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createBrokerEndpoint, parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { writeJsonFileAtomic } from "./fs.mjs";
+import { terminateProcessTree } from "./process.mjs";
 import { resolveStateDir, withBrokerPersistenceLock } from "./state.mjs";
 
 export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
@@ -175,6 +176,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
     logFile,
     env: options.env ?? process.env
   });
+  const killSpawnedBroker = options.killProcess ?? terminateProcessTree;
 
   const ready = await waitForBrokerEndpoint(endpoint, options.timeoutMs ?? 2000);
   if (!ready) {
@@ -184,7 +186,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
       logFile,
       sessionDir,
       pid: child.pid ?? null,
-      killProcess: options.killProcess ?? null
+      killProcess: killSpawnedBroker
     });
     return null;
   }
@@ -200,17 +202,16 @@ export async function ensureBrokerSession(cwd, options = {}) {
     saveBrokerSession(cwd, session, lockOptions);
   } catch {
     // A broker nobody can discover is a leak, so an unpublishable session is torn
-    // down exactly like one that never became ready. The child handle is signalled
-    // directly because production callers pass no `killProcess`, and teardown below
-    // removes the socket and pid file that would otherwise let anyone find it.
-    child.kill();
+    // down exactly like one that never became ready. The process-group terminator
+    // runs before teardown removes the socket and pid file that would otherwise let
+    // anyone find it.
     teardownBrokerSession({
       endpoint,
       pidFile,
       logFile,
       sessionDir,
       pid: child.pid ?? null,
-      killProcess: options.killProcess ?? null
+      killProcess: killSpawnedBroker
     });
     return null;
   }

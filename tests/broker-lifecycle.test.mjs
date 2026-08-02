@@ -172,6 +172,74 @@ server.listen(socketPath, () => fs.writeFileSync(${JSON.stringify(readyFile)}, "
   };
 }
 
+// A broker that starts and stays alive but never listens on its endpoint: the readiness
+// check times out while the process it spawned is still running.
+function startUnreachableBroker(t) {
+  const workspace = makeTempDir();
+  const fakeBroker = path.join(makeTempDir(), "fake-broker.mjs");
+  const startedPidFile = path.join(makeTempDir(), "started.pid");
+
+  writeExecutable(
+    fakeBroker,
+    `import fs from "node:fs";
+import process from "node:process";
+
+const args = process.argv.slice(2);
+const pidFile = args[args.indexOf("--pid-file") + 1];
+fs.writeFileSync(${JSON.stringify(startedPidFile)}, String(process.pid));
+fs.writeFileSync(pidFile, String(process.pid));
+setInterval(() => {}, 1000);
+`
+  );
+
+  const spawnedPid = () => Number(fs.readFileSync(startedPidFile, "utf8"));
+  t.after(async () => {
+    let pid;
+    try {
+      pid = spawnedPid();
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // The broker was already torn down by the test.
+    }
+    if (pid) {
+      await waitForProcessExit(pid).catch(() => {});
+    }
+  });
+
+  return {
+    workspace,
+    spawnedPid,
+    connect: (options = {}) =>
+      ensureBrokerSession(workspace, { scriptPath: fakeBroker, timeoutMs: 300, ...options })
+  };
+}
+
+test("ensureBrokerSession kills a broker that never became ready", async (t) => {
+  const broker = startUnreachableBroker(t);
+
+  const session = await broker.connect();
+
+  assert.equal(session, null);
+  await waitForProcessExit(broker.spawnedPid());
+  assert.equal(fs.existsSync(brokerStateFile(broker.workspace)), false);
+});
+
+test("ensureBrokerSession routes a never-ready broker through an injected killProcess", async (t) => {
+  const broker = startUnreachableBroker(t);
+  const killedPids = [];
+
+  const session = await broker.connect({
+    killProcess: (pid) => {
+      killedPids.push(pid);
+      process.kill(pid, "SIGTERM");
+    }
+  });
+
+  assert.equal(session, null);
+  assert.deepEqual(killedPids, [broker.spawnedPid()]);
+  await waitForProcessExit(broker.spawnedPid());
+});
+
 test("ensureBrokerSession tears down the broker when publishing the session fails", async (t) => {
   const broker = startContendedBroker(t);
   const killedPids = [];

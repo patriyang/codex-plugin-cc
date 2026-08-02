@@ -56,6 +56,42 @@ function saveState(state) {
   }
 }
 
+// Mirrors the per-model reasoning levels the real app-server advertises via
+// model/list (codex-cli 0.146.0). Deliberately narrower than the flat
+// VALID_REASONING_EFFORTS set so tests can exercise an unadvertised pair.
+const MODEL_CATALOG = [
+  { model: "gpt-5.6-sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], isDefault: true },
+  { model: "gpt-5.6-terra", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], isDefault: false },
+  { model: "gpt-5.6-luna", efforts: ["low", "medium", "high", "xhigh", "max"], isDefault: false },
+  { model: "gpt-5.5", efforts: ["low", "medium", "high", "xhigh"], isDefault: false },
+  { model: "gpt-5.4", efforts: ["low", "medium", "high", "xhigh"], isDefault: false },
+  { model: "gpt-5.3-codex-spark", efforts: ["low", "medium", "high", "xhigh"], isDefault: false }
+];
+
+function buildModelListResult() {
+  return {
+    data: MODEL_CATALOG.map((entry) => ({
+      id: entry.model,
+      model: entry.model,
+      upgrade: null,
+      upgradeInfo: null,
+      availabilityNux: null,
+      displayName: entry.model,
+      description: "",
+      hidden: false,
+      supportedReasoningEfforts: entry.efforts.map((effort) => ({ reasoningEffort: effort, description: "" })),
+      defaultReasoningEffort: "medium",
+      inputModalities: ["text"],
+      supportsPersonality: false,
+      additionalSpeedTiers: [],
+      serviceTiers: [],
+      defaultServiceTier: null,
+      isDefault: entry.isDefault
+    })),
+    nextCursor: null
+  };
+}
+
 function requiresExperimental(field, message, state) {
   if (!(field in (message.params || {}))) {
     return false;
@@ -328,6 +364,16 @@ rl.on("line", (line) => {
 
       case "account/read":
         send({ id: message.id, result: buildAccountReadResult() });
+        break;
+
+      case "model/list":
+        if (BEHAVIOR === "model-list-unsupported") {
+          send({ id: message.id, error: { code: -32601, message: "Unsupported method: model/list" } });
+          break;
+        }
+        state.modelListCalls = (state.modelListCalls || 0) + 1;
+        saveState(state);
+        send({ id: message.id, result: buildModelListResult() });
         break;
 
       case "config/read":

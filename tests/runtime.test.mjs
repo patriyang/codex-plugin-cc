@@ -669,6 +669,42 @@ test("transfer refuses to guess when the recorded session id matches several tra
   assert.match(result.stderr, /--source/);
 });
 
+test("transfer rejects recovered transcripts outside the Claude projects directory", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-recovered-outside-projects";
+  const stalePath = path.join(home, ".claude", "projects", "-repo", `${sessionId}.jsonl`);
+  const recoveredPath = path.join(
+    home,
+    ".claude",
+    "projects",
+    "-repo--worktrees-outside",
+    `${sessionId}.jsonl`
+  );
+  const outsidePath = path.join(home, "outside-session.jsonl");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
+  fs.mkdirSync(path.dirname(recoveredPath), { recursive: true });
+  fs.writeFileSync(outsidePath, "{}\n", "utf8");
+  fs.symlinkSync(outsidePath, recoveredPath);
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+
+  const result = run("node", [SCRIPT, "transfer", "--json"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      HOME: home,
+      CODEX_HOME: path.join(home, ".codex"),
+      CODEX_COMPANION_TRANSCRIPT_PATH: stalePath
+    }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Codex can import Claude sessions only from .*\.claude.*projects/);
+});
+
 test("transfer does not search when the source is explicit", () => {
   const home = makeTempDir();
   const repo = path.join(home, "repo");
@@ -720,6 +756,49 @@ test("transfer keeps the missing-file error when no matching transcript exists",
       () => resolveClaudeSessionPath(repo),
       new Error(`Claude session file not found: ${stalePath}`)
     );
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    if (previousTranscriptPath === undefined) {
+      delete process.env[TRANSCRIPT_PATH_ENV];
+    } else {
+      process.env[TRANSCRIPT_PATH_ENV] = previousTranscriptPath;
+    }
+  }
+});
+
+test("transfer lists all matching transcript paths when recovery is ambiguous", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const sessionId = "sess-ambiguous-unit";
+  const stalePath = path.join(home, ".claude", "projects", "-repo", `${sessionId}.jsonl`);
+  const candidatePaths = [
+    path.join(home, ".claude", "projects", "-repo--worktrees-a", `${sessionId}.jsonl`),
+    path.join(home, ".claude", "projects", "-repo--worktrees-b", `${sessionId}.jsonl`)
+  ];
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
+  for (const candidatePath of candidatePaths) {
+    fs.mkdirSync(path.dirname(candidatePath), { recursive: true });
+    fs.writeFileSync(candidatePath, "{}\n", "utf8");
+  }
+
+  const previousHome = process.env.HOME;
+  const previousTranscriptPath = process.env[TRANSCRIPT_PATH_ENV];
+  try {
+    process.env.HOME = home;
+    process.env[TRANSCRIPT_PATH_ENV] = stalePath;
+    assert.throws(() => resolveClaudeSessionPath(repo), (error) => {
+      assert.match(error.message, /matched several transcripts/);
+      assert.match(error.message, /--source/);
+      for (const candidatePath of candidatePaths) {
+        assert.ok(error.message.includes(candidatePath));
+      }
+      return true;
+    });
   } finally {
     if (previousHome === undefined) {
       delete process.env.HOME;

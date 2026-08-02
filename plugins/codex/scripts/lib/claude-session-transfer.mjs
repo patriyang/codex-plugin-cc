@@ -29,7 +29,7 @@ function findSessionCandidates(projects, sessionId) {
   }
 
   const filename = `${sessionId}.jsonl`;
-  return entries
+  const candidates = entries
     .filter((entry) => entry.isDirectory())
     .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
     .flatMap((entry) => {
@@ -41,11 +41,12 @@ function findSessionCandidates(projects, sessionId) {
         return [];
       }
     });
+  return [...new Set(candidates)];
 }
 
 export function resolveClaudeSessionPath(cwd, options = {}) {
   const requestedPath = options.source || process.env[TRANSCRIPT_PATH_ENV];
-  const sourceFromEnvironment = options.source === undefined && Boolean(requestedPath);
+  const sourceFromEnvironment = !options.source && Boolean(requestedPath);
   if (!requestedPath) {
     throw new Error("Could not identify the current Claude transcript. Retry with --source <path-to-claude-jsonl>.");
   }

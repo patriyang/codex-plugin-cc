@@ -10,6 +10,7 @@ import {
   LOG_FILE_ENV,
   loadBrokerSession,
   PID_FILE_ENV,
+  resolveSignalableBrokerPid,
   sendBrokerShutdown,
   teardownBrokerSession
 } from "./lib/broker-lifecycle.mjs";
@@ -97,7 +98,7 @@ async function handleSessionEnd(input) {
   const pidFile = brokerSession?.pidFile ?? null;
   const logFile = brokerSession?.logFile ?? null;
   const sessionDir = brokerSession?.sessionDir ?? null;
-  const pid = brokerSession?.pid ?? null;
+  const pid = resolveSignalableBrokerPid(brokerSession);
 
   if (brokerEndpoint) {
     await sendBrokerShutdown(brokerEndpoint);

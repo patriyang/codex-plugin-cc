@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createBrokerEndpoint, parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { writeJsonFileAtomic } from "./fs.mjs";
-import { terminateProcessTree } from "./process.mjs";
+import { getProcessStartTime, matchesRecordedProcess, terminateProcessTree } from "./process.mjs";
 import { resolveStateDir, withBrokerPersistenceLock } from "./state.mjs";
 
 export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
@@ -88,6 +88,10 @@ export function loadBrokerSession(cwd) {
   }
 }
 
+export function resolveSignalableBrokerPid(record) {
+  return matchesRecordedProcess(record?.pid, record?.pidStartTime) ? record.pid : null;
+}
+
 export function saveBrokerSession(cwd, session, options = {}) {
   return withBrokerPersistenceLock(cwd, () => {
     const stateDir = resolveStateDir(cwd);
@@ -149,8 +153,8 @@ export async function ensureBrokerSession(cwd, options = {}) {
       pidFile: existing.pidFile ?? null,
       logFile: existing.logFile ?? null,
       sessionDir: existing.sessionDir ?? null,
-      pid: existing.pid ?? null,
-      killProcess: options.killProcess ?? null
+      pid: resolveSignalableBrokerPid(existing),
+      killProcess: options.killProcess ?? terminateProcessTree
     });
     try {
       clearBrokerSession(cwd, existing, lockOptions);
@@ -191,12 +195,22 @@ export async function ensureBrokerSession(cwd, options = {}) {
     return null;
   }
 
+  let pidStartTime = null;
+  try {
+    if (Number.isFinite(child.pid)) {
+      pidStartTime = getProcessStartTime(child.pid);
+    }
+  } catch {
+    // A missing process probe must not prevent the broker from being published.
+  }
+
   const session = {
     endpoint,
     pidFile,
     logFile,
     sessionDir,
-    pid: child.pid ?? null
+    pid: child.pid ?? null,
+    pidStartTime
   };
   try {
     saveBrokerSession(cwd, session, lockOptions);

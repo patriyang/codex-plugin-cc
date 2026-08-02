@@ -1480,6 +1480,7 @@ export async function runAppServerTurn(cwd, options = {}) {
 
   return withAppServer(cwd, async (client) => {
     let threadId;
+    let resolvedModel = null;
     let resolvedSandbox = null;
     const writableRoots = options.sandbox === "workspace-write" ? resolveWorktreeWritableRoots(cwd) : undefined;
 
@@ -1492,6 +1493,7 @@ export async function runAppServerTurn(cwd, options = {}) {
         writableRoots
       });
       threadId = response.thread.id;
+      resolvedModel = response.model ?? null;
       resolvedSandbox = response.sandbox ?? null;
     } else {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
@@ -1503,12 +1505,66 @@ export async function runAppServerTurn(cwd, options = {}) {
         writableRoots
       });
       threadId = response.thread.id;
+      resolvedModel = response.model ?? null;
       resolvedSandbox = response.sandbox ?? null;
     }
 
     emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", {
       threadId
     });
+
+    let effortWarning = null;
+    // model/list is a conservative advertisement, so an omitted effort is a warning rather than a rejection.
+    if (typeof options.effort === "string" && options.effortOverride !== false) {
+      try {
+        const modelListDeadline = Date.now() + 3000;
+        const seenCursors = new Set();
+        let cursor = null;
+        let modelEntry = null;
+        // Bound pages and total time so a malformed server cannot delay the turn indefinitely.
+        for (let page = 0; page < 10 && Date.now() < modelListDeadline; page += 1) {
+          const params = { includeHidden: true };
+          if (cursor !== null) {
+            params.cursor = cursor;
+          }
+          const remainingMs = modelListDeadline - Date.now();
+          if (remainingMs <= 0) {
+            break;
+          }
+          const modelListResponse = await client.request(
+            "model/list",
+            params,
+            { timeoutMs: Math.min(3000, remainingMs) }
+          );
+          const models = modelListResponse?.data;
+          const nextCursor = modelListResponse?.nextCursor;
+          if (!Array.isArray(models) || (nextCursor !== null && typeof nextCursor !== "string")) {
+            throw new Error("Unexpected model/list response.");
+          }
+          modelEntry = typeof resolvedModel === "string"
+            ? models.find((entry) => entry?.model === resolvedModel || entry?.id === resolvedModel)
+            : null;
+          if (modelEntry || nextCursor === null || seenCursors.has(nextCursor)) {
+            break;
+          }
+          seenCursors.add(nextCursor);
+          cursor = nextCursor;
+        }
+        const advertisedEfforts = modelEntry?.supportedReasoningEfforts;
+        if (
+          modelEntry &&
+          Array.isArray(advertisedEfforts) &&
+          advertisedEfforts.every((entry) => typeof entry?.reasoningEffort === "string") &&
+          !advertisedEfforts.some((entry) => entry.reasoningEffort === options.effort)
+        ) {
+          const advertised = advertisedEfforts.map((entry) => entry.reasoningEffort).join(", ");
+          effortWarning = `${resolvedModel} does not advertise reasoning effort "${options.effort}" (advertised: ${advertised}). Codex may ignore or reject it; the effort actually used is not reported by the protocol.`;
+          emitProgress(options.onProgress, effortWarning);
+        }
+      } catch {
+        // This lookup is advisory; fail open so model discovery cannot make a working run fail.
+      }
+    }
 
     const prompt = options.prompt?.trim() || options.defaultPrompt || "";
     if (!prompt) {
@@ -1540,6 +1596,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       turn: turnState.finalTurn,
       error: turnState.error,
       stderr: cleanCodexStderr(client.stderr),
+      effortWarning,
       fileChanges: turnState.fileChanges,
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
       commandExecutions: turnState.commandExecutions

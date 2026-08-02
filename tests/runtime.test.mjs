@@ -1787,6 +1787,110 @@ test("task accepts max and ultra efforts and rejects invalid efforts", () => {
   );
 });
 
+function setupEffortRepo(behavior = "review-ok") {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, behavior);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  return { repo, binDir, statePath };
+}
+
+test("task warns when the resolved model does not advertise the requested effort", () => {
+  const { repo, binDir, statePath } = setupEffortRepo();
+
+  // gpt-5.6-luna advertises up to `max`; `ultra` is accepted by the flat syntax
+  // gate but is not a level this model offers. The run must still proceed, but
+  // the caller has to be told the effort it asked for is not on the menu.
+  const result = run("node", [SCRIPT, "task", "--model", "gpt-5.6-luna", "--effort", "ultra", "reply ultra"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /gpt-5\.6-luna/);
+  assert.match(result.stderr, /does not advertise reasoning effort "ultra"/);
+  assert.match(result.stderr, /low, medium, high, xhigh, max/);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.effort, "ultra");
+});
+
+test("task warns when the resolved model is found through paginated model/list responses", () => {
+  const { repo, binDir, statePath } = setupEffortRepo("model-list-paginated");
+
+  const result = run("node", [SCRIPT, "task", "--model", "gpt-5.6-luna", "--effort", "ultra", "reply ultra"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /gpt-5\.6-luna/);
+  assert.match(result.stderr, /does not advertise reasoning effort "ultra"/);
+  assert.match(result.stderr, /low, medium, high, xhigh, max/);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.effort, "ultra");
+});
+
+test("task stays quiet when the resolved model advertises the requested effort", () => {
+  const { repo, binDir } = setupEffortRepo();
+
+  const result = run("node", [SCRIPT, "task", "--model", "gpt-5.6-luna", "--effort", "max", "reply max"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /does not advertise reasoning effort/);
+});
+
+test("task effort validation fails open when the app-server cannot list models", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "model-list-unsupported");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  // An older app-server without model/list must not break the run or produce a
+  // warning we cannot substantiate.
+  const result = run("node", [SCRIPT, "task", "--model", "gpt-5.6-luna", "--effort", "ultra", "reply ultra"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /does not advertise reasoning effort/);
+});
+
+test("task does not query model/list when no effort override was requested", () => {
+  const { repo, binDir, statePath } = setupEffortRepo();
+
+  const result = run("node", [SCRIPT, "task", "reply default"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.modelListCalls ?? 0, 0);
+});
+
+test("deep-review warns when its model does not advertise the requested effort", () => {
+  const { repo, binDir } = setupDeepReviewRepo();
+
+  const result = run("node", [SCRIPT, "deep-review", "--model", "gpt-5.5", "--effort", "max"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /gpt-5\.5 does not advertise reasoning effort "max"/);
+});
+
 test("task logs reasoning summaries and assistant messages to the job log", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

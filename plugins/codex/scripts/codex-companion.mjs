@@ -548,6 +548,7 @@ async function executeReviewRun(request) {
     prompt,
     model: request.model,
     effort: request.effort ?? null,
+    effortOverride: request.effortOverride,
     sandbox: "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
@@ -561,6 +562,7 @@ async function executeReviewRun(request) {
     target,
     model: request.model ?? null,
     effort: request.effort ?? null,
+    effortWarning: result.effortWarning,
     threadId: result.threadId,
     context: {
       repoRoot: context.repoRoot,
@@ -631,6 +633,7 @@ async function executeTaskRun(request) {
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
+    effortOverride: request.effortOverride,
     sandbox: request.write ? "workspace-write" : "read-only",
     onProgress: request.onProgress,
     persistThread: true,
@@ -656,7 +659,8 @@ async function executeTaskRun(request) {
     threadId: result.threadId,
     rawOutput,
     touchedFiles: result.touchedFiles,
-    reasoningSummary: result.reasoningSummary
+    reasoningSummary: result.reasoningSummary,
+    effortWarning: result.effortWarning
   };
 
   return {
@@ -754,11 +758,12 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, resumeId, jobId }) {
+function buildTaskRequest({ cwd, model, effort, effortOverride, prompt, write, resumeLast, resumeId, jobId }) {
   return {
     cwd,
     model,
     effort,
+    effortOverride,
     prompt,
     write,
     resumeLast,
@@ -964,6 +969,7 @@ async function handleReviewCommand(argv, config) {
     );
   }
   const effort = normalizeReasoningEffort(options.effort) ?? config.defaultEffort ?? null;
+  const effortOverride = options.effort != null;
 
   config.validateRequest?.(target, focusText);
   const metadata = buildReviewJobMetadata(config.reviewName, target);
@@ -984,6 +990,7 @@ async function handleReviewCommand(argv, config) {
         scope: options.scope,
         model,
         effort,
+        effortOverride,
         focusText,
         reviewName: config.reviewName,
         onProgress: progress
@@ -1013,6 +1020,7 @@ async function handleTask(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   const model = resolveRequestedModel(options.model);
   const effort = resolveReasoningEffort(options.effort);
+  const effortOverride = options.effort != null;
   const prompt = readTaskPrompt(cwd, options, positionals);
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
@@ -1042,6 +1050,7 @@ async function handleTask(argv) {
       cwd,
       model,
       effort,
+      effortOverride,
       prompt,
       write,
       resumeLast,
@@ -1061,6 +1070,7 @@ async function handleTask(argv) {
         cwd,
         model,
         effort,
+        effortOverride,
         prompt,
         write,
         resumeLast,

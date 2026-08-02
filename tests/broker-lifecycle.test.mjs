@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 
 import { makeTempDir, writeExecutable } from "./helpers.mjs";
 import {
@@ -11,6 +12,7 @@ import {
   loadBrokerSession,
   saveBrokerSession
 } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+import { getProcessStartTime, isProcessAlive } from "../plugins/codex/scripts/lib/process.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 delete process.env.CLAUDE_PLUGIN_DATA;
@@ -269,4 +271,116 @@ test("ensureBrokerSession kills an unpublishable broker without a killProcess ov
   assert.equal(fs.existsSync(broker.readyFile), true);
   await waitForProcessExit(broker.spawnedPid());
   assert.equal(fs.existsSync(brokerStateFile(broker.workspace)), false);
+});
+
+test("ensureBrokerSession records the start time of the broker it publishes", async (t) => {
+  const workspace = makeTempDir();
+  const fakeBroker = path.join(makeTempDir(), "fake-broker.mjs");
+
+  writeExecutable(
+    fakeBroker,
+    `import fs from "node:fs";
+import net from "node:net";
+import process from "node:process";
+
+const args = process.argv.slice(2);
+const endpoint = args[args.indexOf("--endpoint") + 1];
+const pidFile = args[args.indexOf("--pid-file") + 1];
+const socketPath = endpoint.startsWith("unix:") ? endpoint.slice("unix:".length) : endpoint;
+fs.writeFileSync(pidFile, String(process.pid));
+net.createServer().listen(socketPath);
+`
+  );
+
+  const session = await ensureBrokerSession(workspace, { scriptPath: fakeBroker, timeoutMs: 2000 });
+  assert.notEqual(session, null);
+  t.after(async () => {
+    try {
+      process.kill(session.pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+    await waitForProcessExit(session.pid).catch(() => {});
+  });
+
+  assert.equal(typeof session.pidStartTime, "string");
+  assert.equal(session.pidStartTime, getProcessStartTime(session.pid));
+  assert.equal(loadBrokerSession(workspace).pidStartTime, session.pidStartTime);
+});
+
+// A record read off disk can be arbitrarily old, so its pid may have been recycled. The stale path
+// must prove identity before signalling: `terminateProcessTree` targets a whole process group.
+function stageStaleBrokerRecord(t, record) {
+  const workspace = makeTempDir();
+  const sessionDir = makeTempDir();
+  const deadBroker = path.join(makeTempDir(), "dead-broker.mjs");
+  writeExecutable(deadBroker, "process.exit(0);\n");
+
+  const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: workspace,
+    detached: true,
+    stdio: "ignore"
+  });
+  sleeper.unref();
+  t.after(async () => {
+    try {
+      process.kill(-sleeper.pid, "SIGKILL");
+    } catch {
+      try {
+        process.kill(sleeper.pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
+    await waitForProcessExit(sleeper.pid).catch(() => {});
+  });
+
+  saveBrokerSession(workspace, {
+    // Never listened on, so the readiness probe fails and the stale teardown runs.
+    endpoint: `unix:${path.join(sessionDir, "broker.sock")}`,
+    pidFile: path.join(sessionDir, "broker.pid"),
+    logFile: path.join(sessionDir, "broker.log"),
+    sessionDir,
+    pid: sleeper.pid,
+    ...record(sleeper.pid)
+  });
+
+  return {
+    workspace,
+    pid: sleeper.pid,
+    connect: (options = {}) =>
+      ensureBrokerSession(workspace, { scriptPath: deadBroker, timeoutMs: 300, ...options })
+  };
+}
+
+test("ensureBrokerSession does not signal a stale record whose pid was recycled", async (t) => {
+  const killedPids = [];
+  const stale = stageStaleBrokerRecord(t, () => ({ pidStartTime: "1970-01-01T00:00:00.000Z" }));
+
+  await stale.connect({ killProcess: (pid) => killedPids.push(pid) });
+
+  assert.equal(killedPids.includes(stale.pid), false);
+  assert.equal(isProcessAlive(stale.pid), true);
+});
+
+// Records written by older plugin versions carry no `pidStartTime`; with no proof of identity the
+// pid stays unsignalled, which is what this path already did before it gained a real terminator.
+test("ensureBrokerSession does not signal a stale record with no recorded start time", async (t) => {
+  const killedPids = [];
+  const stale = stageStaleBrokerRecord(t, () => ({}));
+
+  await stale.connect({ killProcess: (pid) => killedPids.push(pid) });
+
+  assert.equal(killedPids.includes(stale.pid), false);
+  assert.equal(isProcessAlive(stale.pid), true);
+});
+
+// With identity proven the stale broker is a real orphan, and leaving it alive is #67's leak on the
+// disk-record path: teardown unlinks its socket and pid file, so nothing on disk names it again.
+test("ensureBrokerSession kills a verified stale broker without a killProcess override", async (t) => {
+  const stale = stageStaleBrokerRecord(t, (pid) => ({ pidStartTime: getProcessStartTime(pid) }));
+
+  await stale.connect();
+
+  await waitForProcessExit(stale.pid);
 });

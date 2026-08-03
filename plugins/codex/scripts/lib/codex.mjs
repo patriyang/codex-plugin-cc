@@ -67,6 +67,7 @@ const QUICK_TOOL_TYPES = new Set(["mcpToolCall", "webSearch", "customToolCall", 
 const LONG_TOOL_TYPES = new Set(["commandExecution", "collabAgentToolCall"]);
 const TURN_INTERRUPT_TIMEOUT_MS = 5000;
 const INTERRUPT_TIMEOUT_MS = 10_000;
+const INTERRUPT_CLEANUP_TIMEOUT_MS = 1_000;
 
 function cleanCodexStderr(stderr) {
   return stderr
@@ -1373,9 +1374,9 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
     };
   } finally {
     if (client) {
-      // Cleanup gets a fresh budget so an exhausted operation deadline does not
-      // force-destroy an otherwise healthy connection immediately.
-      await client.close({ timeoutMs: INTERRUPT_TIMEOUT_MS }).catch(() => {});
+      // Cleanup gets a short bounded budget so healthy connections can close without
+      // stacking another full operation budget.
+      await client.close({ timeoutMs: INTERRUPT_CLEANUP_TIMEOUT_MS }).catch(() => {});
     }
   }
 }

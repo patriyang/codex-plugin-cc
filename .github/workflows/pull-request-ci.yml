@@ -38,3 +38,41 @@ jobs:
 
       - name: Run build
         run: npm run build
+
+  # The `ci` job above is the only required status check. This one exists because it
+  # was the *uncovered* platforms that produced #75: two cancel tests failed on
+  # macOS/Node 26 while CI stayed green, and the same suite ran ~6x slower there — a
+  # divergence nothing in CI could have caught. Kept separate (and not required) so a
+  # platform-specific red reports the difference without blocking merges on it.
+  platform-matrix:
+    name: Platform matrix
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            node-version: 26
+          - os: ubuntu-latest
+            node-version: 26
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Run test suite
+        run: npm test

@@ -143,6 +143,9 @@ test("implement routes Git metadata writes through scoped controller escalation"
   const escalatedCommands = [...boundary.matchAll(
     /Bash\(\{\s*command:\s*`([^`]+)`,\s*dangerouslyDisableSandbox:\s*true\s*\}\)/g
   )].map((match) => match[1]);
+  const allEscalatedCommands = [...source.matchAll(
+    /Bash\(\{\s*command:\s*`([^`]+)`,\s*dangerouslyDisableSandbox:\s*true\s*\}\)/g
+  )].map((match) => match[1]);
   for (const operation of [
     "worktree add",
     "worktree remove",
@@ -172,6 +175,25 @@ test("implement routes Git metadata writes through scoped controller escalation"
     assert.match(section, /Bash\(\{\s*command:\s*`git -C \"\$\{WORKTREE_ROOT\}\" add -A`,\s*dangerouslyDisableSandbox:\s*true\s*\}\)/);
     assert.match(section, /Bash\(\{\s*command:\s*`git -C \"\$\{WORKTREE_ROOT\}\" commit [^`]+`,\s*dangerouslyDisableSandbox:\s*true\s*\}\)/);
     assert.doesNotMatch(section, /git -C \"\$\{WORKTREE_ROOT\}\" add -A\s*&&/);
+    assert.match(section, /nonzero[^\n]*stop immediately[^\n]*ordinary Git error/i);
+    assert.match(section, /failed stage[^\n]*must not[^\n]*commit/i);
+    assert.match(section, /failed commit[^\n]*(?:must not|do not)[^\n]*(?:rev-parse|reviewer)/i);
+  }
+
+  const sequential = source.slice(
+    source.indexOf("### 4. Commit the implementer's work"),
+    source.indexOf("### 5. Dispatch spec reviewer")
+  );
+  assert.match(sequential, /command:\s*`git -C \"\$\{WORKTREE_ROOT\}\" commit -m \"Apply implementation changes\"`/);
+  assert.doesNotMatch(sequential, /command:\s*`git -C [^`]* commit [^`]*\$\{TASK_NAME\}/);
+
+  for (const snippet of [
+    /git -C \"\$\{WORKTREE_ROOT\}\" status\b/,
+    /git -C \"\$\{WORKTREE_ROOT\}\" rev-parse\b/,
+    /git -C \"\$\{WORKTREE_ROOT\}\" log\b/
+  ]) {
+    assert.match(source, snippet, `implement includes read-only Git snippet ${snippet}`);
+    assert.doesNotMatch(allEscalatedCommands.join("\n"), snippet, `read-only Git command is not escalated: ${snippet}`);
   }
 });
 

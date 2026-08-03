@@ -180,10 +180,12 @@ Bash({
 })
 
 Bash({
-  command: `git -C "${WORKTREE_ROOT}" commit -m "Task ${TASK_NUMBER}: ${TASK_NAME}"`,
+  command: `git -C "${WORKTREE_ROOT}" commit -m "Apply implementation changes"`,
   dangerouslyDisableSandbox: true
 })
 ```
+
+If either already-escalated request returns a nonzero result, stop immediately and report the ordinary Git error; classify it as a sandbox failure only when concrete permission-denied evidence is tied to protected Git metadata. A failed stage must not proceed to commit; a failed commit must not proceed to `rev-parse`, reviewers, or any later task step.
 
 Then, in a normal sandboxed Bash request, read the resulting commit:
 
@@ -318,6 +320,8 @@ Bash({
   dangerouslyDisableSandbox: true
 })
 ```
+
+If either already-escalated request returns a nonzero result, stop immediately and report the ordinary Git error; classify it as a sandbox failure only when concrete permission-denied evidence is tied to protected Git metadata. A failed stage must not proceed to commit; a failed commit must not proceed to `rev-parse`, reviewers, or any later flow step.
 
 Show the report. Propose next steps.
 

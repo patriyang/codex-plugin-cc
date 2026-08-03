@@ -316,7 +316,7 @@ Bash({
 })
 
 Bash({
-  command: `git -C "${WORKTREE_ROOT}" commit -m "<one-line summary of the plan>"`,
+  command: `git -C "${WORKTREE_ROOT}" commit -m "Apply implementation changes"`,
   dangerouslyDisableSandbox: true
 })
 ```

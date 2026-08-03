@@ -187,6 +187,15 @@ test("implement routes Git metadata writes through scoped controller escalation"
   assert.match(sequential, /command:\s*`git -C \"\$\{WORKTREE_ROOT\}\" commit -m \"Apply implementation changes\"`/);
   assert.doesNotMatch(sequential, /command:\s*`git -C [^`]* commit [^`]*\$\{TASK_NAME\}/);
 
+  const singleShot = source.slice(
+    source.indexOf("## Single-Shot Mode"),
+    source.indexOf("## Argument and Flag Reference")
+  );
+  for (const section of [sequential, singleShot]) {
+    assert.match(section, /command:\s*`git -C \"\$\{WORKTREE_ROOT\}\" commit -m \"Apply implementation changes\"`/);
+    assert.doesNotMatch(section, /command:\s*`git -C [^`]* commit [^`]*(?:\$\{[^}]+\}|<[^>]+>)/);
+  }
+
   for (const snippet of [
     /git -C \"\$\{WORKTREE_ROOT\}\" status\b/,
     /git -C \"\$\{WORKTREE_ROOT\}\" rev-parse\b/,

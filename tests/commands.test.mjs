@@ -231,6 +231,29 @@ test("privileged Git examples require one shell-escaped argument per dynamic val
   assert.doesNotMatch(boundary, /(?:<path>|<ref>|<remote>|<refspec>)/);
 });
 
+test("privileged Git examples terminate option parsing before dynamic operands", () => {
+  const source = read("commands/implement.md");
+  const boundaryStart = source.indexOf("## Git metadata writes");
+  const boundary = source.slice(boundaryStart, source.indexOf("## Plan Source", boundaryStart));
+
+  assert.match(boundary, /shell escaping and Git option termination are separate defenses/i);
+
+  for (const command of [
+    "git -C ${rootArg} worktree add -- ${pathArg} ${refArg}",
+    "git -C ${rootArg} worktree remove -- ${pathArg}",
+    "git -C ${rootArg} fetch -- ${remoteArg} ${refspecArg}",
+    "git -C ${rootArg} push -- ${remoteArg} ${refspecArg}"
+  ]) {
+    assert.ok(
+      boundary.includes("command: `" + command + "`"),
+      `${command} terminates Git option parsing before dynamic operands`
+    );
+  }
+
+  assert.match(boundary, /command: `git -C \$\{rootArg\} add -A`/);
+  assert.match(boundary, /command: `git -C \$\{rootArg\} commit -m "Apply implementation changes"`/);
+});
+
 test("implementer prompt keeps Git metadata and PR/issue mutation controller-owned", () => {
   const prompt = read("prompts/sdd-implementer.md");
   const role = prompt.slice(prompt.indexOf("<role>"), prompt.indexOf("</role>"));

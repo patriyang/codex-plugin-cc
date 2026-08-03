@@ -13,7 +13,7 @@ Raw slash-command arguments:
 
 ## Git metadata writes
 
-The controller owns Git metadata writes; implementers edit and test only. This includes linked-worktree metadata under `.git/worktrees/` and the representative operations below; apply the same rule to any other Git command that writes metadata. Shell-escape every dynamic value as exactly one shell argument before constructing an escalated command. In the examples, `shellEscape(value)` means a robust shell-argument escaping step (for example, Bash `printf '%q' "$value"`); compute each argument separately before interpolation. Values containing whitespace or shell metacharacters must remain one argument. Never interpolate raw values. `WORKTREE_ROOT`, `WORKTREE_PATH`, `REF`, `REMOTE`, and `REFSPEC` are dynamic values below; the fixed commit subject stays literal.
+The controller owns Git metadata writes; implementers edit and test only. This includes linked-worktree metadata under `.git/worktrees/` and the representative operations below; apply the same rule to any other Git command that writes metadata. Shell escaping and Git option termination are separate defenses: shell escaping keeps each dynamic value as one argument, while Git's `--` must appear before the first dynamic positional operand so a value beginning with `-` cannot be interpreted as a Git option. Shell-escape every dynamic value as exactly one shell argument before constructing an escalated command. In the examples, `shellEscape(value)` means a robust shell-argument escaping step (for example, Bash `printf '%q' "$value"`); compute each argument separately before interpolation. Values containing whitespace or shell metacharacters must remain one argument. Never interpolate raw values. `WORKTREE_ROOT`, `WORKTREE_PATH`, `REF`, `REMOTE`, and `REFSPEC` are dynamic values below; the fixed commit subject stays literal.
 
 ```typescript
 const rootArg = shellEscape(WORKTREE_ROOT)
@@ -27,12 +27,12 @@ Invoke each exact metadata-writing operation through its own `Bash` request with
 
 ```typescript
 Bash({
-  command: `git -C ${rootArg} worktree add ${pathArg} ${refArg}`,
+  command: `git -C ${rootArg} worktree add -- ${pathArg} ${refArg}`,
   dangerouslyDisableSandbox: true
 })
 
 Bash({
-  command: `git -C ${rootArg} worktree remove ${pathArg}`,
+  command: `git -C ${rootArg} worktree remove -- ${pathArg}`,
   dangerouslyDisableSandbox: true
 })
 
@@ -47,12 +47,12 @@ Bash({
 })
 
 Bash({
-  command: `git -C ${rootArg} fetch ${remoteArg} ${refspecArg}`,
+  command: `git -C ${rootArg} fetch -- ${remoteArg} ${refspecArg}`,
   dangerouslyDisableSandbox: true
 })
 
 Bash({
-  command: `git -C ${rootArg} push ${remoteArg} ${refspecArg}`,
+  command: `git -C ${rootArg} push -- ${remoteArg} ${refspecArg}`,
   dangerouslyDisableSandbox: true
 })
 ```

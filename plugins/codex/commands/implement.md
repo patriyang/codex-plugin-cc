@@ -44,7 +44,7 @@ All `git` commands in this loop, and all `codex-companion.mjs` invocations, run 
 
 ## Dispatch and Follow-Through
 
-This loop is sequential: the controller cannot take the next step until the current dispatch returns. But implementer and reviewer runs at `xhigh` routinely exceed the foreground `Bash` timeout ceiling, so a foreground call will be killed mid-run and lose the work.
+This loop is sequential: the controller cannot take the next step until the current dispatch returns. But implementer and reviewer runs at `xhigh` routinely exceed the foreground `Bash` timeout ceiling, so a foreground call will be killed mid-run and lose the run and its report.
 
 - Dispatch each step with `Bash(..., run_in_background: true)` and let Claude Code re-invoke you when the command exits. Keep foreground `Bash` only for steps you expect to finish well inside the timeout.
 - `--json` suppresses progress output to stderr, so stdout stays a single JSON blob. Reading it back with `BashOutput` still parses cleanly for `.rawOutput` and `.threadId`.
@@ -52,6 +52,8 @@ This loop is sequential: the controller cannot take the next step until the curr
 - **"Dispatched" is never a stopping point.** Do not end a turn with an unread Codex run and a note that you will check back, and do not wait to be told "continue" or "keep going". The loop advances only when you advance it.
 - Never abandon a still-running dispatch and re-dispatch on top of it. Two live Codex threads mutating `WORKTREE_ROOT` will corrupt each other's work.
 - If a dispatch exits non-zero or returns empty or malformed output, treat it as `BLOCKED` (step 3) rather than assuming the step succeeded.
+- If the harness kills a `task` dispatch, the edits are already on disk in `WORKTREE_ROOT`; only the report is lost. Recover its `threadId` with `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status -C "${WORKTREE_ROOT}" --json` (or `result <job-id> --json`), then resume that same thread with `--resume-id "${threadId}"`; do not re-dispatch fresh over the killed run's edits.
+- That resume works only for `task` dispatches, which run on persistent threads. A killed `review` (including the Final Review) has nothing to resume — review threads are ephemeral, so their recorded `threadId` does not survive the run. Reviews are read-only and change nothing on disk, so re-dispatch the review from scratch instead.
 
 ## Task Extraction
 
@@ -203,8 +205,10 @@ git -C "${WORKTREE_ROOT}" log --oneline ${ORIGINAL_BASE_SHA}..HEAD
 Dispatch one final Codex code review across the entire branch:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" review -C "${WORKTREE_ROOT}" --wait --base <original-base>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" review -C "${WORKTREE_ROOT}" --base <original-base>
 ```
+
+Dispatch this review with `Bash(..., run_in_background: true)` per **Dispatch and Follow-Through**: branch-wide review is the longest call; `review` runs in the foreground inside the script, and `--background` does not detach it — Claude Code's `run_in_background` is what does.
 
 Present its output verbatim. Then suggest `superpowers:finishing-a-development-branch` to wrap up.
 
@@ -235,6 +239,8 @@ This is the aggregate of every implementer/reviewer report and is what Claude us
 ## Single-Shot Mode (`--single-shot`)
 
 If the user passed `--single-shot`, skip task extraction and the per-task loop. Instead, wrap the full plan in the legacy implementer prompt (asking for the four-section report: Accomplished / Bugs Flagged / Deviations From Plan / Next Steps) and invoke Codex once:
+
+Dispatch this single-shot task with `Bash(..., run_in_background: true)` per **Dispatch and Follow-Through**: one Codex agent handling the entire plan is the longest possible call.
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --write --fresh [--model <m>] [--effort <e>] "<wrapped plan>"

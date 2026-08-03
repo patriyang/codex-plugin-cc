@@ -443,3 +443,77 @@ test("every command that returns stdout verbatim also surfaces the [codex] stder
   // "return nothing" on failure must not swallow a rejected-argument error.
   assert.match(agent, /Unknown option: \.\.\.`\), which is a caller mistake and must be reported/i);
 });
+
+test("implement backgrounds every long Codex dispatch, including final review and single-shot", () => {
+  // See #42. The controller is Claude Code, whose foreground Bash call is
+  // killed at the harness ceiling. `review` and a non-`--background` `task`
+  // both run in the foreground inside the script (handleReviewCommand and
+  // handleTask call runForegroundCommand), so detaching is the caller's job.
+  // Every dispatch site must point at Dispatch and Follow-Through, not just
+  // the per-task implementer.
+  const implement = read("commands/implement.md");
+
+  const finalReview = implement.slice(implement.indexOf("## Final Review"), implement.indexOf("## Aggregated Report"));
+  assert.ok(finalReview.includes("codex-companion.mjs\" review"), "final review section still dispatches a review");
+  assert.match(finalReview, /Dispatch and Follow-Through/);
+  assert.doesNotMatch(finalReview, /\s--wait\b/, "review runs in the foreground already; --wait cannot detach it");
+
+  const singleShot = implement.slice(implement.indexOf("## Single-Shot Mode"), implement.indexOf("## Argument and Flag Reference"));
+  assert.ok(singleShot.includes("codex-companion.mjs\" task"), "single-shot section still dispatches a task");
+  assert.match(singleShot, /Dispatch and Follow-Through/);
+});
+
+test("implement documents how to recover a dispatch the harness killed", () => {
+  // See #42. A killed run loses the report, never the edits: Codex writes to
+  // the worktree as it goes, and runTrackedJob's signal handler leaves the
+  // failed record carrying the threadId it had when it died (covered by
+  // runtime.test.mjs's SIGTERM test). Without this, the controller re-dispatches
+  // fresh on top of half-finished work.
+  const implement = read("commands/implement.md");
+  const dispatch = implement.slice(
+    implement.indexOf("## Dispatch and Follow-Through"),
+    implement.indexOf("## Task Extraction")
+  );
+
+  assert.match(dispatch, /killed/i);
+  // The recovery handle: read the dead job's thread id back, then resume it.
+  assert.match(dispatch, /threadId/);
+  assert.match(dispatch, /--resume-id/);
+  // The reassurance that stops a destructive re-dispatch.
+  assert.match(dispatch, /already on disk|edits are not lost|never the work/i);
+});
+
+test("implement scopes kill-recovery to task threads, since review threads are ephemeral", () => {
+  // Deep review of #42's fix: the recovery bullet sits in the section that
+  // governs every dispatch, but only `task` threads survive to be resumed.
+  // `executeTaskRun` passes `persistThread: true`; `runAppServerReview` starts
+  // its thread with a hardcoded `ephemeral: true`, so a killed final review has
+  // no thread to resume -- it must be re-dispatched instead.
+  const implement = read("commands/implement.md");
+  const dispatch = implement.slice(
+    implement.indexOf("## Dispatch and Follow-Through"),
+    implement.indexOf("## Task Extraction")
+  );
+
+  // Resume is for `task` dispatches specifically, not "a dispatch".
+  assert.match(dispatch, /`task` dispatch/i);
+  // A killed native review gets re-dispatched, and the doc says why.
+  assert.match(dispatch, /ephemeral/i);
+  assert.match(dispatch, /re-?dispatch (the|a) (final )?review|dispatch a fresh review/i);
+
+  // The lead-in must not still claim a kill loses the work; the bullet says the
+  // opposite, and the bullet is the accurate one for a `--write` task.
+  const leadIn = dispatch.slice(0, dispatch.indexOf("\n- "));
+  assert.doesNotMatch(leadIn, /lose the work/i);
+
+  // Pin the two runtime facts the guidance rests on.
+  const codex = fs.readFileSync(path.join(PLUGIN_ROOT, "scripts", "lib", "codex.mjs"), "utf8");
+  const companion = fs.readFileSync(path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs"), "utf8");
+  assert.match(companion, /persistThread: true/, "task runs must still persist their thread");
+  const reviewStart = codex.slice(codex.indexOf("export async function runAppServerReview"));
+  assert.match(
+    reviewStart.slice(0, reviewStart.indexOf("const sourceThreadId")),
+    /ephemeral: true/,
+    "review runs must still start an ephemeral thread"
+  );
+});

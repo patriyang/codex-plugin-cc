@@ -11,6 +11,46 @@ This command mirrors the behavior of `superpowers:subagent-driven-development`, 
 Raw slash-command arguments:
 `$ARGUMENTS`
 
+## Git metadata writes
+
+The controller owns Git metadata writes; implementers edit and test only. This includes linked-worktree metadata under `.git/worktrees/` and the representative operations below; apply the same rule to any other Git command that writes metadata. Invoke each exact metadata-writing operation through its own `Bash` request with `dangerouslyDisableSandbox: true` from the outset; do not first attempt it in `workspace-write` and wait for a sandbox denial.
+
+```typescript
+Bash({
+  command: `git -C "${WORKTREE_ROOT}" worktree add <path> <ref>`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C "${WORKTREE_ROOT}" worktree remove <path>`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C "${WORKTREE_ROOT}" add -A`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C "${WORKTREE_ROOT}" commit -m "<message>"`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C "${WORKTREE_ROOT}" fetch <remote> <refspec>`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C "${WORKTREE_ROOT}" push <remote> <refspec>`,
+  dangerouslyDisableSandbox: true
+})
+```
+
+Keep read-only Git commands sandboxed in normal `Bash` requests; do not add `dangerouslyDisableSandbox` to commands such as `git status`, `git diff`, or `git rev-parse`. Request approval for one exact operation per request/command. Where a reusable approval is appropriate, use a narrow reusable Git subcommand prefix such as `git -C "${WORKTREE_ROOT}" fetch`, never a bare `git` or a broad shell prefix. Do not chain metadata writes with `&&`.
+
+An already-escalated Git command that exits nonzero is an ordinary Git error, not a sandbox failure. Classify an unexpected sandbox failure only when concrete permission-denied evidence is tied to protected Git metadata, such as `.git/index` or `.git/worktrees/<name>/index.lock`.
+
 ## Mode
 
 Two execution modes:
@@ -122,7 +162,7 @@ The report body is the `.rawOutput` field of the JSON payload from step 2. Locat
 
 ### 4. Commit the implementer's work (controller commits, not Codex)
 
-The Codex implementer leaves its changes in the working tree; it does **not** commit. Codex runs inside a sandbox that cannot write the git index — in a worktree specifically, `git commit` fails with `.git/worktrees/<name>/index.lock: Operation not permitted`. You (the controller) run outside that sandbox, so you commit.
+The Codex implementer leaves its changes in the working tree; it does **not** stage or commit. The controller owns both metadata writes and uses the scoped Bash escalation described above: in a worktree, Codex cannot write `.git/worktrees/<name>/index.lock`.
 
 Check for changes:
 
@@ -131,10 +171,23 @@ git -C "${WORKTREE_ROOT}" status --porcelain
 ```
 
 - If **empty** (the implementer produced no file changes) yet it reported `DONE` → treat as `BLOCKED`: the implementer did nothing. Re-dispatch step 2 with an explicit instruction to actually make the change.
-- Otherwise, commit the changes yourself:
+- Otherwise, stage and commit the changes yourself as two separate controller requests:
+
+```typescript
+Bash({
+  command: `git -C "${WORKTREE_ROOT}" add -A`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C "${WORKTREE_ROOT}" commit -m "Task ${TASK_NUMBER}: ${TASK_NAME}"`,
+  dangerouslyDisableSandbox: true
+})
+```
+
+Then, in a normal sandboxed Bash request, read the resulting commit:
 
 ```bash
-git -C "${WORKTREE_ROOT}" add -A && git -C "${WORKTREE_ROOT}" commit -m "Task ${TASK_NUMBER}: ${TASK_NAME}"
 git -C "${WORKTREE_ROOT}" rev-parse HEAD
 ```
 
@@ -248,11 +301,22 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROO
 
 (Same `--model`/`--effort` resolution as sequential mode — default `--model gpt-5.6-luna`, `--effort xhigh` unless the user passed one.)
 
-The single-shot Codex agent leaves its changes uncommitted too (same sandbox limitation). After it returns, commit the working-tree changes yourself:
+The single-shot Codex agent leaves its changes unstaged and uncommitted too (same sandbox limitation). After it returns, stage and commit the working-tree changes yourself as two separate controller requests:
 
 ```bash
 git -C "${WORKTREE_ROOT}" status --porcelain   # if empty, Codex made no changes — report that instead of committing
-git -C "${WORKTREE_ROOT}" add -A && git -C "${WORKTREE_ROOT}" commit -m "<one-line summary of the plan>"
+```
+
+```typescript
+Bash({
+  command: `git -C "${WORKTREE_ROOT}" add -A`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C "${WORKTREE_ROOT}" commit -m "<one-line summary of the plan>"`,
+  dangerouslyDisableSandbox: true
+})
 ```
 
 Show the report. Propose next steps.

@@ -134,6 +134,57 @@ test("implement command defaults to gpt-5.6-luna at xhigh effort", () => {
   assert.match(readme, /`\/codex:implement` uses `gpt-5\.6-luna` with `xhigh` reasoning effort/);
 });
 
+test("implement routes Git metadata writes through scoped controller escalation", () => {
+  const source = read("commands/implement.md");
+  const boundaryStart = source.indexOf("## Git metadata writes");
+  assert.notEqual(boundaryStart, -1, "implement documents the Git metadata boundary");
+  const boundary = source.slice(boundaryStart, source.indexOf("## Plan Source", boundaryStart));
+
+  const escalatedCommands = [...boundary.matchAll(
+    /Bash\(\{\s*command:\s*`([^`]+)`,\s*dangerouslyDisableSandbox:\s*true\s*\}\)/g
+  )].map((match) => match[1]);
+  for (const operation of [
+    "worktree add",
+    "worktree remove",
+    "add -A",
+    "commit",
+    "fetch",
+    "push"
+  ]) {
+    assert.ok(
+      escalatedCommands.some((command) => command.startsWith(`git -C \"\${WORKTREE_ROOT}\" ${operation}`)),
+      `${operation} is a directly escalated controller operation`
+    );
+  }
+
+  assert.match(boundary, /from the outset|before the first attempt/i);
+  assert.match(boundary, /read-only Git commands[^\n]*sandboxed/i);
+  assert.match(boundary, /one exact operation per (?:approval )?request|one exact operation per command/i);
+  assert.match(boundary, /narrow reusable Git subcommand prefix/i);
+  assert.match(boundary, /do not chain[^\n]*metadata writes[^\n]*&&/i);
+  assert.match(boundary, /nonzero[^\n]*ordinary Git (?:failure|error)/i);
+  assert.match(boundary, /concrete permission-denied evidence[^\n]*protected Git metadata/i);
+
+  for (const section of [
+    source.slice(source.indexOf("### 4. Commit the implementer's work"), source.indexOf("### 5. Dispatch spec reviewer")),
+    source.slice(source.indexOf("## Single-Shot Mode"), source.indexOf("## Argument and Flag Reference"))
+  ]) {
+    assert.match(section, /Bash\(\{\s*command:\s*`git -C \"\$\{WORKTREE_ROOT\}\" add -A`,\s*dangerouslyDisableSandbox:\s*true\s*\}\)/);
+    assert.match(section, /Bash\(\{\s*command:\s*`git -C \"\$\{WORKTREE_ROOT\}\" commit [^`]+`,\s*dangerouslyDisableSandbox:\s*true\s*\}\)/);
+    assert.doesNotMatch(section, /git -C \"\$\{WORKTREE_ROOT\}\" add -A\s*&&/);
+  }
+});
+
+test("implementer prompt keeps Git metadata and PR/issue mutation controller-owned", () => {
+  const prompt = read("prompts/sdd-implementer.md");
+  const role = prompt.slice(prompt.indexOf("<role>"), prompt.indexOf("</role>"));
+  const escalation = prompt.slice(prompt.indexOf("<escalation>"), prompt.indexOf("</escalation>"));
+
+  assert.match(role, /do not stage[\s\S]*commit[\s\S]*push[\s\S]*mutate (?:pull requests?|PRs?) or issues[\s\S]*mutate worktrees/i);
+  assert.match(escalation, /permission blocker/i);
+  assert.match(escalation, /exact command, path, error, and intended effect/i);
+});
+
 test("continue is not exposed as a user-facing command", () => {
   const commandFiles = fs.readdirSync(path.join(PLUGIN_ROOT, "commands")).sort();
   assert.deepEqual(commandFiles, [

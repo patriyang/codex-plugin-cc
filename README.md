@@ -230,7 +230,7 @@ Examples:
 ```
 
 > [!NOTE]
-> The default sequential mode is write-capable. Codex edits files; Claude commits each completed task (Codex's sandbox cannot write the git index, especially in worktrees). It works best from a feature branch with a clean working tree.
+> The default sequential mode is write-capable. Codex edits files; Claude commits each completed task through scoped controller Git metadata escalation (Codex's sandbox cannot write the git index, especially in worktrees). It works best from a feature branch with a clean working tree.
 
 ### `/codex:transfer`
 

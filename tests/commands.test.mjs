@@ -443,3 +443,42 @@ test("every command that returns stdout verbatim also surfaces the [codex] stder
   // "return nothing" on failure must not swallow a rejected-argument error.
   assert.match(agent, /Unknown option: \.\.\.`\), which is a caller mistake and must be reported/i);
 });
+
+test("implement backgrounds every long Codex dispatch, including final review and single-shot", () => {
+  // See #42. The controller is Claude Code, whose foreground Bash call is
+  // killed at the harness ceiling. `review` and a non-`--background` `task`
+  // both run in the foreground inside the script (handleReviewCommand and
+  // handleTask call runForegroundCommand), so detaching is the caller's job.
+  // Every dispatch site must point at Dispatch and Follow-Through, not just
+  // the per-task implementer.
+  const implement = read("commands/implement.md");
+
+  const finalReview = implement.slice(implement.indexOf("## Final Review"), implement.indexOf("## Aggregated Report"));
+  assert.ok(finalReview.includes("codex-companion.mjs\" review"), "final review section still dispatches a review");
+  assert.match(finalReview, /Dispatch and Follow-Through/);
+  assert.doesNotMatch(finalReview, /\s--wait\b/, "review runs in the foreground already; --wait cannot detach it");
+
+  const singleShot = implement.slice(implement.indexOf("## Single-Shot Mode"), implement.indexOf("## Argument and Flag Reference"));
+  assert.ok(singleShot.includes("codex-companion.mjs\" task"), "single-shot section still dispatches a task");
+  assert.match(singleShot, /Dispatch and Follow-Through/);
+});
+
+test("implement documents how to recover a dispatch the harness killed", () => {
+  // See #42. A killed run loses the report, never the edits: Codex writes to
+  // the worktree as it goes, and runTrackedJob's signal handler leaves the
+  // failed record carrying the threadId it had when it died (covered by
+  // runtime.test.mjs's SIGTERM test). Without this, the controller re-dispatches
+  // fresh on top of half-finished work.
+  const implement = read("commands/implement.md");
+  const dispatch = implement.slice(
+    implement.indexOf("## Dispatch and Follow-Through"),
+    implement.indexOf("## Task Extraction")
+  );
+
+  assert.match(dispatch, /killed/i);
+  // The recovery handle: read the dead job's thread id back, then resume it.
+  assert.match(dispatch, /threadId/);
+  assert.match(dispatch, /--resume-id/);
+  // The reassurance that stops a destructive re-dispatch.
+  assert.match(dispatch, /already on disk|edits are not lost|never the work/i);
+});

@@ -279,3 +279,62 @@ test("does not require a version bump for manifest-only changes", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /No plugin source changes found/);
 });
+
+// See #71. The PR-time gate only runs on `pull_request` events, so two PRs cut
+// from the same commit can both go green before either merges, and nothing
+// re-checks the loser after the winner lands. The post-merge run on `main` is
+// what catches the collision that ships.
+test("catches a collision that shipped when the post-merge check runs on main", () => {
+  const { base, root } = makeRepo();
+
+  assert.equal(run("git", ["checkout", "-b", "pr-a", base], { cwd: root }).status, 0);
+  writeFile(root, "plugins/codex/scripts/codex-companion.mjs", "console.log('change from pr-a');\n");
+  writeVersionFiles(root, "1.0.1");
+  const prA = commitAll(root, "change plugin source in pr-a");
+
+  assert.equal(run("git", ["checkout", "-b", "pr-b", base], { cwd: root }).status, 0);
+  writeFile(root, "plugins/codex/scripts/codex-companion.mjs", "console.log('change from pr-b');\n");
+  writeVersionFiles(root, "1.0.1");
+  const prB = commitAll(root, "change plugin source in pr-b");
+
+  // Both PRs run CI while main is still at `base`, so neither collides yet.
+  assert.equal(run("git", ["checkout", "main"], { cwd: root }).status, 0);
+  for (const head of [prA, prB]) {
+    const ci = run("node", [SCRIPT, "--root", root, "--base", base, "--base-tip", "main", "--head", head], {
+      cwd: ROOT
+    });
+    assert.equal(ci.status, 0, ci.stderr);
+  }
+
+  assert.equal(run("git", ["merge", "--ff-only", prA], { cwd: root }).status, 0);
+  const mainAfterA = run("git", ["rev-parse", "HEAD"], { cwd: root }).stdout.trim();
+
+  // B merges on its still-green check; main now publishes 1.0.1 with B's source.
+  assert.equal(run("git", ["merge", "-X", "theirs", "--no-ff", "-m", "merge pr-b", prB], { cwd: root }).status, 0);
+  const mainAfterB = run("git", ["rev-parse", "HEAD"], { cwd: root }).stdout.trim();
+
+  const postMerge = run("node", [SCRIPT, "--root", root, "--base", mainAfterA, "--head", mainAfterB], {
+    cwd: ROOT
+  });
+
+  assert.notEqual(postMerge.status, 0, "post-merge check must fail on the shipped collision");
+  assert.match(postMerge.stderr, /Plugin source changed without the required version bump/);
+  assert.match(postMerge.stderr, /plugins\/codex\/scripts\/codex-companion\.mjs/);
+});
+
+test("main version guard workflow re-runs the check against the previous main tip", () => {
+  const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "main-version-guard.yml"), "utf8");
+
+  // Must fire on pushes to main -- the event the pull_request gate cannot see.
+  assert.match(workflow, /on:\s*\n\s*push:\s*\n\s*branches:\s*\n\s*-\s*main/);
+  assert.match(workflow, /check-plugin-version-bump/);
+  // The comparison that catches the collision: previous main tip -> new main tip.
+  assert.match(workflow, /github\.event\.before/);
+  assert.match(workflow, /github\.sha/);
+  // A first push or a force-push leaves no reachable previous tip; skip instead
+  // of failing the guard for a reason unrelated to versioning.
+  assert.match(workflow, /0{40}/);
+  assert.match(workflow, /rev-parse --verify/);
+  // The check needs history on both sides of the comparison.
+  assert.match(workflow, /fetch-depth: 0/);
+});

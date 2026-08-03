@@ -2644,7 +2644,6 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
 
   assert.equal(launched.status, 0, launched.stderr);
   const launchPayload = JSON.parse(launched.stdout);
-  const startedAt = Date.now();
   const waitedStatus = run(
     "node",
     [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
@@ -2655,9 +2654,12 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
   );
 
   assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
-  const elapsedMs = Date.now() - startedAt;
-  assert.ok(elapsedMs < 4500, `expected tool budget to fire before turn budget, elapsed ${elapsedMs}ms`);
   const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.match(
+    fs.readFileSync(waitedPayload.job.logFile, "utf8"),
+    /Codex turn stalled \(tool-in-flight\)/,
+    "expected the tool budget to fire, not the turn backstop"
+  );
   assert.equal(waitedPayload.job.id, launchPayload.jobId);
   assert.equal(waitedPayload.job.status, "failed");
 
@@ -2703,18 +2705,20 @@ test("task watchdog caps a quick tool that stays busy but never completes", asyn
   const launched = run("node", [SCRIPT, "task", "--background", "--json", "run the chatty tool"], { cwd: repo, env });
   assert.equal(launched.status, 0, launched.stderr);
   const launchPayload = JSON.parse(launched.stdout);
-  const startedAt = Date.now();
   const waitedStatus = run(
     "node",
     [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
     { cwd: repo, env }
   );
   assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
-  const elapsedMs = Date.now() - startedAt;
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
   // Fires on the wall-clock cap (800ms) even though the tool streams activity every 150ms, so the
   // inactivity budget (5000ms) never trips.
-  assert.ok(elapsedMs < 4500, `expected wall-clock cap to fire despite streaming, elapsed ${elapsedMs}ms`);
-  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.match(
+    fs.readFileSync(waitedPayload.job.logFile, "utf8"),
+    /Codex turn stalled \(tool-max-duration\)/,
+    "expected the wall-clock cap to fire despite streaming"
+  );
   assert.equal(waitedPayload.job.status, "failed");
 
   const fakeState = await waitFor(() => {
@@ -2793,20 +2797,22 @@ test("task watchdog keeps a per-tool deadline when an overlapping tool completes
   const launched = run("node", [SCRIPT, "task", "--background", "--json", "run two overlapping tools"], { cwd: repo, env });
   assert.equal(launched.status, 0, launched.stderr);
   const launchPayload = JSON.parse(launched.stdout);
-  const startedAt = Date.now();
   const waitedStatus = run(
     "node",
     [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
     { cwd: repo, env }
   );
   assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
-  const elapsedMs = Date.now() - startedAt;
   const waitedPayload = JSON.parse(waitedStatus.stdout);
   assert.equal(waitedPayload.job.status, "failed");
   // Tool A's 800ms wall-clock cap must fire even though tool B completed first. If B's completion
   // had cleared A's deadline (the single-slot regression), A would instead ride the 5000ms tool
   // inactivity budget and report tool-in-flight, not tool-max.
-  assert.ok(elapsedMs < 4500, `expected A's wall-clock cap to fire despite B completing, elapsed ${elapsedMs}ms`);
+  assert.match(
+    fs.readFileSync(waitedPayload.job.logFile, "utf8"),
+    /Codex turn stalled \(tool-max-duration\)/,
+    "expected A's wall-clock cap to fire despite B completing"
+  );
   const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
   assert.equal(stored.status, 0, stored.stderr);
   const storedPayload = JSON.parse(stored.stdout);
@@ -2832,19 +2838,21 @@ test("task does not infer success when a tool starts and hangs after the final a
   const launched = run("node", [SCRIPT, "task", "--background", "--json", "answer then hang on a tool"], { cwd: repo, env });
   assert.equal(launched.status, 0, launched.stderr);
   const launchPayload = JSON.parse(launched.stdout);
-  const startedAt = Date.now();
   const waitedStatus = run(
     "node",
     [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
     { cwd: repo, env }
   );
   assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
-  const elapsedMs = Date.now() - startedAt;
   const waitedPayload = JSON.parse(waitedStatus.stdout);
   // A tool that starts after the final answer must block inferred completion; the turn fails via
   // the watchdog instead of racing to an inferred success.
   assert.equal(waitedPayload.job.status, "failed", waitedStatus.stdout);
-  assert.ok(elapsedMs < 4500, `expected the tool budget to fire, elapsed ${elapsedMs}ms`);
+  assert.match(
+    fs.readFileSync(waitedPayload.job.logFile, "utf8"),
+    /Codex turn stalled \(tool-in-flight\)/,
+    "expected the tool budget to fire, not the turn backstop"
+  );
   const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
   assert.equal(stored.status, 0, stored.stderr);
   const storedPayload = JSON.parse(stored.stdout);
@@ -2871,19 +2879,21 @@ test("task does not let a top-level error over one of two tools infer success", 
   const launched = run("node", [SCRIPT, "task", "--background", "--json", "two tools, one errors"], { cwd: repo, env });
   assert.equal(launched.status, 0, launched.stderr);
   const launchPayload = JSON.parse(launched.stdout);
-  const startedAt = Date.now();
   const waitedStatus = run(
     "node",
     [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
     { cwd: repo, env }
   );
   assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
-  const elapsedMs = Date.now() - startedAt;
   const waitedPayload = JSON.parse(waitedStatus.stdout);
   // A top-level error with two overlapping tools must not clear the unrelated one or let inference
   // finalize success; the still-hung tool's watchdog fails the turn instead.
   assert.equal(waitedPayload.job.status, "failed", waitedStatus.stdout);
-  assert.ok(elapsedMs < 4500, `expected the remaining tool's watchdog to fire, elapsed ${elapsedMs}ms`);
+  assert.match(
+    fs.readFileSync(waitedPayload.job.logFile, "utf8"),
+    /Codex turn stalled \(tool-in-flight\)/,
+    "expected the remaining tool's watchdog to fire, not the turn backstop"
+  );
 });
 
 test("task does not infer completion when a tool errors before the final answer", async () => {

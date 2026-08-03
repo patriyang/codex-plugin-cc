@@ -13,43 +13,55 @@ Raw slash-command arguments:
 
 ## Git metadata writes
 
-The controller owns Git metadata writes; implementers edit and test only. This includes linked-worktree metadata under `.git/worktrees/` and the representative operations below; apply the same rule to any other Git command that writes metadata. Invoke each exact metadata-writing operation through its own `Bash` request with `dangerouslyDisableSandbox: true` from the outset; do not first attempt it in `workspace-write` and wait for a sandbox denial.
+The controller owns Git metadata writes; implementers edit and test only. This includes linked-worktree metadata under `.git/worktrees/` and the representative operations below; apply the same rule to any other Git command that writes metadata. Shell-escape every dynamic value as exactly one shell argument before constructing an escalated command. In the examples, `shellEscape(value)` means a robust shell-argument escaping step (for example, Bash `printf '%q' "$value"`); compute each argument separately before interpolation. Values containing whitespace or shell metacharacters must remain one argument. Never interpolate raw values. `WORKTREE_ROOT`, `WORKTREE_PATH`, `REF`, `REMOTE`, and `REFSPEC` are dynamic values below; the fixed commit subject stays literal.
+
+```typescript
+const rootArg = shellEscape(WORKTREE_ROOT)
+const pathArg = shellEscape(WORKTREE_PATH)
+const refArg = shellEscape(REF)
+const remoteArg = shellEscape(REMOTE)
+const refspecArg = shellEscape(REFSPEC)
+```
+
+Invoke each exact metadata-writing operation through its own `Bash` request with `dangerouslyDisableSandbox: true` from the outset; do not first attempt it in `workspace-write` and wait for a sandbox denial.
 
 ```typescript
 Bash({
-  command: `git -C "${WORKTREE_ROOT}" worktree add <path> <ref>`,
+  command: `git -C ${rootArg} worktree add ${pathArg} ${refArg}`,
   dangerouslyDisableSandbox: true
 })
 
 Bash({
-  command: `git -C "${WORKTREE_ROOT}" worktree remove <path>`,
+  command: `git -C ${rootArg} worktree remove ${pathArg}`,
   dangerouslyDisableSandbox: true
 })
 
 Bash({
-  command: `git -C "${WORKTREE_ROOT}" add -A`,
+  command: `git -C ${rootArg} add -A`,
   dangerouslyDisableSandbox: true
 })
 
 Bash({
-  command: `git -C "${WORKTREE_ROOT}" commit -m "<message>"`,
+  command: `git -C ${rootArg} commit -m "Apply implementation changes"`,
   dangerouslyDisableSandbox: true
 })
 
 Bash({
-  command: `git -C "${WORKTREE_ROOT}" fetch <remote> <refspec>`,
+  command: `git -C ${rootArg} fetch ${remoteArg} ${refspecArg}`,
   dangerouslyDisableSandbox: true
 })
 
 Bash({
-  command: `git -C "${WORKTREE_ROOT}" push <remote> <refspec>`,
+  command: `git -C ${rootArg} push ${remoteArg} ${refspecArg}`,
   dangerouslyDisableSandbox: true
 })
 ```
 
-Keep read-only Git commands sandboxed in normal `Bash` requests; do not add `dangerouslyDisableSandbox` to commands such as `git status`, `git diff`, or `git rev-parse`. Request approval for one exact operation per request/command. Where a reusable approval is appropriate, use a narrow reusable Git subcommand prefix such as `git -C "${WORKTREE_ROOT}" fetch`, never a bare `git` or a broad shell prefix. Do not chain metadata writes with `&&`.
+Keep read-only Git commands sandboxed in normal `Bash` requests; do not add `dangerouslyDisableSandbox` to commands such as `git status`, `git diff`, or `git rev-parse`. Request approval for one exact operation per request/command. Where a reusable approval is appropriate, use a narrow reusable Git subcommand prefix such as the escaped `git -C ${rootArg} fetch`, never a bare `git` or a broad shell prefix. Do not chain metadata writes with `&&`.
 
 An already-escalated Git command that exits nonzero is an ordinary Git error, not a sandbox failure. Classify an unexpected sandbox failure only when concrete permission-denied evidence is tied to protected Git metadata, such as `.git/index` or `.git/worktrees/<name>/index.lock`.
+
+A denied escalation is the real blocker before execution: stop immediately, report the denied exact operation (including its target), and do not retry unchanged. Do not fall back to the doomed sandbox path.
 
 ## Mode
 
@@ -175,12 +187,12 @@ git -C "${WORKTREE_ROOT}" status --porcelain
 
 ```typescript
 Bash({
-  command: `git -C "${WORKTREE_ROOT}" add -A`,
+  command: `git -C ${rootArg} add -A`,
   dangerouslyDisableSandbox: true
 })
 
 Bash({
-  command: `git -C "${WORKTREE_ROOT}" commit -m "Apply implementation changes"`,
+  command: `git -C ${rootArg} commit -m "Apply implementation changes"`,
   dangerouslyDisableSandbox: true
 })
 ```
@@ -311,12 +323,12 @@ git -C "${WORKTREE_ROOT}" status --porcelain   # if empty, Codex made no changes
 
 ```typescript
 Bash({
-  command: `git -C "${WORKTREE_ROOT}" add -A`,
+  command: `git -C ${rootArg} add -A`,
   dangerouslyDisableSandbox: true
 })
 
 Bash({
-  command: `git -C "${WORKTREE_ROOT}" commit -m "Apply implementation changes"`,
+  command: `git -C ${rootArg} commit -m "Apply implementation changes"`,
   dangerouslyDisableSandbox: true
 })
 ```

@@ -65,10 +65,10 @@ async function waitForProcessExit(pid) {
   });
 }
 
-async function startTestBroker(t, onRequest) {
+async function startTestBroker(t, onRequest, { allowHalfOpen = false } = {}) {
   const socketPath = path.join(makeTempDir(), "app-server.sock");
   const sockets = new Set();
-  const server = net.createServer((socket) => {
+  const server = net.createServer({ allowHalfOpen }, (socket) => {
     sockets.add(socket);
     socket.setEncoding("utf8");
     let buffer = "";
@@ -4518,6 +4518,82 @@ test("cancel completes and persists cancellation when turn interrupt never repli
   assert.equal(payload.turnInterruptAttempted, true);
   assert.equal(payload.turnInterrupted, false);
   assert.match(payload.turnInterruptDetail, /timed out after \d+ms/);
+  const stored = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
+  assert.equal(stored.status, "cancelled");
+});
+
+test("cancel stays within one interrupt budget when the broker never releases the socket", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  ensureStateDir(repo);
+
+  // A wedged broker answers initialize, never answers turn/interrupt, and never acts on the FIN
+  // the client sends while closing. The interrupt deadline and the cleanup deadline must not
+  // stack: cancel has to stay inside roughly one interrupt budget, not two.
+  const endpoint = await startTestBroker(
+    t,
+    (socket, message) => {
+      if (message.method === "initialize") {
+        socket.write(`${JSON.stringify({ id: message.id, result: {} })}\n`);
+      }
+    },
+    { allowHalfOpen: true }
+  );
+  const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: repo,
+    detached: true,
+    stdio: "ignore"
+  });
+  sleeper.unref();
+  t.after(() => {
+    try {
+      process.kill(-sleeper.pid, "SIGKILL");
+    } catch {
+      try {
+        process.kill(sleeper.pid, "SIGKILL");
+      } catch {
+        // Ignore missing process.
+      }
+    }
+  });
+
+  const jobId = "task-halfopen-interrupt-timeout";
+  const logFile = resolveJobLogFile(repo, jobId);
+  fs.writeFileSync(logFile, "", "utf8");
+  const job = {
+    id: jobId,
+    status: "running",
+    title: "Codex Task",
+    jobClass: "task",
+    pid: sleeper.pid,
+    logFile,
+    threadId: "thr_halfopen_timeout",
+    turnId: "turn_halfopen_timeout"
+  };
+  writeJobFile(repo, jobId, job);
+  upsertJob(repo, job);
+
+  const startedAt = Date.now();
+  const child = spawn(process.execPath, [SCRIPT, "cancel", jobId, "--json"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_COMPANION_APP_SERVER_ENDPOINT: endpoint
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const result = await waitForChildExit(child, 20000);
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.signal, null);
+  assert.ok(elapsedMs < 15000, `cancel must not stack two interrupt budgets, elapsed ${elapsedMs}ms`);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.status, "cancelled");
+  assert.equal(payload.turnInterruptAttempted, true);
+  assert.equal(payload.turnInterrupted, false);
   const stored = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
   assert.equal(stored.status, "cancelled");
 });

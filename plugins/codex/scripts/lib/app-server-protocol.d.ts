@@ -24,7 +24,7 @@ import type {
   Turn,
   TurnInterruptParams,
   TurnInterruptResponse,
-  TurnStartParams,
+  TurnStartParams as RawTurnStartParams,
   TurnStartResponse,
   UserInput
 } from "../../.generated/app-server-types/v2/index.js";
@@ -40,12 +40,15 @@ export type {
   ThreadListParams,
   Turn,
   TurnInterruptParams,
-  TurnStartParams,
   UserInput
 };
 
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
 export type ThreadStartParams = Omit<RawThreadStartParams, "persistExtendedHistory">;
 export type ThreadResumeParams = Omit<RawThreadResumeParams, "persistExtendedHistory">;
+type TurnStartParamsWithoutEffort = Omit<RawTurnStartParams, "effort">;
+export type TurnStartParams = TurnStartParamsWithoutEffort & { effort?: ReasoningEffort | null };
 
 export interface CodexAppServerClientOptions {
   env?: NodeJS.ProcessEnv;
@@ -55,6 +58,11 @@ export interface CodexAppServerClientOptions {
   disableBroker?: boolean;
   reuseExistingBroker?: boolean;
   timeoutMs?: number;
+}
+
+export interface RunAppServerTurnOptions {
+  effort?: ReasoningEffort | null;
+  [key: string]: any;
 }
 
 export interface AppServerMethodMap {

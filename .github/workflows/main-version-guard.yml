@@ -1,0 +1,47 @@
+name: Main Version Guard
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  version-guard:
+    name: Main version guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check plugin version bump
+        env:
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            echo "Skipping version check: no usable previous main tip."
+            exit 0
+          fi
+
+          if ! git rev-parse --verify --quiet "$BEFORE^{commit}" >/dev/null; then
+            echo "Skipping version check: previous main tip is not reachable in the fetched history."
+            exit 0
+          fi
+
+          npm run check-plugin-version-bump -- --base "$BEFORE" --head "$SHA"

@@ -192,7 +192,7 @@ Ask Codex to redesign the database connection to be more resilient.
 
 **Notes:**
 
-- if you do not pass `--model` or `--effort`, the plugin uses `gpt-5.5` with `high` reasoning effort.
+- if you do not pass `--model` or `--effort`, `/codex:rescue` uses `gpt-5.5` with `high` reasoning effort. Other commands pin their own defaults — see [Common Configurations](#common-configurations).
 - if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
 - follow-up rescue requests can continue the latest Codex task in the repo
 - for `task` and the review commands, flags must precede the prompt/focus text (anything after it is literal, not a flag); `/codex:status`, `/codex:result`, and `/codex:cancel` instead take their job id first and flags after.
@@ -351,9 +351,19 @@ The Codex plugin wraps the [Codex app server](https://developers.openai.com/code
 
 ### Common Configurations
 
-The plugin passes `gpt-5.5` as the default model and `high` as the default reasoning effort for task-style Codex turns. Use `--model` or `--effort` on a plugin command to override that for one run.
+Defaults are per command, not global. Use `--model` or `--effort` on a plugin command to override them for one run.
 
-> **Note:** these defaults are applied before Codex reads `config.toml`, so the `model` / `model_reasoning_effort` keys in your `.codex/config.toml` are only used if you also pass `--model` or `--effort` (or omit them and accept these defaults). To change the per-project *default* without flags, you'd need to edit the plugin's `DEFAULT_CODEX_MODEL` / `DEFAULT_CODEX_REASONING_EFFORT`.
+| Command | Default model | Default effort |
+| --- | --- | --- |
+| `/codex:rescue` (and delegated tasks) | `gpt-5.5` | `high` |
+| `/codex:review` | `gpt-5.5` | *(none sent — `--effort` is rejected)* |
+| `/codex:adversarial-review` | `gpt-5.5` | *(none sent — Codex's own default)* |
+| `/codex:deep-review` | `gpt-5.6-sol` | `medium` |
+| `/codex:implement` | `gpt-5.6-luna` | `xhigh` |
+
+`gpt-5.5` / `high` is the runtime default that applies when a command pins nothing of its own. `/codex:deep-review` and `/codex:implement` pin their own model and effort, so they do not run on `gpt-5.5`. Passing `spark` to `--model` maps to `gpt-5.3-codex-spark`.
+
+> **Note:** these defaults are applied before Codex reads `config.toml`, so the `model` / `model_reasoning_effort` keys in your `.codex/config.toml` are only used if you also pass `--model` or `--effort` (or omit them and accept these defaults). To change the runtime *default* without flags, you'd need to edit the plugin's `DEFAULT_CODEX_MODEL` / `DEFAULT_CODEX_REASONING_EFFORT`; the per-command defaults above are pinned separately at each command's own call site.
 
 Your configuration will be picked up based on:
 
@@ -365,7 +375,7 @@ Check out the Codex docs for more [configuration options](https://developers.ope
 
 ### Moving The Work Over To Codex
 
-Delegated tasks and any [stop gate](#what-does-the-review-gate-do) run can also be directly resumed inside Codex by running `codex resume` either with the specific session ID you received from running `/codex:result` or `/codex:status` or by selecting it from the list.
+Delegated tasks and any [stop gate](#enabling-review-gate) run can also be directly resumed inside Codex by running `codex resume` either with the specific session ID you received from running `/codex:result` or `/codex:status` or by selecting it from the list.
 
 This way you can review the Codex work or continue the work there.
 

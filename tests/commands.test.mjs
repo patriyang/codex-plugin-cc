@@ -299,6 +299,33 @@ test("implement stops on a denied escalation without retry or sandbox fallback",
   assert.match(boundary, /do not fall back to the doomed sandbox path/i);
 });
 
+test("README documents per-command model/effort defaults, not one global default", () => {
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const runtime = fs.readFileSync(
+    path.join(PLUGIN_ROOT, "scripts/codex-companion.mjs"),
+    "utf8"
+  );
+
+  // The runtime default only applies to commands that pin nothing of their own.
+  assert.match(runtime, /const DEFAULT_CODEX_MODEL = "gpt-5\.5";/);
+  assert.match(runtime, /const DEFAULT_CODEX_REASONING_EFFORT = "high";/);
+  assert.match(runtime, /defaultModel: "gpt-5\.6-sol"/);
+  assert.match(runtime, /defaultEffort: "medium"/);
+
+  // Every command row in the defaults table.
+  assert.match(readme, /\| `\/codex:rescue` \(and delegated tasks\) \| `gpt-5\.5` \| `high` \|/);
+  assert.match(readme, /\| `\/codex:review` \| `gpt-5\.5` \|/);
+  assert.match(readme, /\| `\/codex:adversarial-review` \| `gpt-5\.5` \|/);
+  assert.match(readme, /\| `\/codex:deep-review` \| `gpt-5\.6-sol` \| `medium` \|/);
+  assert.match(readme, /\| `\/codex:implement` \| `gpt-5\.6-luna` \| `xhigh` \|/);
+
+  // The old "one global default" claim must not come back.
+  assert.doesNotMatch(
+    readme,
+    /The plugin passes `gpt-5\.5` as the default model and `high` as the default reasoning effort/
+  );
+});
+
 test("continue is not exposed as a user-facing command", () => {
   const commandFiles = fs.readdirSync(path.join(PLUGIN_ROOT, "commands")).sort();
   assert.deepEqual(commandFiles, [
@@ -388,7 +415,7 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(runtimeSkill, /Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own/i);
   assert.match(runtimeSkill, /If the Bash call fails or Codex cannot be invoked, return nothing/i);
   assert.match(readme, /`codex:codex-rescue` subagent/i);
-  assert.match(readme, /if you do not pass `--model` or `--effort`, the plugin uses `gpt-5\.5` with `high` reasoning effort/i);
+  assert.match(readme, /if you do not pass `--model` or `--effort`, `\/codex:rescue` uses `gpt-5\.5` with `high` reasoning effort/i);
   assert.match(readme, /--model gpt-5\.4-mini --effort medium/i);
   assert.match(readme, /`spark`, the plugin maps that to `gpt-5\.3-codex-spark`/i);
   assert.match(readme, /continue a previous Codex task/i);

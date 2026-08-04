@@ -299,6 +299,22 @@ test("implement stops on a denied escalation without retry or sandbox fallback",
   assert.match(boundary, /do not fall back to the doomed sandbox path/i);
 });
 
+test("README install steps use the marketplace name this repo actually declares", () => {
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const marketplace = JSON.parse(
+    fs.readFileSync(path.join(ROOT, ".claude-plugin", "marketplace.json"), "utf8")
+  );
+  const name = marketplace.name;
+  const pluginName = marketplace.plugins[0].name;
+
+  // Regression for #85: the install block named `codex@openai-codex`, a handle
+  // that does not exist for this repo, while the update line below it already
+  // used the declared name. Pin every `/plugin` handle to marketplace.json.
+  assert.match(readme, new RegExp(`/plugin install ${pluginName}@${name}\\b`));
+  assert.match(readme, new RegExp(`/plugin marketplace update ${name}\\b`));
+  assert.doesNotMatch(readme, /@openai-codex\b/);
+});
+
 test("README documents per-command model/effort defaults, not one global default", () => {
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
   const runtime = fs.readFileSync(

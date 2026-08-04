@@ -26,13 +26,15 @@ they already have.
 Add the marketplace in Claude Code:
 
 ```bash
-/plugin marketplace add openai/codex-plugin-cc
+/plugin marketplace add patriyang/codex-plugin-cc
 ```
+
+That repo declares the marketplace as `patricks-plugins`, which is the name every later `/plugin` command uses.
 
 Install the plugin:
 
 ```bash
-/plugin install codex@openai-codex
+/plugin install codex@patricks-plugins
 ```
 
 Reload plugins:

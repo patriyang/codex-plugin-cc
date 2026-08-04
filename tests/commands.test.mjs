@@ -134,6 +134,171 @@ test("implement command defaults to gpt-5.6-luna at xhigh effort", () => {
   assert.match(readme, /`\/codex:implement` uses `gpt-5\.6-luna` with `xhigh` reasoning effort/);
 });
 
+test("implement routes Git metadata writes through scoped controller escalation", () => {
+  const source = read("commands/implement.md");
+  const boundaryStart = source.indexOf("## Git metadata writes");
+  assert.notEqual(boundaryStart, -1, "implement documents the Git metadata boundary");
+  const boundary = source.slice(boundaryStart, source.indexOf("## Plan Source", boundaryStart));
+
+  const escalatedCommands = [...boundary.matchAll(
+    /Bash\(\{\s*command:\s*`([^`]+)`,\s*dangerouslyDisableSandbox:\s*true\s*\}\)/g
+  )].map((match) => match[1]);
+  const allEscalatedCommands = [...source.matchAll(
+    /Bash\(\{\s*command:\s*`([^`]+)`,\s*dangerouslyDisableSandbox:\s*true\s*\}\)/g
+  )].map((match) => match[1]);
+  for (const operation of [
+    "worktree add",
+    "worktree remove",
+    "add -A",
+    "commit",
+    "fetch",
+    "push"
+  ]) {
+    assert.ok(
+      escalatedCommands.some((command) => command.startsWith(`git -C \${rootArg} ${operation}`)),
+      `${operation} is a directly escalated controller operation`
+    );
+  }
+
+  assert.match(boundary, /from the outset|before the first attempt/i);
+  assert.match(boundary, /read-only Git commands[^\n]*sandboxed/i);
+  assert.match(boundary, /one exact operation per (?:approval )?request|one exact operation per command/i);
+  assert.match(boundary, /narrow reusable Git subcommand prefix/i);
+  assert.match(boundary, /do not chain[^\n]*metadata writes[^\n]*&&/i);
+  assert.match(boundary, /nonzero[^\n]*ordinary Git (?:failure|error)/i);
+  assert.match(boundary, /concrete permission-denied evidence[^\n]*protected Git metadata/i);
+
+  for (const section of [
+    source.slice(source.indexOf("### 4. Commit the implementer's work"), source.indexOf("### 5. Dispatch spec reviewer")),
+    source.slice(source.indexOf("## Single-Shot Mode"), source.indexOf("## Argument and Flag Reference"))
+  ]) {
+    assert.match(section, /Bash\(\{\s*command:\s*`git -C \$\{rootArg\} add -A`,\s*dangerouslyDisableSandbox:\s*true\s*\}\)/);
+    assert.match(section, /Bash\(\{\s*command:\s*`git -C \$\{rootArg\} commit [^`]+`,\s*dangerouslyDisableSandbox:\s*true\s*\}\)/);
+    assert.doesNotMatch(section, /git -C \$\{rootArg\} add -A\s*&&/);
+    assert.match(section, /nonzero[^\n]*stop immediately[^\n]*ordinary Git error/i);
+    assert.match(section, /failed stage[^\n]*must not[^\n]*commit/i);
+    assert.match(section, /failed commit[^\n]*(?:must not|do not)[^\n]*(?:rev-parse|reviewer)/i);
+  }
+
+  const sequential = source.slice(
+    source.indexOf("### 4. Commit the implementer's work"),
+    source.indexOf("### 5. Dispatch spec reviewer")
+  );
+  assert.match(sequential, /command:\s*`git -C \$\{rootArg\} commit -m \"Apply implementation changes\"`/);
+  assert.doesNotMatch(sequential, /command:\s*`git -C [^`]* commit [^`]*\$\{TASK_NAME\}/);
+
+  const singleShot = source.slice(
+    source.indexOf("## Single-Shot Mode"),
+    source.indexOf("## Argument and Flag Reference")
+  );
+  for (const section of [sequential, singleShot]) {
+    assert.match(section, /command:\s*`git -C \$\{rootArg\} commit -m \"Apply implementation changes\"`/);
+    assert.doesNotMatch(section, /command:\s*`git -C [^`]* commit [^`]*(?:\$\{[^}]+\}|<[^>]+>)/);
+  }
+
+  for (const snippet of [
+    /git -C \"\$\{WORKTREE_ROOT\}\" status\b/,
+    /git -C \"\$\{WORKTREE_ROOT\}\" rev-parse\b/,
+    /git -C \"\$\{WORKTREE_ROOT\}\" log\b/
+  ]) {
+    assert.match(source, snippet, `implement includes read-only Git snippet ${snippet}`);
+    assert.doesNotMatch(allEscalatedCommands.join("\n"), snippet, `read-only Git command is not escalated: ${snippet}`);
+  }
+});
+
+test("privileged Git examples require one shell-escaped argument per dynamic value", () => {
+  const source = read("commands/implement.md");
+  const boundaryStart = source.indexOf("## Git metadata writes");
+  const boundary = source.slice(boundaryStart, source.indexOf("## Plan Source", boundaryStart));
+
+  assert.match(boundary, /shell-escape every dynamic value as exactly one shell argument before constructing an escalated command/i);
+  assert.match(boundary, /whitespace|shell metacharacters/i);
+  assert.match(boundary, /never interpolate raw values/i);
+  assert.match(boundary, /shellEscape\(value\)/);
+  assert.match(boundary, /printf '%q' "\$value"/);
+
+  for (const value of [
+    "WORKTREE_ROOT",
+    "WORKTREE_PATH",
+    "REF",
+    "REMOTE",
+    "REFSPEC"
+  ]) {
+    assert.match(boundary, new RegExp(`shellEscape\\(${value}\\)`), `${value} is escaped before interpolation`);
+  }
+
+  assert.doesNotMatch(boundary, /\$\{WORKTREE_ROOT\}.*(?:<path>|<ref>|<remote>|<refspec>)/s);
+  assert.doesNotMatch(boundary, /(?:<path>|<ref>|<remote>|<refspec>)/);
+});
+
+test("privileged Git examples terminate option parsing before dynamic operands", () => {
+  const source = read("commands/implement.md");
+  const boundaryStart = source.indexOf("## Git metadata writes");
+  const boundary = source.slice(boundaryStart, source.indexOf("## Plan Source", boundaryStart));
+
+  assert.match(boundary, /shell escaping and Git option termination are separate defenses/i);
+
+  for (const command of [
+    "git -C ${rootArg} worktree add -- ${pathArg} ${refArg}",
+    "git -C ${rootArg} worktree remove -- ${pathArg}",
+    "git -C ${rootArg} fetch -- ${remoteArg} ${refspecArg}",
+    "git -C ${rootArg} push -- ${remoteArg} ${refspecArg}"
+  ]) {
+    assert.ok(
+      boundary.includes("command: `" + command + "`"),
+      `${command} terminates Git option parsing before dynamic operands`
+    );
+  }
+
+  assert.match(boundary, /command: `git -C \$\{rootArg\} add -A`/);
+  assert.match(boundary, /command: `git -C \$\{rootArg\} commit -m "Apply implementation changes"`/);
+});
+
+test("implementer prompt keeps Git metadata and PR/issue mutation controller-owned", () => {
+  const prompt = read("prompts/sdd-implementer.md");
+  const role = prompt.slice(prompt.indexOf("<role>"), prompt.indexOf("</role>"));
+  const escalation = prompt.slice(prompt.indexOf("<escalation>"), prompt.indexOf("</escalation>"));
+
+  assert.match(role, /do not perform any Git metadata-writing operation/i);
+  assert.match(role, /do not mutate (?:pull requests?|PRs?) or issues/i);
+  assert.match(escalation, /permission blocker/i);
+  assert.match(escalation, /exact command, path, error, and intended effect/i);
+});
+
+test("implementer prompt prohibits every Git metadata write and reports it to the controller", () => {
+  const prompt = read("prompts/sdd-implementer.md");
+  const role = prompt.slice(prompt.indexOf("<role>"), prompt.indexOf("</role>"));
+
+  assert.match(role, /do not perform any Git metadata-writing operation/i);
+  for (const operation of [
+    "fetch",
+    "branch",
+    "tag",
+    "stash",
+    "reset",
+    "staging",
+    "committing",
+    "pushing",
+    "worktree"
+  ]) {
+    assert.match(role, new RegExp(`\\b${operation}\\b`, "i"), `${operation} is explicitly prohibited`);
+  }
+  assert.match(role, /report the exact operation[^\n]*controller/i);
+  assert.match(role, /do not attempt it/i);
+});
+
+test("implement stops on a denied escalation without retry or sandbox fallback", () => {
+  const source = read("commands/implement.md");
+  const boundaryStart = source.indexOf("## Git metadata writes");
+  const boundary = source.slice(boundaryStart, source.indexOf("## Plan Source", boundaryStart));
+
+  assert.match(boundary, /a denied escalation is the real blocker/i);
+  assert.match(boundary, /stop immediately/i);
+  assert.match(boundary, /report the denied exact operation/i);
+  assert.match(boundary, /do not retry unchanged/i);
+  assert.match(boundary, /do not fall back to the doomed sandbox path/i);
+});
+
 test("continue is not exposed as a user-facing command", () => {
   const commandFiles = fs.readdirSync(path.join(PLUGIN_ROOT, "commands")).sort();
   assert.deepEqual(commandFiles, [

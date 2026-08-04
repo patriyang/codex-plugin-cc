@@ -11,6 +11,58 @@ This command mirrors the behavior of `superpowers:subagent-driven-development`, 
 Raw slash-command arguments:
 `$ARGUMENTS`
 
+## Git metadata writes
+
+The controller owns Git metadata writes; implementers edit and test only. This includes linked-worktree metadata under `.git/worktrees/` and the representative operations below; apply the same rule to any other Git command that writes metadata. Shell escaping and Git option termination are separate defenses: shell escaping keeps each dynamic value as one argument, while Git's `--` must appear before the first dynamic positional operand so a value beginning with `-` cannot be interpreted as a Git option. Shell-escape every dynamic value as exactly one shell argument before constructing an escalated command. In the examples, `shellEscape(value)` means a robust shell-argument escaping step (for example, Bash `printf '%q' "$value"`); compute each argument separately before interpolation. Values containing whitespace or shell metacharacters must remain one argument. Never interpolate raw values. `WORKTREE_ROOT`, `WORKTREE_PATH`, `REF`, `REMOTE`, and `REFSPEC` are dynamic values below; the fixed commit subject stays literal.
+
+```typescript
+const rootArg = shellEscape(WORKTREE_ROOT)
+const pathArg = shellEscape(WORKTREE_PATH)
+const refArg = shellEscape(REF)
+const remoteArg = shellEscape(REMOTE)
+const refspecArg = shellEscape(REFSPEC)
+```
+
+Invoke each exact metadata-writing operation through its own `Bash` request with `dangerouslyDisableSandbox: true` from the outset; do not first attempt it in `workspace-write` and wait for a sandbox denial.
+
+```typescript
+Bash({
+  command: `git -C ${rootArg} worktree add -- ${pathArg} ${refArg}`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C ${rootArg} worktree remove -- ${pathArg}`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C ${rootArg} add -A`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C ${rootArg} commit -m "Apply implementation changes"`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C ${rootArg} fetch -- ${remoteArg} ${refspecArg}`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C ${rootArg} push -- ${remoteArg} ${refspecArg}`,
+  dangerouslyDisableSandbox: true
+})
+```
+
+Keep read-only Git commands sandboxed in normal `Bash` requests; do not add `dangerouslyDisableSandbox` to commands such as `git status`, `git diff`, or `git rev-parse`. Request approval for one exact operation per request/command. Where a reusable approval is appropriate, use a narrow reusable Git subcommand prefix such as the escaped `git -C ${rootArg} fetch`, never a bare `git` or a broad shell prefix. Do not chain metadata writes with `&&`.
+
+An already-escalated Git command that exits nonzero is an ordinary Git error, not a sandbox failure. Classify an unexpected sandbox failure only when concrete permission-denied evidence is tied to protected Git metadata, such as `.git/index` or `.git/worktrees/<name>/index.lock`.
+
+A denied escalation is the real blocker before execution: stop immediately, report the denied exact operation (including its target), and do not retry unchanged. Do not fall back to the doomed sandbox path.
+
 ## Mode
 
 Two execution modes:
@@ -122,7 +174,7 @@ The report body is the `.rawOutput` field of the JSON payload from step 2. Locat
 
 ### 4. Commit the implementer's work (controller commits, not Codex)
 
-The Codex implementer leaves its changes in the working tree; it does **not** commit. Codex runs inside a sandbox that cannot write the git index — in a worktree specifically, `git commit` fails with `.git/worktrees/<name>/index.lock: Operation not permitted`. You (the controller) run outside that sandbox, so you commit.
+The Codex implementer leaves its changes in the working tree; it does **not** stage or commit. The controller owns both metadata writes and uses the scoped Bash escalation described above: in a worktree, Codex cannot write `.git/worktrees/<name>/index.lock`.
 
 Check for changes:
 
@@ -131,10 +183,25 @@ git -C "${WORKTREE_ROOT}" status --porcelain
 ```
 
 - If **empty** (the implementer produced no file changes) yet it reported `DONE` → treat as `BLOCKED`: the implementer did nothing. Re-dispatch step 2 with an explicit instruction to actually make the change.
-- Otherwise, commit the changes yourself:
+- Otherwise, stage and commit the changes yourself as two separate controller requests:
+
+```typescript
+Bash({
+  command: `git -C ${rootArg} add -A`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C ${rootArg} commit -m "Apply implementation changes"`,
+  dangerouslyDisableSandbox: true
+})
+```
+
+If either already-escalated request returns a nonzero result, stop immediately and report the ordinary Git error; classify it as a sandbox failure only when concrete permission-denied evidence is tied to protected Git metadata. A failed stage must not proceed to commit; a failed commit must not proceed to `rev-parse`, reviewers, or any later task step.
+
+Then, in a normal sandboxed Bash request, read the resulting commit:
 
 ```bash
-git -C "${WORKTREE_ROOT}" add -A && git -C "${WORKTREE_ROOT}" commit -m "Task ${TASK_NUMBER}: ${TASK_NAME}"
 git -C "${WORKTREE_ROOT}" rev-parse HEAD
 ```
 
@@ -248,12 +315,25 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROO
 
 (Same `--model`/`--effort` resolution as sequential mode — default `--model gpt-5.6-luna`, `--effort xhigh` unless the user passed one.)
 
-The single-shot Codex agent leaves its changes uncommitted too (same sandbox limitation). After it returns, commit the working-tree changes yourself:
+The single-shot Codex agent leaves its changes unstaged and uncommitted too (same sandbox limitation). After it returns, stage and commit the working-tree changes yourself as two separate controller requests:
 
 ```bash
 git -C "${WORKTREE_ROOT}" status --porcelain   # if empty, Codex made no changes — report that instead of committing
-git -C "${WORKTREE_ROOT}" add -A && git -C "${WORKTREE_ROOT}" commit -m "<one-line summary of the plan>"
 ```
+
+```typescript
+Bash({
+  command: `git -C ${rootArg} add -A`,
+  dangerouslyDisableSandbox: true
+})
+
+Bash({
+  command: `git -C ${rootArg} commit -m "Apply implementation changes"`,
+  dangerouslyDisableSandbox: true
+})
+```
+
+If either already-escalated request returns a nonzero result, stop immediately and report the ordinary Git error; classify it as a sandbox failure only when concrete permission-denied evidence is tied to protected Git metadata. A failed stage must not proceed to commit; a failed commit must not proceed to `rev-parse`, reviewers, or any later flow step.
 
 Show the report. Propose next steps.
 

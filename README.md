@@ -363,7 +363,7 @@ Defaults are per command, not global. Use `--model` or `--effort` on a plugin co
 
 `gpt-5.5` / `high` is the runtime default that applies when a command pins nothing of its own. `/codex:deep-review` and `/codex:implement` pin their own model and effort, so they do not run on `gpt-5.5`. Passing `spark` to `--model` maps to `gpt-5.3-codex-spark`.
 
-> **Note:** these defaults are applied before Codex reads `config.toml`, so the `model` / `model_reasoning_effort` keys in your `.codex/config.toml` are only used if you also pass `--model` or `--effort` (or omit them and accept these defaults). To change the runtime *default* without flags, you'd need to edit the plugin's `DEFAULT_CODEX_MODEL` / `DEFAULT_CODEX_REASONING_EFFORT`; the per-command defaults above are pinned separately at each command's own call site.
+> **Note:** the plugin sends a model on every Codex thread it starts, so the `model` key in your `.codex/config.toml` never selects the model for a plugin command — the table above does. The `model_reasoning_effort` key still applies, but only to the commands that send no effort of their own (`/codex:review`, and `/codex:adversarial-review` when you do not pass `--effort`). An explicit `--model` / `--effort` overrides both. To change the runtime *default* without flags, you'd need to edit the plugin's `DEFAULT_CODEX_MODEL` / `DEFAULT_CODEX_REASONING_EFFORT`; the per-command defaults above are pinned separately at each command's own call site.
 
 Your configuration will be picked up based on:
 

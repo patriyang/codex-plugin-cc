@@ -314,8 +314,16 @@ test("README documents per-command model/effort defaults, not one global default
 
   // Every command row in the defaults table.
   assert.match(readme, /\| `\/codex:rescue` \(and delegated tasks\) \| `gpt-5\.5` \| `high` \|/);
-  assert.match(readme, /\| `\/codex:review` \| `gpt-5\.5` \|/);
-  assert.match(readme, /\| `\/codex:adversarial-review` \| `gpt-5\.5` \|/);
+  // The two "no effort sent" rows are the subtlest cells in the table, so pin
+  // the effort column too rather than stopping after the model.
+  assert.match(
+    readme,
+    /\| `\/codex:review` \| `gpt-5\.5` \| \*\(none sent — `--effort` is rejected\)\* \|/
+  );
+  assert.match(
+    readme,
+    /\| `\/codex:adversarial-review` \| `gpt-5\.5` \| \*\(none sent — Codex's own default\)\* \|/
+  );
   assert.match(readme, /\| `\/codex:deep-review` \| `gpt-5\.6-sol` \| `medium` \|/);
   assert.match(readme, /\| `\/codex:implement` \| `gpt-5\.6-luna` \| `xhigh` \|/);
 

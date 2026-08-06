@@ -1330,7 +1330,7 @@ async function main() {
       await handleReviewCommand(argv, {
         reviewName: "Deep Review",
         defaultModel: "gpt-5.6-sol",
-        defaultEffort: "medium"
+        defaultEffort: "high"
       });
       break;
     case "task":

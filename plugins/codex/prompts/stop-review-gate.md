@@ -11,6 +11,12 @@ Challenge whether that specific work and its design choices should ship.
 {{CLAUDE_RESPONSE_BLOCK}}
 </task>
 
+<sandbox_constraints>
+You run in a read-only sandbox. Every write fails with `EPERM: operation not permitted`, including temp-file and temp-directory creation, so test suites, builds, installs, and formatters cannot run here — many suites allocate a temp dir before their first assertion and die on that line.
+Do not attempt them. A permission error is a fact about the sandbox, never about the code under review.
+Never report a sandbox denial as a finding, as a test result, or as a next step for the author. Judge the change by reading it. When a claim genuinely needs execution to settle, say so plainly in your report and leave the run to the caller, which is not sandboxed.
+</sandbox_constraints>
+
 <compact_output_contract>
 Return a compact final answer.
 Your first line must be exactly one of:
@@ -21,6 +27,7 @@ Do not put anything before that first line.
 
 <default_follow_through_policy>
 Use ALLOW if the previous turn did not make code changes or if you do not see a blocking issue.
+Never BLOCK over a sandbox denial or an unrun check; that is not a defect in the turn's work.
 Use ALLOW immediately, without extra investigation, if the previous turn was not an edit-producing turn.
 Use BLOCK only if the previous turn made code changes and you found something that still needs to be fixed before stopping.
 </default_follow_through_policy>

@@ -109,7 +109,7 @@ test("deep review command auto-decides execution mode and uses background Bash w
   assert.match(source, /\[--model <model\|spark>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh\|max\|ultra>\]/);
   // README documents the deep-review defaults so command + docs cannot drift.
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
-  assert.match(readme, /`\/codex:deep-review` uses `gpt-5\.6-sol` with `medium` reasoning effort/);
+  assert.match(readme, /`\/codex:deep-review` uses `gpt-5\.6-sol` with `high` reasoning effort/);
 });
 
 test("implement command defaults to gpt-5.6-luna at xhigh effort", () => {
@@ -326,7 +326,7 @@ test("README documents per-command model/effort defaults, not one global default
   assert.match(runtime, /const DEFAULT_CODEX_MODEL = "gpt-5\.5";/);
   assert.match(runtime, /const DEFAULT_CODEX_REASONING_EFFORT = "high";/);
   assert.match(runtime, /defaultModel: "gpt-5\.6-sol"/);
-  assert.match(runtime, /defaultEffort: "medium"/);
+  assert.match(runtime, /defaultEffort: "high"/);
 
   // Every command row in the defaults table.
   assert.match(readme, /\| `\/codex:rescue` \(and delegated tasks\) \| `gpt-5\.5` \| `high` \|/);
@@ -340,7 +340,7 @@ test("README documents per-command model/effort defaults, not one global default
     readme,
     /\| `\/codex:adversarial-review` \| `gpt-5\.5` \| \*\(none sent — Codex's own default\)\* \|/
   );
-  assert.match(readme, /\| `\/codex:deep-review` \| `gpt-5\.6-sol` \| `medium` \|/);
+  assert.match(readme, /\| `\/codex:deep-review` \| `gpt-5\.6-sol` \| `high` \|/);
   assert.match(readme, /\| `\/codex:implement` \| `gpt-5\.6-luna` \| `xhigh` \|/);
 
   // The old "one global default" claim must not come back.

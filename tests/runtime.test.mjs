@@ -5731,3 +5731,50 @@ test("shared broker self-exits after its idle timeout with no clients", async ()
     }
   }, { timeoutMs: 5000, intervalMs: 100 });
 });
+
+test("a task aborted by the idle watchdog does not report its preamble as the final output (#88)", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "idle-hung-turn-after-preamble");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "1500",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "300"
+  };
+  const launched = run("node", [SCRIPT, "task", "--write", "--background", "--json", "apply the three edits"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.status, "failed");
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  const result = storedPayload.storedJob.result;
+
+  // The preamble is not a report: rawOutput is the field every downstream consumer parses.
+  assert.equal(result.rawOutput, "", "rawOutput must be empty when the turn never produced a final message");
+  assert.match(result.partialOutput, /applying only the requested edits/);
+  assert.match(result.failureMessage, /Codex turn stalled \(idle\)/);
+  // The edits already landed, so the payload has to keep saying so.
+  assert.ok(result.touchedFiles.some((file) => file.endsWith("README.md")), JSON.stringify(result.touchedFiles));
+
+  assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(idle\)/);
+  assert.match(storedPayload.storedJob.rendered, /README\.md/);
+  assert.doesNotMatch(storedPayload.job.summary ?? "", /applying only the requested edits/);
+});

@@ -254,6 +254,40 @@ test("privileged Git examples terminate option parsing before dynamic operands",
   assert.match(boundary, /command: `git -C \$\{rootArg\} commit -m "Apply implementation changes"`/);
 });
 
+test("every read-only reviewer prompt states the sandbox contract", () => {
+  // Reviewers run under `sandbox: "read-only"`, where even mkdtemp in $TMPDIR
+  // returns EPERM. Without this block Codex burns turns on `npm test` and then
+  // reports the sandbox denial as a test result — or, worse, as a finding
+  // against whole files it never managed to execute.
+  for (const name of [
+    "deep-review",
+    "adversarial-review",
+    "sdd-spec-reviewer",
+    "sdd-code-quality-reviewer"
+  ]) {
+    const prompt = read(`prompts/${name}.md`);
+    const block = prompt.slice(
+      prompt.indexOf("<sandbox_constraints>"),
+      prompt.indexOf("</sandbox_constraints>")
+    );
+    assert.notEqual(block, "", `${name} is missing <sandbox_constraints>`);
+    assert.match(block, /read-only sandbox/i, name);
+    assert.match(block, /EPERM: operation not permitted/, name);
+    assert.match(block, /temp-directory creation/i, name);
+    assert.match(block, /never about the code under review/i, name);
+    assert.match(block, /Never report a sandbox denial as a finding/i, name);
+  }
+});
+
+test("spec reviewer does not tell a read-only agent to re-run tests", () => {
+  const prompt = read("prompts/sdd-spec-reviewer.md");
+  // The prompt used to say "Re-run their tests if the result is in doubt" to an
+  // agent that cannot run anything. Doubt goes to the controller instead.
+  assert.doesNotMatch(prompt, /Re-run their tests/i);
+  assert.match(prompt, /you cannot run them/i);
+  assert.match(prompt, /leave the re-run to the controller/i);
+});
+
 test("implementer prompt keeps Git metadata and PR/issue mutation controller-owned", () => {
   const prompt = read("prompts/sdd-implementer.md");
   const role = prompt.slice(prompt.indexOf("<role>"), prompt.indexOf("</role>"));

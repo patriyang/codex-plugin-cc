@@ -263,7 +263,10 @@ test("every read-only reviewer prompt states the sandbox contract", () => {
     "deep-review",
     "adversarial-review",
     "sdd-spec-reviewer",
-    "sdd-code-quality-reviewer"
+    "sdd-code-quality-reviewer",
+    // Dispatched by stop-review-gate-hook.mjs through `task` with no --write,
+    // which resolves to read-only just like the four review paths above.
+    "stop-review-gate"
   ]) {
     const prompt = read(`prompts/${name}.md`);
     const block = prompt.slice(
@@ -277,6 +280,13 @@ test("every read-only reviewer prompt states the sandbox contract", () => {
     assert.match(block, /never about the code under review/i, name);
     assert.match(block, /Never report a sandbox denial as a finding/i, name);
   }
+});
+
+test("stop gate never blocks a turn over a sandbox denial", () => {
+  const prompt = read("prompts/stop-review-gate.md");
+  // The gate can halt the session, so a sandbox EPERM mistaken for a defect is
+  // costlier here than in a review that only prints findings.
+  assert.match(prompt, /Never BLOCK over a sandbox denial or an unrun check/i);
 });
 
 test("spec reviewer does not tell a read-only agent to re-run tests", () => {

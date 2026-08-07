@@ -665,6 +665,10 @@ function formatStallDuration(ms) {
   return `${Math.round(ms / 1000)}s`;
 }
 
+// Timings below are deliberately wall-clock (`Date.now`), not monotonic. `setTimeout` runs on loop
+// time, which stops while the machine sleeps, so a monotonic measurement would always agree with the
+// budget and hide the very overshoot this reports. The gap between the two clocks is the diagnostic:
+// wall-clock elapsed far above the budget means the timer lost time it could not observe.
 async function handleStall(state, client, stallTimeoutMs, stallMode, itemLabel = null, armedAt = null) {
   if (state.completed) {
     return;

@@ -26,9 +26,11 @@
  *   activeSubagentTurns: Set<string>,
  *   completionTimer: ReturnType<typeof setTimeout> | null,
  *   activityTimer: ReturnType<typeof setTimeout> | null,
+ *   lastActivityAt: number | null,
+ *   activityCount: number,
  *   stallCleanup: Promise<void> | null,
  *   stalled: boolean,
- *   activeTools: Map<string, { threadId: string | null, itemId: string | null, toolClass: string, label: string, deadlineTimer: ReturnType<typeof setTimeout> | null }>,
+ *   activeTools: Map<string, { threadId: string | null, itemId: string | null, toolClass: string, label: string, deadlineTimer: ReturnType<typeof setTimeout> | null, armedAt: number | null }>,
  *   lastAgentMessage: string,
  *   reviewText: string,
  *   reasoningSummary: string[],
@@ -416,6 +418,8 @@ function createTurnCaptureState(threadId, options = {}) {
     activeSubagentTurns: new Set(),
     completionTimer: null,
     activityTimer: null,
+    lastActivityAt: null,
+    activityCount: 0,
     stallCleanup: null,
     stalled: false,
     activeTools: new Map(),
@@ -479,12 +483,20 @@ function trackToolStart(state, client, threadId, item, label, maxInFlightMs) {
   }
   const key = activeToolKey(threadId, item?.id);
   removeActiveTool(state, key);
-  const entry = { threadId: threadId ?? null, itemId: item?.id ?? null, toolClass: cls, label, deadlineTimer: null };
+  const entry = {
+    threadId: threadId ?? null,
+    itemId: item?.id ?? null,
+    toolClass: cls,
+    label,
+    deadlineTimer: null,
+    armedAt: null
+  };
   state.activeTools.set(key, entry);
   if (cls === "quick" && !state.completed && maxInFlightMs > 0 && Number.isFinite(maxInFlightMs)) {
+    entry.armedAt = Date.now();
     entry.deadlineTimer = setTimeout(() => {
       entry.deadlineTimer = null;
-      state.stallCleanup = handleStall(state, client, maxInFlightMs, "tool-max", entry.label);
+      state.stallCleanup = handleStall(state, client, maxInFlightMs, "tool-max", entry.label, entry.armedAt);
     }, maxInFlightMs);
     entry.deadlineTimer.unref?.();
   }
@@ -643,21 +655,73 @@ async function interruptTurnWithTimeout(client, threadId, turnId) {
   }
 }
 
-async function handleStall(state, client, stallTimeoutMs, stallMode, itemLabel = null) {
+function formatStallDuration(ms) {
+  if (!Number.isFinite(ms)) {
+    return null;
+  }
+  if (ms < 1000) {
+    return `${Math.max(0, Math.round(ms))}ms`;
+  }
+  return `${Math.round(ms / 1000)}s`;
+}
+
+// Timings below are deliberately wall-clock (`Date.now`), not monotonic. `setTimeout` runs on loop
+// time, which stops while the machine sleeps, so a monotonic measurement would always agree with the
+// budget and hide the very overshoot this reports. The gap between the two clocks is the diagnostic:
+// wall-clock elapsed far above the budget means the timer lost time it could not observe.
+async function handleStall(state, client, stallTimeoutMs, stallMode, itemLabel = null, armedAt = null) {
   if (state.completed) {
     return;
   }
 
   state.stalled = true;
-  const seconds = Math.round(stallTimeoutMs / 1000);
+  const now = Date.now();
+  const budgetSeconds = Math.round(stallTimeoutMs / 1000);
+  const measuredMs =
+    stallMode === "tool-max"
+      ? Number.isFinite(armedAt)
+        ? now - armedAt
+        : null
+      : Number.isFinite(state.lastActivityAt)
+        ? now - state.lastActivityAt
+        : null;
+  const lateMs = Number.isFinite(armedAt) && Number.isFinite(stallTimeoutMs)
+    ? now - (armedAt + stallTimeoutMs)
+    : null;
   const labels = itemLabel ? [itemLabel] : activeToolLabels(state);
   const itemDetail = labels.length ? ` while "${labels.join(", ")}" was in flight` : "";
   const modeDetail = stallMode === "tool" ? "tool-in-flight" : stallMode === "tool-max" ? "tool-max-duration" : "idle";
   const reason =
     stallMode === "tool-max"
-      ? `in flight for ${seconds}s without completing (exceeded max tool duration)`
-      : `no activity for ${seconds}s`;
-  const message = `Codex turn stalled (${modeDetail}): ${reason}${itemDetail}. Interrupting and aborting the turn.`;
+      ? `in flight for ${budgetSeconds}s without completing (exceeded max tool duration)`
+      : `no activity for ${budgetSeconds}s`;
+  const detailParts = [];
+  const budget = formatStallDuration(stallTimeoutMs);
+  if (budget) {
+    detailParts.push(`budget ${budget}`);
+  }
+  if (Number.isFinite(measuredMs)) {
+    if (stallMode === "tool-max") {
+      detailParts.push(`measured ${formatStallDuration(measuredMs)} since the tool deadline was armed`);
+    } else {
+      let activityDetail = `measured ${formatStallDuration(measuredMs)} since the last of ${state.activityCount} activity events`;
+      if (Number.isFinite(state.lastActivityAt)) {
+        activityDetail += ` at ${new Date(state.lastActivityAt).toISOString()}`;
+      }
+      detailParts.push(activityDetail);
+    }
+  }
+  if (stallMode === "tool-max") {
+    detailParts.push(`${state.activityCount} activity events`);
+    if (Number.isFinite(state.lastActivityAt)) {
+      detailParts.push(`last activity at ${new Date(state.lastActivityAt).toISOString()}`);
+    }
+  }
+  if (Number.isFinite(lateMs) && lateMs > 1000) {
+    detailParts.push(`timer fired ${formatStallDuration(lateMs)} late`);
+  }
+  const detail = detailParts.length ? ` [${detailParts.join("; ")}]` : "";
+  const message = `Codex turn stalled (${modeDetail}): ${reason}${itemDetail}${detail}. Interrupting and aborting the turn.`;
   state.error ??= { message };
   emitLogEvent(state.onProgress, {
     message,
@@ -682,6 +746,9 @@ function bumpActivity(state, client, stallTimeouts) {
     return;
   }
 
+  state.lastActivityAt = Date.now();
+  state.activityCount += 1;
+
   // A single global inactivity timer covers the whole turn. Use the short tool budget while any
   // quick tool is in flight; otherwise (only long tools, or none) fall back to the generous turn
   // backstop, since long tools (shell commands, subagent collaborations) can run long and silent.
@@ -690,9 +757,10 @@ function bumpActivity(state, client, stallTimeouts) {
 
   clearActivityTimer(state);
   if (stallTimeoutMs > 0 && Number.isFinite(stallTimeoutMs)) {
+    const armedAt = Date.now();
     state.activityTimer = setTimeout(() => {
-      state.activityTimer = null;
-      state.stallCleanup = handleStall(state, client, stallTimeoutMs, stallMode);
+      clearActivityTimer(state);
+      state.stallCleanup = handleStall(state, client, stallTimeoutMs, stallMode, null, armedAt);
     }, stallTimeoutMs);
     state.activityTimer.unref?.();
   }

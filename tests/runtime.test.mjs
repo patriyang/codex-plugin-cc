@@ -18,6 +18,7 @@ import {
 } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
 import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
+import { runAppServerTurn } from "../plugins/codex/scripts/lib/codex.mjs";
 import { getProcessStartTime } from "../plugins/codex/scripts/lib/process.mjs";
 import {
   resolveClaudeSessionPath,
@@ -3085,6 +3086,68 @@ test("task watchdog lets idle reasoning exceed tool budget and stalls at turn ba
   const storedPayload = JSON.parse(stored.stdout);
   assert.equal(storedPayload.job.status, "failed");
   assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(idle\)/i);
+});
+
+test("in-process idle watchdog reports measured oversleep and late firing", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "idle-hung-turn");
+  initGitRepo(repo);
+
+  const stallTimeoutMs = 100;
+  const toolStallTimeoutMs = 50;
+  const previousPath = process.env.PATH;
+  const previousTurnStallTimeout = process.env.CODEX_TURN_STALL_TIMEOUT_MS;
+  const previousToolStallTimeout = process.env.CODEX_TOOL_STALL_TIMEOUT_MS;
+  process.env.PATH = buildEnv(binDir).PATH;
+  process.env.CODEX_TURN_STALL_TIMEOUT_MS = String(stallTimeoutMs);
+  process.env.CODEX_TOOL_STALL_TIMEOUT_MS = String(toolStallTimeoutMs);
+  t.after(() => {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+    if (previousTurnStallTimeout === undefined) {
+      delete process.env.CODEX_TURN_STALL_TIMEOUT_MS;
+    } else {
+      process.env.CODEX_TURN_STALL_TIMEOUT_MS = previousTurnStallTimeout;
+    }
+    if (previousToolStallTimeout === undefined) {
+      delete process.env.CODEX_TOOL_STALL_TIMEOUT_MS;
+    } else {
+      process.env.CODEX_TOOL_STALL_TIMEOUT_MS = previousToolStallTimeout;
+    }
+  });
+
+  let blockTimer = null;
+  t.after(() => clearTimeout(blockTimer));
+
+  const result = await runAppServerTurn(repo, {
+    prompt: "think without tools",
+    sandbox: "read-only",
+    onProgress: (update) => {
+      const message = typeof update === "string" ? update : update?.message;
+      if (!blockTimer && message?.startsWith("Turn started")) {
+        blockTimer = setTimeout(() => {
+          const blockUntil = Date.now() + 1500;
+          while (Date.now() < blockUntil) {
+            // Deliberately starve the event loop past the watchdog deadline.
+          }
+        }, 50);
+      }
+    }
+  });
+
+  const failureMessage = result.error?.message ?? "";
+  assert.notEqual(result.status, 0);
+  assert.match(failureMessage, /Codex turn stalled \(idle\)/);
+  const measured = failureMessage.match(/measured (\d+)(ms|s)/);
+  assert.ok(measured, failureMessage);
+  const measuredMs = Number(measured[1]) * (measured[2] === "s" ? 1000 : 1);
+  assert.ok(measuredMs > stallTimeoutMs * 2, failureMessage);
+  assert.match(failureMessage, /since the last of \d+ activity events at \d{4}-\d{2}-\d{2}T[^ ]+Z/);
+  assert.match(failureMessage, /timer fired (\d+)(ms|s) late/);
 });
 
 test("review rejects focus text because it is native-review only", () => {

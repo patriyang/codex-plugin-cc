@@ -6,7 +6,8 @@ import {
   renderNativeReviewResult,
   renderReviewResult,
   renderStatusReport,
-  renderStoredJobResult
+  renderStoredJobResult,
+  renderTaskResult
 } from "../plugins/codex/scripts/lib/render.mjs";
 
 test("renderReviewResult places model and effort attribution after the target", () => {
@@ -188,4 +189,37 @@ test("renderStoredJobResult prefers rendered output for structured review jobs",
   assert.doesNotMatch(output, /^\{/);
   assert.match(output, /Codex session ID: thr_123/);
   assert.match(output, /Resume in Codex: codex resume thr_123/);
+});
+
+test("renderTaskResult leads with the failure reason instead of the partial message (#88)", () => {
+  const output = renderTaskResult(
+    {
+      rawOutput: "",
+      partialOutput: "I'm applying only the requested edits now, then I'll report back.",
+      failureMessage: "Codex turn stalled (idle): no activity for 900s. Interrupting and aborting the turn.",
+      touchedFiles: ["/repo/a.py", "/repo/b.py"]
+    },
+    { title: "Codex Task", write: true }
+  );
+
+  assert.match(output, /Codex turn stalled \(idle\)/);
+  // The partial text must never be presented as if it were the report.
+  assert.doesNotMatch(output, /^I'm applying only the requested edits/);
+  assert.match(output, /partial/i);
+  assert.match(output, /a\.py/);
+  assert.match(output, /b\.py/);
+});
+
+test("renderTaskResult returns the final message unchanged on a completed turn", () => {
+  const output = renderTaskResult(
+    {
+      rawOutput: "## Status\nDONE\n",
+      partialOutput: "",
+      failureMessage: "",
+      touchedFiles: ["/repo/a.py"]
+    },
+    { title: "Codex Task", write: true }
+  );
+
+  assert.equal(output, "## Status\nDONE\n");
 });

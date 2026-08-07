@@ -1030,6 +1030,37 @@ rl.on("line", (line) => {
 	            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
 	          }, 5000);
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer });
+	        } else if (BEHAVIOR === "idle-hung-turn-after-preamble") {
+	          // Mirrors a real abort: the model narrates what it is about to do, edits a file, then
+	          // goes silent until the idle watchdog interrupts it. The preamble is the last agent
+	          // message, but it is NOT the final report.
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "agentMessage",
+	                id: "msg_preamble_" + turnId,
+	                text: "I'm applying only the requested edits now, then I'll report back."
+	              }
+	            }
+	          });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "fileChange",
+	                id: "change_" + turnId,
+	                status: "completed",
+	                changes: [{ path: path.join(process.cwd(), "README.md"), kind: "update" }]
+	              }
+	            }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
 	        } else if (BEHAVIOR === "idle-hung-turn" || BEHAVIOR === "idle-hung-slow-interrupt") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          send({

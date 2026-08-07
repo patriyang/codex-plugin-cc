@@ -332,7 +332,21 @@ export function renderTaskResult(parsedResult, meta) {
   }
 
   const message = String(parsedResult?.failureMessage ?? "").trim() || "Codex did not return a final message.";
-  return `${message}\n`;
+  const touchedFiles = Array.isArray(parsedResult?.touchedFiles)
+    ? parsedResult.touchedFiles.filter((file) => typeof file === "string" && file.trim())
+    : [];
+  const partialOutput = typeof parsedResult?.partialOutput === "string" ? parsedResult.partialOutput : "";
+  const lines = [message];
+
+  if (touchedFiles.length > 0) {
+    lines.push("", "Files already modified by this run:", "", ...touchedFiles.map((file) => `- ${file}`));
+  }
+
+  if (partialOutput.trim()) {
+    lines.push("", "Partial output (not the final report):", "", "```text", partialOutput, "```");
+  }
+
+  return `${lines.join("\n")}\n`;
 }
 
 export function renderStatusReport(report) {

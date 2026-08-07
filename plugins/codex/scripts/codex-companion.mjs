@@ -553,7 +553,7 @@ async function executeReviewRun(request) {
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
   });
-  const parsed = parseStructuredOutput(result.finalMessage, {
+  const parsed = parseStructuredOutput(result.status === 0 ? result.finalMessage : "", {
     status: result.status,
     failureMessage: result.error?.message ?? result.stderr
   });
@@ -640,12 +640,15 @@ async function executeTaskRun(request) {
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
   });
 
-  const rawOutput = typeof result.finalMessage === "string" ? result.finalMessage : "";
+  const rawOutput = result.status === 0 && typeof result.finalMessage === "string" ? result.finalMessage : "";
+  const partialOutput = result.status !== 0 && typeof result.finalMessage === "string" ? result.finalMessage : "";
   const failureMessage = result.error?.message ?? result.stderr ?? "";
   const rendered = renderTaskResult(
     {
       rawOutput,
+      partialOutput,
       failureMessage,
+      touchedFiles: result.touchedFiles,
       reasoningSummary: result.reasoningSummary
     },
     {
@@ -658,6 +661,8 @@ async function executeTaskRun(request) {
     status: result.status,
     threadId: result.threadId,
     rawOutput,
+    partialOutput,
+    failureMessage,
     touchedFiles: result.touchedFiles,
     reasoningSummary: result.reasoningSummary,
     effortWarning: result.effortWarning

@@ -9,7 +9,8 @@ const MAX_UNTRACKED_BYTES = 24 * 1024;
 const DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 const DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
 const HASH_OBJECT_MAX_BATCH_PATHS = 256;
-const HASH_OBJECT_MAX_BATCH_ARG_BYTES = 96 * 1024;
+// Keep argv well below Windows' command-line limit, including fixed arguments and quoting.
+const HASH_OBJECT_MAX_BATCH_ARG_BYTES = 8 * 1024;
 
 // Git is directly executable on Windows. Repository-derived arguments must never pass through a shell.
 function git(cwd, args, options = {}) {
@@ -134,15 +135,16 @@ function classifyUntrackedPath(cwd, relativePath) {
   );
 }
 
-function hashRegularFile(cwd, relativePath) {
+function hashRegularFile(cwd, relativePath, failureResults) {
   const result = git(cwd, ["hash-object", "--no-filters", "--", relativePath]);
   if (result.error || result.status !== 0) {
+    failureResults.set(relativePath, result);
     return null;
   }
   return result.stdout.trim();
 }
 
-function hashRegularFilesBatched(cwd, relativePaths) {
+function hashRegularFilesBatched(cwd, relativePaths, failureResults) {
   const hashes = new Map();
 
   for (let offset = 0; offset < relativePaths.length;) {
@@ -169,7 +171,7 @@ function hashRegularFilesBatched(cwd, relativePaths) {
     }
 
     for (const relativePath of chunk) {
-      hashes.set(relativePath, hashRegularFile(cwd, relativePath));
+      hashes.set(relativePath, hashRegularFile(cwd, relativePath, failureResults));
     }
   }
 
@@ -199,21 +201,19 @@ function captureWorkingTreeDigest(cwd) {
   const regularPaths = [...trackedClassifications, ...untrackedClassifications]
     .filter(({ classification }) => classification.type === "regular")
     .map(({ relativePath }) => relativePath);
-  const hashes = hashRegularFilesBatched(cwd, regularPaths);
+  const hashFailures = new Map();
+  const hashes = hashRegularFilesBatched(cwd, regularPaths, hashFailures);
 
   for (const { relativePath, classification } of trackedClassifications) {
     let token = classification.token;
     if (classification.type === "regular") {
       const oid = hashes.get(relativePath);
       if (oid === null) {
-        throw new Error(formatCommandFailure({
-          command: "git",
-          args: ["hash-object", "--no-filters", "--", relativePath],
-          status: 1,
-          signal: null,
-          stderr: "",
-          stdout: ""
-        }));
+        const failure = hashFailures.get(relativePath);
+        if (failure.error) {
+          throw failure.error;
+        }
+        throw new Error(formatCommandFailure(failure));
       }
       token = `file:${oid}`;
     }

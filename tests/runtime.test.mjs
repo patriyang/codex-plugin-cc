@@ -3367,6 +3367,21 @@ test("review --background returns the workspace needed to wait and read from ano
   assert.equal(renderedWait.status, 0, renderedWait.stderr);
   const renderedWaitPayload = JSON.parse(renderedWait.stdout);
   assert.equal(renderedWaitPayload.job.status, "completed");
+
+  // The snapshot hint is a slash command, but /codex:status forwards its raw
+  // arguments to this script, so it must carry the workspace too.
+  const snapshotCommand = /^Snapshot without waiting: \/codex:status (.+)$/m.exec(renderedLaunch.stdout);
+  assert.ok(snapshotCommand, renderedLaunch.stdout);
+  const snapshotArgs = splitRawArgumentString(snapshotCommand[1]);
+  assert.equal(snapshotArgs[1], fs.realpathSync(repo));
+
+  const renderedSnapshot = run("node", [SCRIPT, "status", ...snapshotArgs, "--json"], {
+    cwd: ambientCwd,
+    env
+  });
+
+  assert.equal(renderedSnapshot.status, 0, renderedSnapshot.stderr);
+  assert.equal(JSON.parse(renderedSnapshot.stdout).job.status, "completed");
 });
 
 test("deep-review --background enqueues a detached worker and stores its rendered result", async () => {

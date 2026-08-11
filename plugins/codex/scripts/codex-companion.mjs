@@ -718,7 +718,7 @@ function renderQueuedJobLaunch(payload) {
   return [
     `${payload.title} started in the background as ${payload.jobId}.`,
     `Block on it with: codex-companion.mjs status -C ${shellEscape(payload.workspaceRoot)} ${payload.jobId} --wait --json`,
-    `Snapshot without waiting: /codex:status ${payload.jobId}`,
+    `Snapshot without waiting: /codex:status -C ${shellEscape(payload.workspaceRoot)} ${payload.jobId}`,
     ""
   ].join("\n");
 }

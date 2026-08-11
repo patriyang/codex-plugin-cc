@@ -56,19 +56,25 @@ Background flow:
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" deep-review "--background --json $ARGUMENTS"
 ```
-- Parse `jobId` and `workspaceRoot` from the enqueue response. Await it through foreground `Bash`, giving the tool a timeout comfortably above the bounded status wait:
+- Parse `jobId` and `workspaceRoot` from the enqueue response. Await it through foreground `Bash`, giving the tool a timeout comfortably above the bounded status wait. Both are dynamic values: shell-escape each exactly once before building the command. `shellEscape(value)` means robust shell argument escaping (for example, Bash `printf '%q' "$value"`). Keep `--` before the job ID, and keep `"${CLAUDE_PLUGIN_ROOT}"` double quoted because the shell expands it:
 ```typescript
+const rootArg = shellEscape(workspaceRoot)
+const jobArg = shellEscape(jobId)
+
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status -C "${workspaceRoot}" ${jobId} --wait --timeout-ms 240000 --json`,
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status -C ${rootArg} --wait --timeout-ms 240000 --json -- ${jobArg}`,
   description: "Wait for Codex deep review",
   timeout: 300000
 })
 ```
 - When the JSON says `waitTimedOut: true`, use the PID-aware timeout branch in `status.md` and re-arm only a healthy job. When it does not, retrieve the persisted deep-review result:
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result -C "${workspaceRoot}" <job-id> --json
+```typescript
+Bash({
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result -C ${rootArg} --json -- ${jobArg}`,
+  description: "Read persisted Codex deep-review result"
+})
 ```
 - Read `.storedJob.rendered` from the result JSON and present it verbatim in the same turn the terminal wait returns; never wait for the user to ask "is it done?" or "continue".
 - If enqueueing or result retrieval exits non-zero, the job becomes `failed` or `cancelled`, or the JSON or review output is empty or malformed, report the failure with the most actionable lines. A failed review must not vanish silently.
 - Never re-dispatch another deep review over the same diff, and never replace the findings with a "check `/codex:status`" note.
-- If a later turn inherits a dispatched-but-unread deep review, use `status -C "${workspaceRoot}" <job-id> --json` to recover it from disk, resume the bounded wait while active, and call `result -C "${workspaceRoot}" <job-id> --json` after it is terminal. Do not re-dispatch or describe the job as stuck.
+- If a later turn inherits a dispatched-but-unread deep review, use `status -C ${rootArg} --json -- ${jobArg}` to recover it from disk, resume the bounded wait while active, and call `result -C ${rootArg} --json -- ${jobArg}` after it is terminal. Do not re-dispatch or describe the job as stuck.

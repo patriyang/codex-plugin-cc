@@ -28,6 +28,7 @@
  *   activityTimer: ReturnType<typeof setTimeout> | null,
  *   lastActivityAt: number | null,
  *   activityCount: number,
+ *   itemActivityCount: number,
  *   stallCleanup: Promise<void> | null,
  *   stalled: boolean,
  *   activeTools: Map<string, { threadId: string | null, itemId: string | null, toolClass: string, label: string, deadlineTimer: ReturnType<typeof setTimeout> | null, armedAt: number | null }>,
@@ -422,6 +423,7 @@ function createTurnCaptureState(threadId, options = {}) {
     activityTimer: null,
     lastActivityAt: null,
     activityCount: 0,
+    itemActivityCount: 0,
     stallCleanup: null,
     stalled: false,
     activeTools: new Map(),
@@ -779,6 +781,8 @@ function belongsToTurn(state, message) {
 }
 
 function recordItem(state, item, lifecycle, threadId = null) {
+  state.itemActivityCount += 1;
+
   if (item.type === "collabAgentToolCall") {
     if (!threadId || threadId === state.threadId) {
       if (lifecycle === "started" || item.status === "inProgress") {
@@ -1496,7 +1500,7 @@ export async function runAppServerReview(cwd, options = {}) {
     const status = buildResultStatus(turnState);
     const failure = status === 0
       ? { failureClass: null, retryable: false }
-      : classifyFailureMessage(turnState.error?.message);
+      : classifyFailureMessage(extractErrorMessage(turnState.error));
 
     return {
       status,
@@ -1710,10 +1714,11 @@ export async function runAppServerTurn(cwd, options = {}) {
     const initialStatus = buildResultStatus(turnState);
     const initialFailure = initialStatus === 0
       ? { failureClass: null, retryable: false }
-      : classifyFailureMessage(turnState.error?.message);
+      : classifyFailureMessage(extractErrorMessage(turnState.error));
     let modelFallback = null;
 
     const turnProducedNothing =
+      turnState.itemActivityCount === 0 &&
       turnState.messages.length === 0 &&
       turnState.fileChanges.length === 0 &&
       turnState.commandExecutions.length === 0 &&
@@ -1738,9 +1743,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     const status = buildResultStatus(turnState);
     const failure = status === 0
       ? { failureClass: null, retryable: false }
-      : initialFailure.failureClass === CAPACITY
-        ? initialFailure
-        : classifyFailureMessage(turnState.error?.message);
+      : classifyFailureMessage(extractErrorMessage(turnState.error));
 
     return {
       status,

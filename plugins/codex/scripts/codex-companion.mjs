@@ -345,6 +345,12 @@ async function handleSetup(argv) {
   if (options["fallback-model"] != null && options["clear-fallback-model"]) {
     throw new Error("Choose either --fallback-model or --clear-fallback-model.");
   }
+  const fallbackModel = options["fallback-model"] == null
+    ? null
+    : String(options["fallback-model"]).trim();
+  if (fallbackModel === "") {
+    throw new Error("--fallback-model requires a non-empty model name.");
+  }
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
@@ -357,9 +363,9 @@ async function handleSetup(argv) {
     setConfig(workspaceRoot, "stopReviewGate", false);
     actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
   }
-  if (options["fallback-model"] != null) {
-    setConfig(workspaceRoot, "fallbackModel", options["fallback-model"]);
-    actionsTaken.push(`Configured fallback model ${options["fallback-model"]} for ${workspaceRoot}.`);
+  if (fallbackModel != null) {
+    setConfig(workspaceRoot, "fallbackModel", fallbackModel);
+    actionsTaken.push(`Configured fallback model ${fallbackModel} for ${workspaceRoot}.`);
   } else if (options["clear-fallback-model"]) {
     setConfig(workspaceRoot, "fallbackModel", null);
     actionsTaken.push(`Cleared the configured fallback model for ${workspaceRoot}.`);

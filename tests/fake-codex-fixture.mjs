@@ -565,6 +565,7 @@ rl.on("line", (line) => {
           .join("\\n");
         const turnId = nextTurnId(state);
         thread.updatedAt = now();
+	        state.turnStarts = (state.turnStarts || 0) + 1;
 	        state.lastTurnStart = {
 	          threadId: message.params.threadId,
 	          turnId,
@@ -592,7 +593,10 @@ rl.on("line", (line) => {
 	        // prompt succeeds on another model.
 	        if (
 	          BEHAVIOR === "all-models-at-capacity" ||
-	          ((BEHAVIOR === "model-at-capacity" || BEHAVIOR === "model-at-capacity-after-output") &&
+	          ((BEHAVIOR === "model-at-capacity" ||
+	            BEHAVIOR === "model-at-capacity-after-output" ||
+	            BEHAVIOR === "model-at-capacity-after-command-start" ||
+	            BEHAVIOR === "capacity-then-auth-failure") &&
 	            (message.params.model ?? null) === CAPACITY_BOUND_MODEL)
 	        ) {
 	          state.capacityRejections = (state.capacityRejections || 0) + 1;
@@ -625,12 +629,41 @@ rl.on("line", (line) => {
 	              }
 	            });
 	          }
+	          if (BEHAVIOR === "model-at-capacity-after-command-start") {
+	            send({
+	              method: "item/started",
+	              params: {
+	                threadId: thread.id,
+	                turnId,
+	                item: {
+	                  type: "commandExecution",
+	                  id: "cmd_" + turnId,
+	                  command: "apply-side-effect",
+	                  status: "inProgress"
+	                }
+	              }
+	            });
+	          }
 	          send({
 	            method: "error",
 	            params: {
 	              threadId: thread.id,
 	              turnId,
 	              error: { message: "Selected model is at capacity. Please try a different model." }
+	            }
+	          });
+	          send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "failed") } });
+	          break;
+	        }
+
+	        if (BEHAVIOR === "capacity-then-auth-failure") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "error",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              error: { message: "Authentication expired; run codex login." }
 	            }
 	          });
 	          send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "failed") } });

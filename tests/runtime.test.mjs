@@ -3288,6 +3288,45 @@ test("review --background enqueues a detached worker and exposes per-job status"
   assert.match(resultPayload.storedJob.rendered, /No material issues found/);
 });
 
+test("review --background persists the resolved target in its job request", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  run("git", ["checkout", "-b", "feature"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "feature work"], { cwd: repo });
+
+  const launched = run("node", [SCRIPT, "review", "--background", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(repo, launchPayload.jobId), "utf8"));
+  assert.equal(storedJob.summary, "Review branch diff against main");
+  assert.deepEqual(storedJob.request.target, {
+    mode: "branch",
+    label: "branch diff against main",
+    baseRef: "main",
+    explicit: false
+  });
+
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    { cwd: repo, env: buildEnv(binDir) }
+  );
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.equal(JSON.parse(waitedStatus.stdout).job.status, "completed");
+});
+
 test("review --background returns the workspace needed to wait and read from another cwd", async () => {
   const ambientCwd = makeTempDir();
   const repo = path.join(makeTempDir(), "repo with ' quote");
@@ -3420,6 +3459,120 @@ test("deep-review --background enqueues a detached worker and stores its rendere
   assert.equal(resultPayload.job.status, "completed");
   assert.match(resultPayload.storedJob.rendered, /# Codex Deep Review/);
   assert.match(resultPayload.storedJob.rendered, /Missing empty-state guard/);
+});
+
+test("a background review reviews the target it was validated and named for", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("uses the POSIX process-start-time probe to hold the worker");
+    return;
+  }
+
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const probeDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 1;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  run("git", ["checkout", "-b", "feature"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 2;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "feature work"], { cwd: repo });
+
+  // The worker probes its own process start time before it runs the review, so
+  // blocking `ps` there holds it between the parent's target resolution and its
+  // own. The parent's probe is released up front; only the worker waits.
+  const parentProbeLock = path.join(probeDir, "parent-lock");
+  const parentProbeStarted = path.join(probeDir, "parent-started");
+  const parentProbeRelease = path.join(probeDir, "parent-release");
+  const lockOwnerProbeLock = path.join(probeDir, "lock-owner-lock");
+  const workerProbeLock = path.join(probeDir, "worker-lock");
+  const workerProbeStarted = path.join(probeDir, "worker-started");
+  const workerProbeRelease = path.join(probeDir, "worker-release");
+  writeExecutable(
+    path.join(probeDir, "ps"),
+    [
+      "#!/bin/sh",
+      'if mkdir "$CODEX_TEST_PARENT_PROBE_LOCK" 2>/dev/null; then',
+      '  printf \'started\\n\' > "$CODEX_TEST_PARENT_PROBE_STARTED"',
+      '  while [ ! -e "$CODEX_TEST_PARENT_PROBE_RELEASE" ]; do sleep 0.01; done',
+      'elif mkdir "$CODEX_TEST_LOCK_OWNER_PROBE_LOCK" 2>/dev/null; then',
+      "  :",
+      'elif mkdir "$CODEX_TEST_WORKER_PROBE_LOCK" 2>/dev/null; then',
+      '  printf \'started\\n\' > "$CODEX_TEST_WORKER_PROBE_STARTED"',
+      '  while [ ! -e "$CODEX_TEST_WORKER_PROBE_RELEASE" ]; do sleep 0.01; done',
+      "fi",
+      "printf 'Mon Jul 27 12:34:56 2026\\n'"
+    ].join("\n") + "\n"
+  );
+  fs.writeFileSync(parentProbeRelease, "");
+
+  const baseEnv = buildEnv(binDir);
+  const env = {
+    ...baseEnv,
+    PATH: `${probeDir}:${baseEnv.PATH}`,
+    CODEX_TEST_PARENT_PROBE_LOCK: parentProbeLock,
+    CODEX_TEST_PARENT_PROBE_STARTED: parentProbeStarted,
+    CODEX_TEST_PARENT_PROBE_RELEASE: parentProbeRelease,
+    CODEX_TEST_LOCK_OWNER_PROBE_LOCK: lockOwnerProbeLock,
+    CODEX_TEST_WORKER_PROBE_LOCK: workerProbeLock,
+    CODEX_TEST_WORKER_PROBE_STARTED: workerProbeStarted,
+    CODEX_TEST_WORKER_PROBE_RELEASE: workerProbeRelease
+  };
+  t.after(() => {
+    if (!fs.existsSync(workerProbeRelease)) {
+      fs.writeFileSync(workerProbeRelease, "");
+    }
+  });
+
+  // Clean tree, so `--scope auto` resolves to the branch diff and the job is
+  // named for it.
+  const launched = run("node", [SCRIPT, "adversarial-review", "--background", "--json"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  assert.equal(launchPayload.summary, "Adversarial Review branch diff against main");
+
+  await waitFor(() => fs.existsSync(workerProbeStarted), { timeoutMs: 10000, intervalMs: 10 });
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 3;\n");
+  fs.writeFileSync(workerProbeRelease, "");
+
+  // Every follow-up call keeps the probe on PATH: the worker recorded the
+  // probe's start time, so a reaper reading the real `ps` would call it dead.
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    { cwd: repo, env }
+  );
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.equal(JSON.parse(waitedStatus.stdout).job.status, "completed", waitedStatus.stdout);
+
+  const resultPayload = await waitFor(() => {
+    const result = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], {
+      cwd: repo,
+      env
+    });
+    if (result.status !== 0) {
+      return null;
+    }
+    return JSON.parse(result.stdout);
+  });
+
+  assert.equal(resultPayload.storedJob.result.target.mode, "branch");
+  assert.equal(resultPayload.storedJob.result.target.label, "branch diff against main");
+  assert.match(resultPayload.storedJob.rendered, /^Target: branch diff against main$/m);
+
+  // The label alone would still match if the worker reported the pinned target
+  // while collecting different content, so assert what Codex actually received:
+  // the enqueue-time branch diff, and none of the later working-tree edit.
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.match(state.lastTurnStart.prompt, /export const value = 2;/);
+  assert.doesNotMatch(state.lastTurnStart.prompt, /export const value = 3;/);
 });
 
 test("review rejects --wait and --background together", () => {

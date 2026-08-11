@@ -490,10 +490,12 @@ async function executeReviewRun(request) {
   ensureCodexAvailable(request.cwd);
   ensureGitRepository(request.cwd);
 
-  const target = resolveReviewTarget(request.cwd, {
-    base: request.base,
-    scope: request.scope
-  });
+  const target =
+    request.target ??
+    resolveReviewTarget(request.cwd, {
+      base: request.base,
+      scope: request.scope
+    });
   const focusText = request.focusText?.trim() ?? "";
   const reviewName = request.reviewName ?? "Review";
   if (reviewName === "Review") {
@@ -993,6 +995,7 @@ async function handleReviewCommand(argv, config) {
       cwd,
       base: options.base,
       scope: options.scope,
+      target,
       model,
       effort,
       effortOverride,
@@ -1011,6 +1014,7 @@ async function handleReviewCommand(argv, config) {
         cwd,
         base: options.base,
         scope: options.scope,
+        target,
         model,
         effort,
         effortOverride,

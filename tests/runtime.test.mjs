@@ -1261,6 +1261,50 @@ test("a failing capacity fallback runs only once and remains retryable", () => {
   assert.match(jobLog, /Model gpt-5\.5 is at capacity; retrying on gpt-5\.6-terra\./);
 });
 
+test("a retryable capacity failure tells the caller how long to wait before retrying", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "all-models-at-capacity");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "summarize the repo", "--json"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_FALLBACK_MODEL: "gpt-5.6-terra" }
+  });
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.failureClass, "capacity");
+  assert.equal(payload.retryable, true);
+  // Fallback resolution is deterministic, so an immediate retry resolves the same pair of models
+  // and fails the same way. `retryable` is only actionable with a pace attached.
+  assert.equal(typeof payload.retryAfterMs, "number");
+  assert.ok(payload.retryAfterMs >= 1000, `expected a backoff floor, got ${payload.retryAfterMs}`);
+});
+
+test("a non-retryable failure carries no retry pacing", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "capacity-then-auth-failure");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "summarize the repo", "--json"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_FALLBACK_MODEL: "gpt-5.6-terra" }
+  });
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.retryable, false);
+  assert.equal(payload.retryAfterMs ?? null, null);
+});
+
 test("a capacity fallback failure reports the fallback turn's non-capacity error", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -3166,6 +3210,77 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
   assert.equal(storedPayload.job.status, "failed");
   assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(tool-in-flight\)/i);
   assert.match(storedPayload.storedJob.rendered, /codegraph_explore/i);
+});
+
+test("an aborted turn is classified as stalled so a caller can tell it apart from an empty result", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "hung-tool");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "5000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "500",
+    CODEX_MCP_TOOL_STALL_TIMEOUT_MS: "500"
+  };
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the hung MCP tool"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.status, "failed");
+  // The turn was interrupted by the watchdog, not answered. Without a class of its own this is
+  // indistinguishable in the record from a turn that ran fine and produced nothing.
+  assert.equal(waitedPayload.job.failureClass, "stalled");
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.storedJob.failureClass, "stalled");
+  assert.equal(storedPayload.storedJob.result.failureClass, "stalled");
+  // The tool call already produced items on this turn, so repeating it is not automatically safe.
+  assert.equal(storedPayload.storedJob.retryable, false);
+  assert.equal(storedPayload.storedJob.result.retryAfterMs ?? null, null);
+  assert.match(storedPayload.storedJob.rendered, /Failure class: stalled/i);
+});
+
+test("an MCP tool call gets its own inactivity budget instead of the generic quick-tool one", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "slow-mcp-tool");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  // The MCP call is silent for 1.5s — well past the generic quick-tool budget, well inside the MCP
+  // one. Killing the turn here costs everything the model had accumulated for a call that was alive.
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "20000",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "600",
+    CODEX_MCP_TOOL_STALL_TIMEOUT_MS: "10000",
+    CODEX_TOOL_MAX_INFLIGHT_MS: "10000"
+  };
+  const result = run("node", [SCRIPT, "task", "explore the graph", "--json"], { cwd: repo, env });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.failureClass ?? null, null);
+  assert.doesNotMatch(payload.rawOutput ?? "", /stalled/i);
 });
 
 test("task watchdog caps a quick tool that stays busy but never completes", async () => {

@@ -250,6 +250,29 @@ test("renderStoredJobResult shows one failure classification line only for faile
   assert.doesNotMatch(completedOutput, /^Failure class:/m);
 });
 
+test("renderStoredJobResult states the retry pace alongside a retryable failure class", () => {
+  const output = renderStoredJobResult(
+    {
+      id: "task-capacity",
+      status: "failed",
+      title: "Codex Task",
+      failureClass: "capacity",
+      retryable: true,
+      retryAfterMs: 60000
+    },
+    {
+      status: "failed",
+      failureClass: "capacity",
+      retryable: true,
+      retryAfterMs: 60000,
+      result: { rawOutput: "Codex task failed." }
+    }
+  );
+
+  assert.equal(output.match(/^Failure class: capacity \(retryable\)$/gm)?.length, 1);
+  assert.equal(output.match(/^Retry after: 60s$/gm)?.length, 1);
+});
+
 test("renderTaskResult leads with the failure reason instead of the partial message (#88)", () => {
   const output = renderTaskResult(
     {

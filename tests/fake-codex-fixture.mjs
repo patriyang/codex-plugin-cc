@@ -869,6 +869,51 @@ rl.on("line", (line) => {
 	            }
 	          });
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+	        } else if (BEHAVIOR === "slow-mcp-tool") {
+	          // A legitimately slow MCP call: silent well past the generic quick-tool budget, then it
+	          // answers and the turn finishes normally.
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "mcpToolCall",
+	                id: "mcp_" + turnId,
+	                server: "codegraph",
+	                tool: "codegraph_explore",
+	                status: "inProgress"
+	              }
+	            }
+	          });
+	          const slowMcpTimer = setTimeout(() => {
+	            if (!interruptibleTurns.has(turnId)) {
+	              return;
+	            }
+	            interruptibleTurns.delete(turnId);
+	            send({
+	              method: "item/completed",
+	              params: {
+	                threadId: thread.id,
+	                turnId,
+	                item: {
+	                  type: "mcpToolCall",
+	                  id: "mcp_" + turnId,
+	                  server: "codegraph",
+	                  tool: "codegraph_explore",
+	                  status: "completed"
+	                }
+	              }
+	            });
+	            for (const entry of items) {
+	              if (entry && entry.completed) {
+	                send({ method: "item/completed", params: { threadId: thread.id, turnId, item: entry.completed } });
+	              }
+	            }
+	            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
+	          }, 1500);
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: slowMcpTimer });
 	        } else if (BEHAVIOR === "errored-tool-after-final-answer") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          send({

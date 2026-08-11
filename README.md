@@ -169,7 +169,7 @@ Use it when you want Codex to:
 - take a faster or cheaper pass with a smaller model
 
 > [!NOTE]
-> Depending on the task and the model you choose these tasks might take a long time and it's generally recommended to force the task to be in the background or move the agent to the background.
+> Depending on the task and the model you choose these tasks might take a long time. With `--background`, rescue enqueues a tracked Codex job, waits for it in bounded foreground steps, and presents the persisted result like the review commands do.
 
 It supports `--background`, `--wait`, `--resume`, and `--fresh`. If you omit `--resume` and `--fresh`, the plugin can offer to continue the latest rescue thread for this repo.
 
@@ -370,11 +370,11 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 /codex:rescue --background investigate the flaky test
 ```
 
-Neither flow expects you to poll for the result, but they get it back to you differently.
+Neither flow requires user polling because the command waits in bounded foreground steps and presents the result itself.
 
 For a review, `--background` enqueues a detached tracked job and the command then waits on it in bounded foreground steps, so it presents the findings itself without needing anything from you.
 
-For rescue, `--background` backgrounds the subagent rather than the Codex run: the subagent blocks on a foreground `task`, so its report already contains Codex's full output. Presenting it depends on Claude Code re-invoking the command once the subagent finishes — a re-invocation that has been observed not to arrive for subagent callers. If a rescue goes quiet, recover it with the commands below instead of re-running it.
+For rescue, `--background` enqueues a tracked Codex job and the command waits for it in bounded foreground steps, then presents the persisted result just like a background review. If a turn ends before the result is read, recover it with the commands below instead of re-running it.
 
 `/codex:status` and `/codex:result <job-id>` inspect a tracked job from another turn, or recover a run whose turn ended before its result was read.
 

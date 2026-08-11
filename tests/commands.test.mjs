@@ -448,9 +448,14 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(rescue, /AskUserQuestion/);
   assert.match(rescue, /Continue current Codex thread/);
   assert.match(rescue, /Start a new Codex thread/);
-  assert.match(rescue, /run the `codex:codex-rescue` subagent in the background/i);
-  assert.match(rescue, /default to foreground/i);
-  assert.match(rescue, /Do not forward them to `task`/i);
+  assert.match(rescue, /Always invoke the `codex:codex-rescue` subagent in the foreground/i);
+  assert.match(rescue, /`--background` backgrounds the tracked Codex task inside that subagent; it never backgrounds the `Agent` call/i);
+  assert.match(rescue, /If neither flag is present, invoke the subagent in the foreground/i);
+  assert.match(rescue, /`--background` and `--wait` are mutually exclusive execution flags/i);
+  assert.match(rescue, /Never dispatch both/i);
+  assert.match(rescue, /`--wait` remains a foreground execution flag: strip it before invoking `task`/i);
+  assert.match(rescue, /`--background` is forwarded to `task` as `--background --json`/i);
+  assert.match(rescue, /neither execution flag belongs in the natural-language task text/i);
   assert.match(rescue, /`--model` and `--effort` are runtime-selection flags/i);
   assert.match(rescue, /runtime defaults to `high`/i);
   assert.match(rescue, /If they ask for `spark`, map it to `gpt-5\.3-codex-spark`/i);
@@ -459,15 +464,31 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(rescue, /If the user chooses continue, add `--resume`/i);
   assert.match(rescue, /If the user chooses a new thread, add `--fresh`/i);
   assert.match(rescue, /thin forwarder only/i);
-  assert.match(rescue, /Return the Codex companion stdout verbatim to the user/i);
+  assert.match(rescue, /Return the subagent stdout verbatim to the user/i);
   assert.match(rescue, /Do not paraphrase, summarize, rewrite, or add commentary before or after it/i);
-  assert.match(rescue, /return that command's stdout as-is/i);
+  assert.match(rescue, /returns that command's stdout as-is/i);
+  assert.match(rescue, /Foreground flow:/);
+  assert.match(rescue, /Background flow:/);
+  assert.match(rescue, /foreground flow applies to a rescue report/i);
+  assert.match(rescue, /no-flag subagent guidance selects background and returns `task --background --json` enqueue JSON/i);
+  assert.match(rescue, /dispatch JSON as a request to follow the Background flow/i);
+  assert.match(rescue, /do not return it as the rescue result/i);
+  assert.match(rescue, /subagent's stdout is the enqueue JSON/i);
+  assert.match(rescue, /controller owns the bounded wait and persisted-result fetch/i);
+  assert.match(rescue, /empty or malformed Agent\/Bash output/i);
+  assert.match(rescue, /reported nonzero Agent invocation/i);
+  assert.match(rescue, /available tool and stderr failure lines/i);
+  assert.match(rescue, /never silently treat it as a successful rescue/i);
   assert.match(rescue, /Leave `--resume` and `--fresh` in the forwarded request/i);
   assert.match(agent, /--resume/);
   assert.match(agent, /--fresh/);
   assert.match(agent, /thin forwarding wrapper/i);
   assert.match(agent, /prefer foreground for a small, clearly bounded rescue request/i);
   assert.match(agent, /If the user did not explicitly choose `--background` or `--wait` and the task looks complicated, open-ended, multi-step, or likely to keep Codex running for a long time, prefer background execution/i);
+  assert.match(agent, /prefer background execution by invoking `task --background --json`/i);
+  assert.match(agent, /If the user explicitly chooses `--background`, invoke `task --background --json` and return its enqueue payload without waiting, polling, or fetching/i);
+  assert.match(agent, /If the user explicitly chooses `--wait`, or the default guidance chooses foreground, invoke `task` in the foreground without passing `--wait`/i);
+  assert.match(agent, /`--background` and `--wait` are mutually exclusive execution flags\. Do not forward or dispatch both/i);
   assert.match(agent, /Use exactly one `Bash` call/i);
   assert.match(agent, /Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own/i);
   assert.match(agent, /Do not call `review`, `adversarial-review`, `deep-review`, `status`, `result`, or `cancel`/i);
@@ -487,9 +508,10 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(runtimeSkill, /runtime defaults to `high`/i);
   assert.match(runtimeSkill, /runtime defaults to `gpt-5\.5`/i);
   assert.match(runtimeSkill, /Map `spark` to `--model gpt-5\.3-codex-spark`/i);
-  assert.match(runtimeSkill, /If the forwarded request includes `--background` or `--wait`, treat that as Claude-side execution control only/i);
-  assert.match(runtimeSkill, /Strip it before calling `task`/i);
-  assert.match(runtimeSkill, /codex-companion\.mjs" task \[--write\] \[--model <m>\] \[--effort <e>\] \[--resume-last\|--fresh\] -- "<prompt text>"/);
+  assert.match(runtimeSkill, /If the forwarded request includes `--wait`, remove it before invoking `task`/i);
+  assert.match(runtimeSkill, /If the forwarded request includes `--background`, pass `--background --json` to `task`/i);
+  assert.match(runtimeSkill, /`--background` and `--wait` are mutually exclusive execution flags\. Do not forward or dispatch both/i);
+  assert.match(runtimeSkill, /codex-companion\.mjs" task \[--write\] \[--background --json\] \[--model <m>\] \[--effort <e>\] \[--resume-last\|--fresh\] -- "<prompt text>"/);
   assert.match(runtimeSkill, /The bare `--` guarantees the prompt reaches Codex verbatim even when its first word is a flag name like `--write`/i);
   assert.match(runtimeSkill, /flags first, then a bare `--`, then the prompt/i);
   assert.match(runtimeSkill, /`--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`/i);
@@ -500,6 +522,7 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(readme, /--model gpt-5\.4-mini --effort medium/i);
   assert.match(readme, /`spark`, the plugin maps that to `gpt-5\.3-codex-spark`/i);
   assert.match(readme, /continue a previous Codex task/i);
+  assert.match(readme, /Neither flow requires user polling because the command waits in bounded foreground steps and presents the result itself/i);
   assert.match(
     readme,
     /for `task` and the review commands, flags must precede the prompt\/focus text \(anything after it is literal, not a flag\); `\/codex:status`, `\/codex:result`, and `\/codex:cancel` instead take their job id first and flags after/i
@@ -550,7 +573,7 @@ test("internal docs use task terminology for rescue runs", () => {
   const promptingSkill = read("skills/gpt-5-4-prompting/SKILL.md");
   const promptRecipes = read("skills/gpt-5-4-prompting/references/codex-prompt-recipes.md");
 
-  assert.match(runtimeSkill, /codex-companion\.mjs" task \[--write\] \[--model <m>\] \[--effort <e>\] \[--resume-last\|--fresh\] -- "<prompt text>"/);
+  assert.match(runtimeSkill, /codex-companion\.mjs" task \[--write\] \[--background --json\] \[--model <m>\] \[--effort <e>\] \[--resume-last\|--fresh\] -- "<prompt text>"/);
   assert.match(runtimeSkill, /Use `task` for every rescue request/i);
   assert.match(runtimeSkill, /task --resume-last/i);
   assert.match(promptingSkill, /Use `task` when the task is diagnosis/i);
@@ -589,7 +612,8 @@ test("the foreground wait mechanism is provisioned on every command that require
     "commands/review.md",
     "commands/adversarial-review.md",
     "commands/deep-review.md",
-    "commands/implement.md"
+    "commands/implement.md",
+    "commands/rescue.md"
   ]) {
     const source = read(file);
     const frontmatter = source.slice(0, source.indexOf("\n---", 4));
@@ -641,7 +665,7 @@ test("dispatch is never a stopping point across every async surface", () => {
   // Regression for the "dispatched, then ended the turn" failure mode: the
   // background flows used to end at "Check /codex:status for progress", which
   // trained the controller to hand the user a checkpoint instead of the result.
-  for (const file of ["commands/review.md", "commands/adversarial-review.md", "commands/deep-review.md"]) {
+  for (const file of ["commands/review.md", "commands/adversarial-review.md", "commands/deep-review.md", "commands/rescue.md"]) {
     const source = read(file);
     const background = source.slice(source.indexOf("Background flow:"));
     const recovery = background.slice(background.lastIndexOf("\n- ") + 1);
@@ -665,8 +689,10 @@ test("dispatch is never a stopping point across every async surface", () => {
   }
 
   const rescue = read("commands/rescue.md");
-  assert.match(rescue, /backgrounds the \*subagent\*, not the Codex run/i);
+  assert.match(rescue, /backgrounds the tracked Codex task inside that subagent; it never backgrounds the `Agent` call/i);
   assert.match(rescue, /Do not close out a turn with a dispatched-but-unread rescue/i);
+  assert.match(rescue, /Never re-dispatch a second rescue for the same request/i);
+  assert.match(rescue, /Do not replace the rescue result with a status note/i);
 
   const implement = read("commands/implement.md");
   assert.match(implement, /## Dispatch and Follow-Through/);
@@ -852,4 +878,31 @@ test("implement scopes kill-recovery to task threads, since review threads are e
     /ephemeral: true/,
     "review runs must still start an ephemeral thread"
   );
+});
+
+test("rescue never depends on a background-subagent re-invocation to present its result", () => {
+  // Regression for #99: rescue.md promised "Claude Code re-invokes you when a
+  // background subagent finishes" while status.md records that exact
+  // re-invocation as observed not to arrive for subagent callers -- so a
+  // completed rescue could sit unread with no recovery step. `--background`
+  // now means a tracked `task` job the controller waits on in bounded
+  // foreground steps, the same contract the review flows use.
+  const rescue = read("commands/rescue.md");
+  const status = read("commands/status.md");
+
+  assert.match(status, /observed not to arrive/i);
+  assert.doesNotMatch(rescue, /re-invokes you when a background subagent finishes/i);
+  assert.doesNotMatch(rescue, /nothing to fetch afterwards/i);
+  assert.doesNotMatch(rescue, /run the `codex:codex-rescue` subagent in the background/i);
+
+  assert.match(rescue, /task --background --json/);
+  assert.match(rescue, /status -C "\$\{workspaceRoot\}" \$\{jobId\} --wait --timeout-ms 240000 --json/);
+  assert.match(rescue, /result -C "\$\{workspaceRoot\}" <job-id> --json/);
+  assert.match(rescue, /\.storedJob\.rendered/);
+
+  // The forwarding contract has to agree with the command doc.
+  const agent = read("agents/codex-rescue.md");
+  const runtimeSkill = read("skills/codex-cli-runtime/SKILL.md");
+  assert.match(agent, /--background/);
+  assert.doesNotMatch(runtimeSkill, /Strip it before calling `task`/i);
 });

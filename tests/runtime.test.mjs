@@ -330,6 +330,43 @@ test("MCP data elicitation without an approval kind is declined", async (t) => {
   });
 });
 
+// Consent is given to exactly one recognized shape. An approval kind this client has never seen,
+// a null one, and a url-mode flow all get the same answer as a plain data form.
+for (const { behavior, label } of [
+  { behavior: "mcp-elicitation-unknown-kind", label: "an unrecognized approval kind" },
+  { behavior: "mcp-elicitation-null-kind", label: "a null approval kind" },
+  { behavior: "mcp-elicitation-url-mode", label: "a url-mode approval" }
+]) {
+  test(`MCP elicitation carrying ${label} is declined rather than accepted`, async (t) => {
+    const repo = makeTempDir();
+    const binDir = makeTempDir();
+    const statePath = path.join(binDir, "fake-codex-state.json");
+    installFakeCodex(binDir, behavior);
+
+    const previousPath = process.env.PATH;
+    process.env.PATH = buildEnv(binDir).PATH;
+    t.after(() => {
+      if (previousPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = previousPath;
+      }
+    });
+
+    const result = await runAppServerTurn(repo, {
+      prompt: "answer the elicitation",
+      sandbox: "read-only"
+    });
+
+    assert.equal(result.status, 0, result.error?.message);
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.deepEqual(state.lastElicitationReply, {
+      id: "elicitation_turn_1",
+      result: { action: "decline", content: null, _meta: null }
+    });
+  });
+}
+
 test("unrelated app-server requests still receive the unsupported-method error", async (t) => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

@@ -847,6 +847,61 @@ rl.on("line", (line) => {
           break;
         }
 
+        if (BEHAVIOR === "mcp-elicitation-unknown-kind") {
+          requestServerReply(
+            "elicitation_" + turnId,
+            "mcpServer/elicitation/request",
+            {
+              threadId: thread.id,
+              turnId,
+              serverName: "codegraph",
+              mode: "form",
+              _meta: { codex_approval_kind: "some_future_kind" },
+              message: "Approve something this client has never heard of?",
+              requestedSchema: { type: "object", properties: {} }
+            },
+            (reply) => emitMcpDeclineCompletion(state, thread.id, turnId, reply)
+          );
+          break;
+        }
+
+        if (BEHAVIOR === "mcp-elicitation-null-kind") {
+          requestServerReply(
+            "elicitation_" + turnId,
+            "mcpServer/elicitation/request",
+            {
+              threadId: thread.id,
+              turnId,
+              serverName: "codegraph",
+              mode: "form",
+              _meta: { codex_approval_kind: null },
+              message: "Please provide the requested codegraph filter.",
+              requestedSchema: { type: "object", properties: { filter: { type: "string" } } }
+            },
+            (reply) => emitMcpDeclineCompletion(state, thread.id, turnId, reply)
+          );
+          break;
+        }
+
+        if (BEHAVIOR === "mcp-elicitation-url-mode") {
+          requestServerReply(
+            "elicitation_" + turnId,
+            "mcpServer/elicitation/request",
+            {
+              threadId: thread.id,
+              turnId,
+              serverName: "codegraph",
+              mode: "url",
+              _meta: { codex_approval_kind: "mcp_tool_call" },
+              message: "Finish signing in to codegraph.",
+              url: "https://example.invalid/oauth",
+              elicitationId: "elicit_" + turnId
+            },
+            (reply) => emitMcpDeclineCompletion(state, thread.id, turnId, reply)
+          );
+          break;
+        }
+
         if (BEHAVIOR === "unknown-server-request") {
           requestServerReply(
             "unknown_" + turnId,

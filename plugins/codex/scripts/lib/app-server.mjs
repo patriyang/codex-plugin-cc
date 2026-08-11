@@ -174,12 +174,17 @@ class AppServerClientBase {
 
   handleServerRequest(message) {
     if (message.method === "mcpServer/elicitation/request") {
-      const approvalKind = message.params?._meta?.codex_approval_kind;
       // These threads use approvalPolicy "never" and have no interactive user to answer an
       // approval gate; -32601 is interpreted by app-server as a user denial instead.
+      // Only the one shape we recognize — a form asking to run an MCP tool — is consented to.
+      // Anything else, including an unfamiliar approval kind or a url-mode flow, is declined:
+      // empty content is a meaningful answer to that form and to nothing else.
+      const isToolCallApproval =
+        message.params?.mode === "form" &&
+        message.params?._meta?.codex_approval_kind === "mcp_tool_call";
       this.sendMessage({
         id: message.id,
-        result: approvalKind !== undefined
+        result: isToolCallApproval
           ? { action: "accept", content: {}, _meta: null }
           : { action: "decline", content: null, _meta: null }
       });

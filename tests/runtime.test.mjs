@@ -920,18 +920,38 @@ test("task reports the actual Codex auth error when the run is rejected", () => 
 });
 
 test("classifyFailureMessage recognizes capacity failures conservatively", () => {
-  assert.deepEqual(classifyFailureMessage("The selected model is currently overloaded. Try a different model."), {
-    failureClass: "capacity",
-    retryable: true
-  });
-  assert.deepEqual(classifyFailureMessage("Authentication expired."), {
-    failureClass: null,
-    retryable: false
-  });
-  assert.deepEqual(classifyFailureMessage(null), {
-    failureClass: null,
-    retryable: false
-  });
+  const capacityMessages = [
+    "The selected model is at capacity.",
+    "The selected model is overloaded.",
+    "The selected model is currently overloaded.",
+    "Try a different model and retry the request."
+  ];
+  for (const message of capacityMessages) {
+    assert.deepEqual(classifyFailureMessage(message), {
+      failureClass: "capacity",
+      retryable: true
+    }, message);
+  }
+
+  const ordinaryMessages = [
+    "Authentication expired.",
+    "Capacity planning is unavailable.",
+    "The request overloaded the worker.",
+    "Try another model."
+  ];
+  for (const message of ordinaryMessages) {
+    assert.deepEqual(classifyFailureMessage(message), {
+      failureClass: null,
+      retryable: false
+    }, message);
+  }
+
+  for (const value of [null, undefined, 42, { message: "The selected model is at capacity." }]) {
+    assert.deepEqual(classifyFailureMessage(value), {
+      failureClass: null,
+      retryable: false
+    });
+  }
 });
 
 test("a capacity rejection retries on the designated backup model", () => {

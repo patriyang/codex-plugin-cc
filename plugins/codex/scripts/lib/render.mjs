@@ -32,11 +32,26 @@ function appendModelAttribution(lines, meta) {
   return lines.length > before;
 }
 
-function appendFailureClassification(lines, source, prefix = "") {
+function failureClassificationLine(source) {
   if (typeof source?.failureClass !== "string" || !source.failureClass.trim()) {
-    return;
+    return null;
   }
-  lines.push(`${prefix}Failure class: ${source.failureClass}${source.retryable ? " (retryable)" : ""}`);
+  return `Failure class: ${source.failureClass}${source.retryable ? " (retryable)" : ""}`;
+}
+
+function appendFailureClassification(lines, source, prefix = "") {
+  const line = failureClassificationLine(source);
+  if (line) {
+    lines.push(`${prefix}${line}`);
+  }
+}
+
+function appendFailureClassificationToOutput(output, source) {
+  const line = failureClassificationLine(source);
+  if (!line || output.split(/\r?\n/).includes(line)) {
+    return output;
+  }
+  return `${output.trimEnd()}\n\n${line}\n`;
 }
 
 function validateReviewResultShape(data) {
@@ -430,8 +445,14 @@ export function renderJobStatusReport(job) {
 export function renderStoredJobResult(job, storedJob) {
   const threadId = storedJob?.threadId ?? job.threadId ?? null;
   const resumeCommand = threadId ? `codex resume ${threadId}` : null;
+  const failureSource = storedJob?.failureClass
+    ? storedJob
+    : storedJob?.result?.failureClass
+      ? storedJob.result
+      : job;
   if (isStructuredReviewStoredResult(storedJob) && storedJob?.rendered) {
-    const output = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
+    const rendered = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
+    const output = appendFailureClassificationToOutput(rendered, failureSource);
     if (!threadId) {
       return output;
     }
@@ -443,7 +464,8 @@ export function renderStoredJobResult(job, storedJob) {
     (typeof storedJob?.result?.codex?.stdout === "string" && storedJob.result.codex.stdout) ||
     "";
   if (rawOutput) {
-    const output = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    const rendered = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    const output = appendFailureClassificationToOutput(rendered, failureSource);
     if (!threadId) {
       return output;
     }
@@ -451,7 +473,8 @@ export function renderStoredJobResult(job, storedJob) {
   }
 
   if (storedJob?.rendered) {
-    const output = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
+    const rendered = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
+    const output = appendFailureClassificationToOutput(rendered, failureSource);
     if (!threadId) {
       return output;
     }
@@ -474,7 +497,7 @@ export function renderStoredJobResult(job, storedJob) {
     lines.push(`Summary: ${job.summary}`);
   }
 
-  appendFailureClassification(lines, storedJob?.failureClass ? storedJob : job);
+  appendFailureClassification(lines, failureSource);
 
   if (job.errorMessage) {
     lines.push("", job.errorMessage);

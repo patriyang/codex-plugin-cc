@@ -3288,6 +3288,46 @@ test("review --background enqueues a detached worker and exposes per-job status"
   assert.match(resultPayload.storedJob.rendered, /No material issues found/);
 });
 
+test("review --background persists the resolved target in its job request", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  run("git", ["checkout", "-b", "feature"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "feature work"], { cwd: repo });
+
+  const launched = run("node", [SCRIPT, "review", "--background", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(repo, launchPayload.jobId), "utf8"));
+  assert.equal(storedJob.summary, "Review branch diff against main");
+  assert.deepEqual(storedJob.request.target, {
+    mode: "branch",
+    label: "branch diff against main",
+    baseRef: "main",
+    explicit: false
+  });
+  assert.equal(storedJob.request.target.label, storedJob.summary.slice("Review ".length));
+
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    { cwd: repo, env: buildEnv(binDir) }
+  );
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.equal(JSON.parse(waitedStatus.stdout).job.status, "completed");
+});
+
 test("review --background returns the workspace needed to wait and read from another cwd", async () => {
   const ambientCwd = makeTempDir();
   const repo = path.join(makeTempDir(), "repo with ' quote");

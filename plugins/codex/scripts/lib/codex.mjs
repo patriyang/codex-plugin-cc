@@ -93,11 +93,15 @@ function buildThreadParams(cwd, options = {}) {
     serviceName: SERVICE_NAME,
     ephemeral: options.ephemeral ?? true
   };
+  const config = { ...(options.config ?? {}) };
+  for (const name of resolveDisabledMcpServers(options)) {
+    config[`mcp_servers.${name}.enabled`] = false;
+  }
   if (options.writableRoots?.length > 0) {
-    params.config = {
-      ...(options.config ?? {}),
-      "sandbox_workspace_write.writable_roots": options.writableRoots
-    };
+    config["sandbox_workspace_write.writable_roots"] = options.writableRoots;
+  }
+  if (Object.keys(config).length > 0) {
+    params.config = config;
   }
   return params;
 }
@@ -111,11 +115,15 @@ function buildResumeParams(threadId, cwd, options = {}) {
     approvalPolicy: options.approvalPolicy ?? "never",
     sandbox: options.sandbox ?? "read-only"
   };
+  const config = { ...(options.config ?? {}) };
+  for (const name of resolveDisabledMcpServers(options)) {
+    config[`mcp_servers.${name}.enabled`] = false;
+  }
   if (options.writableRoots?.length > 0) {
-    params.config = {
-      ...(options.config ?? {}),
-      "sandbox_workspace_write.writable_roots": options.writableRoots
-    };
+    config["sandbox_workspace_write.writable_roots"] = options.writableRoots;
+  }
+  if (Object.keys(config).length > 0) {
+    params.config = config;
   }
   return params;
 }
@@ -192,6 +200,31 @@ function resolveToolMaxInFlightMs(options = {}) {
     return envValue;
   }
   return DEFAULT_TOOL_MAX_INFLIGHT_MS;
+}
+
+function resolveDisabledMcpServers(options = {}) {
+  const entries = options.disabledMcpServers !== undefined
+    ? options.disabledMcpServers
+    : (process.env.CODEX_DISABLED_MCP_SERVERS ?? "").split(",");
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const disabled = [];
+  for (const entry of entries) {
+    const name = String(entry ?? "").trim();
+    if (!name || seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      process.stderr.write(`Skipping disabled MCP server "${name}": not a bare TOML key.\n`);
+      continue;
+    }
+    disabled.push(name);
+  }
+  return disabled;
 }
 
 function shorten(text, limit = 72) {

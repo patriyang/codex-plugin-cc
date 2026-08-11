@@ -2463,6 +2463,10 @@ test("write task in linked worktree passes the git common dir as an extra writab
   const worktree = path.join(worktreeParent, "linked-worktree");
   const binDir = makeTempDir();
   const statePath = path.join(binDir, "fake-codex-state.json");
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_DISABLED_MCP_SERVERS: "codegraph,hermes-vault"
+  };
   installFakeCodex(binDir);
 
   try {
@@ -2472,33 +2476,99 @@ test("write task in linked worktree passes the git common dir as an extra writab
     run("git", ["commit", "-m", "init"], { cwd: repo });
     run("git", ["worktree", "add", "-b", "linked-runtime-test", worktree], { cwd: repo });
 
-    const result = run("node", [SCRIPT, "task", "--write", "fix the failing test"], {
-      cwd: worktree,
-      env: buildEnv(binDir)
-    });
+    const result = run("node", [SCRIPT, "task", "--write", "fix the failing test"], { cwd: worktree, env });
 
     assert.equal(result.status, 0, result.stderr);
     const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(state.lastTurnStart.sandboxPolicy?.type, "workspaceWrite");
-    assert.deepEqual(state.lastThreadStart.config?.["sandbox_workspace_write.writable_roots"], [
-      fs.realpathSync(path.join(repo, ".git"))
-    ]);
-
-    const resume = run("node", [SCRIPT, "task", "--resume", "--write", "follow up"], {
-      cwd: worktree,
-      env: buildEnv(binDir)
+    assert.deepEqual(state.lastThreadStart.config, {
+      "mcp_servers.codegraph.enabled": false,
+      "mcp_servers.hermes-vault.enabled": false,
+      "sandbox_workspace_write.writable_roots": [fs.realpathSync(path.join(repo, ".git"))]
     });
+
+    const resume = run("node", [SCRIPT, "task", "--resume", "--write", "follow up"], { cwd: worktree, env });
 
     assert.equal(resume.status, 0, resume.stderr);
     const resumedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(resumedState.lastTurnStart.sandboxPolicy?.type, "workspaceWrite");
-    assert.deepEqual(resumedState.lastThreadResume.config?.["sandbox_workspace_write.writable_roots"], [
-      fs.realpathSync(path.join(repo, ".git"))
-    ]);
+    assert.deepEqual(resumedState.lastThreadResume.config, {
+      "mcp_servers.codegraph.enabled": false,
+      "mcp_servers.hermes-vault.enabled": false,
+      "sandbox_workspace_write.writable_roots": [fs.realpathSync(path.join(repo, ".git"))]
+    });
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(worktreeParent, { recursive: true, force: true });
   }
+});
+
+test("task disables named MCP servers in thread/start config", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "fix the failing test"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_DISABLED_MCP_SERVERS: "codegraph,hermes-vault" }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(state.lastThreadStart.config, {
+    "mcp_servers.codegraph.enabled": false,
+    "mcp_servers.hermes-vault.enabled": false
+  });
+});
+
+test("task omits MCP config when disabled-server env is unset", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  delete env.CODEX_DISABLED_MCP_SERVERS;
+  const result = run("node", [SCRIPT, "task", "fix the failing test"], { cwd: repo, env });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state.lastThreadStart.config, undefined);
+});
+
+test("task trims, deduplicates, and skips invalid disabled MCP server names", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "fix the failing test"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_DISABLED_MCP_SERVERS: " codegraph , , bad.name , codegraph "
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(state.lastThreadStart.config, {
+    "mcp_servers.codegraph.enabled": false
+  });
+  assert.match(result.stderr, /bad\.name.*bare TOML key/);
 });
 
 test("write task in normal checkout does not add writable root config", () => {

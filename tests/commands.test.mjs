@@ -25,9 +25,9 @@ test("review command auto-decides execution mode and uses a tracked background j
   assert.match(source, /\[--scope auto\|working-tree\|branch\]/);
   assert.doesNotMatch(source, /run_in_background/);
   assert.match(source, /review "--background --json \$ARGUMENTS"/);
-  assert.match(source, /status \$\{jobId\} --wait --timeout-ms 240000 --json/);
+  assert.match(source, /status -C "\$\{workspaceRoot\}" \$\{jobId\} --wait --timeout-ms 240000 --json/);
   assert.match(source, /description:\s*"Wait for Codex review"/);
-  assert.match(source, /result <job-id> --json/);
+  assert.match(source, /result -C "\$\{workspaceRoot\}" <job-id> --json/);
   assert.match(source, /waitTimedOut: true/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
   assert.match(source, /git status --short --untracked-files=all/);
@@ -63,9 +63,9 @@ test("adversarial review command auto-decides execution mode and uses a tracked 
   assert.match(source, /\[--scope auto\|working-tree\|branch\] \[--model <model\|spark>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh\|max\|ultra>\] \[focus \.\.\.\]/);
   assert.doesNotMatch(source, /run_in_background/);
   assert.match(source, /adversarial-review "--background --json \$ARGUMENTS"/);
-  assert.match(source, /status \$\{jobId\} --wait --timeout-ms 240000 --json/);
+  assert.match(source, /status -C "\$\{workspaceRoot\}" \$\{jobId\} --wait --timeout-ms 240000 --json/);
   assert.match(source, /description:\s*"Wait for Codex adversarial review"/);
-  assert.match(source, /result <job-id> --json/);
+  assert.match(source, /result -C "\$\{workspaceRoot\}" <job-id> --json/);
   assert.match(source, /waitTimedOut: true/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
   assert.match(source, /git status --short --untracked-files=all/);
@@ -98,9 +98,9 @@ test("deep review command auto-decides execution mode and uses a tracked backgro
   assert.match(source, /\[--scope auto\|working-tree\|branch\] \[--model <model\|spark>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh\|max\|ultra>\] \[focus \.\.\.\]/);
   assert.doesNotMatch(source, /run_in_background/);
   assert.match(source, /deep-review "--background --json \$ARGUMENTS"/);
-  assert.match(source, /status \$\{jobId\} --wait --timeout-ms 240000 --json/);
+  assert.match(source, /status -C "\$\{workspaceRoot\}" \$\{jobId\} --wait --timeout-ms 240000 --json/);
   assert.match(source, /description:\s*"Wait for Codex deep review"/);
-  assert.match(source, /result <job-id> --json/);
+  assert.match(source, /result -C "\$\{workspaceRoot\}" <job-id> --json/);
   assert.match(source, /waitTimedOut: true/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
   assert.match(source, /git status --short --untracked-files=all/);

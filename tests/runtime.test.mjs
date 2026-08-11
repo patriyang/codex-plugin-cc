@@ -3287,6 +3287,65 @@ test("review --background enqueues a detached worker and exposes per-job status"
   assert.match(resultPayload.storedJob.rendered, /No material issues found/);
 });
 
+test("review --background returns the workspace needed to wait and read from another cwd", async () => {
+  const ambientCwd = makeTempDir();
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "review", "-C", repo, "--background", "--json"], {
+    cwd: ambientCwd,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  assert.equal(launchPayload.workspaceRoot, fs.realpathSync(repo));
+
+  const waitedStatus = run(
+    "node",
+    [
+      SCRIPT,
+      "status",
+      "-C",
+      launchPayload.workspaceRoot,
+      launchPayload.jobId,
+      "--wait",
+      "--timeout-ms",
+      "15000",
+      "--json"
+    ],
+    { cwd: ambientCwd, env }
+  );
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.id, launchPayload.jobId);
+  assert.equal(waitedPayload.job.status, "completed");
+
+  const resultPayload = await waitFor(() => {
+    const result = run(
+      "node",
+      [SCRIPT, "result", "-C", launchPayload.workspaceRoot, launchPayload.jobId, "--json"],
+      { cwd: ambientCwd, env }
+    );
+    if (result.status !== 0) {
+      return null;
+    }
+    return JSON.parse(result.stdout);
+  });
+
+  assert.equal(resultPayload.job.id, launchPayload.jobId);
+  assert.equal(resultPayload.job.status, "completed");
+  assert.match(resultPayload.storedJob.rendered, /No material issues found/);
+});
+
 test("deep-review --background enqueues a detached worker and stores its rendered result", async () => {
   const { repo, binDir } = setupDeepReviewRepo();
   const env = buildEnv(binDir);

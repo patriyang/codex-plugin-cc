@@ -57,17 +57,17 @@ Background flow:
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review "--background --json $ARGUMENTS"
 ```
-- Extract `jobId` from that JSON and wait for that job in a foreground `Bash` call whose tool timeout is comfortably larger than the companion timeout:
+- Extract `jobId` and `workspaceRoot` from that JSON and wait for that job in a foreground `Bash` call whose tool timeout is comfortably larger than the companion timeout:
 ```typescript
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status ${jobId} --wait --timeout-ms 240000 --json`,
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status -C "${workspaceRoot}" ${jobId} --wait --timeout-ms 240000 --json`,
   description: "Wait for Codex adversarial review",
   timeout: 300000
 })
 ```
 - On `waitTimedOut: true`, apply the PID-aware timeout branch in `status.md`; repeat the bounded wait only for a healthy job. After a terminal payload, load the stored result:
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result <job-id> --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result -C "${workspaceRoot}" <job-id> --json
 ```
 - Read `.storedJob.rendered` from the result JSON and return it verbatim in the same turn the terminal wait returns. Do not wait for "is it done?" or "continue".
 - If the enqueue or read fails, the job ends as `failed` or `cancelled`, or any JSON or review output is empty or malformed, report that and include the most actionable failure lines. A failed review must not vanish silently.

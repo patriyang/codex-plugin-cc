@@ -918,6 +918,7 @@ function enqueueBackgroundJob(cwd, job, request) {
   return {
     payload: {
       jobId: job.id,
+      workspaceRoot: job.workspaceRoot,
       status: "queued",
       title: job.title,
       summary: job.summary,

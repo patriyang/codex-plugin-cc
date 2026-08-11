@@ -1228,6 +1228,25 @@ async function resumeThread(client, threadId, cwd, options = {}) {
   return client.request("thread/resume", buildResumeParams(threadId, cwd, options));
 }
 
+function classifyTurnFailure(turnState, status) {
+  if (status === 0) {
+    return { failureClass: null, retryable: false, retryAfterMs: null };
+  }
+  // A watchdog abort is a fact about the turn, not a string in the error, so it is read from the
+  // turn state rather than matched out of the message.
+  const failure = turnState.stalled === true
+    ? { failureClass: STALLED, retryable: true, retryAfterMs: null }
+    : classifyFailureMessage(extractErrorMessage(turnState.error));
+  // Repeating is only safe when the turn left nothing behind, and pacing is guidance for a retry
+  // that is actually on offer.
+  const retryable = failure.retryable && turnProducedNothing(turnState);
+  return {
+    failureClass: failure.failureClass,
+    retryable,
+    retryAfterMs: retryable ? failure.retryAfterMs : null
+  };
+}
+
 function buildResultStatus(turnState) {
   return turnState.finalTurn?.status === "completed" ? 0 : 1;
 }
@@ -1550,11 +1569,7 @@ export async function runAppServerReview(cwd, options = {}) {
     let reviewAttempt = await captureModelReview(options.model ?? null);
     const failedModel = reviewAttempt.resolvedModel;
     const initialStatus = buildResultStatus(reviewAttempt.turnState);
-    const initialFailure = initialStatus === 0
-      ? { failureClass: null, retryable: false, retryAfterMs: null }
-      : reviewAttempt.turnState.stalled === true
-        ? { failureClass: STALLED, retryable: turnProducedNothing(reviewAttempt.turnState), retryAfterMs: null }
-        : classifyFailureMessage(extractErrorMessage(reviewAttempt.turnState.error));
+    const initialFailure = classifyTurnFailure(reviewAttempt.turnState, initialStatus);
     let modelFallback = null;
 
     if (
@@ -1580,18 +1595,13 @@ export async function runAppServerReview(cwd, options = {}) {
 
     const { sourceThreadId, turnState } = reviewAttempt;
     const status = buildResultStatus(turnState);
-    const failure = status === 0
-      ? { failureClass: null, retryable: false, retryAfterMs: null }
-      : turnState.stalled === true
-        ? { failureClass: STALLED, retryable: turnProducedNothing(turnState), retryAfterMs: null }
-        : classifyFailureMessage(extractErrorMessage(turnState.error));
-    const retryable = failure.retryable && turnProducedNothing(turnState);
+    const failure = classifyTurnFailure(turnState, status);
 
     return {
       status,
       failureClass: failure.failureClass,
-      retryable,
-      retryAfterMs: retryable ? failure.retryAfterMs : null,
+      retryable: failure.retryable,
+      retryAfterMs: failure.retryAfterMs,
       modelFallback,
       threadId: turnState.threadId,
       sourceThreadId,
@@ -1802,11 +1812,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     const failedModel = resolvedModel ?? options.model ?? null;
     let turnState = await captureModelTurn(options.model ?? null);
     const initialStatus = buildResultStatus(turnState);
-    const initialFailure = initialStatus === 0
-      ? { failureClass: null, retryable: false, retryAfterMs: null }
-      : turnState.stalled === true
-        ? { failureClass: STALLED, retryable: turnProducedNothing(turnState), retryAfterMs: null }
-        : classifyFailureMessage(extractErrorMessage(turnState.error));
+    const initialFailure = classifyTurnFailure(turnState, initialStatus);
     let modelFallback = null;
 
     if (initialStatus !== 0 && initialFailure.failureClass === CAPACITY && turnProducedNothing(turnState)) {
@@ -1827,18 +1833,13 @@ export async function runAppServerTurn(cwd, options = {}) {
     }
 
     const status = buildResultStatus(turnState);
-    const failure = status === 0
-      ? { failureClass: null, retryable: false, retryAfterMs: null }
-      : turnState.stalled === true
-        ? { failureClass: STALLED, retryable: turnProducedNothing(turnState), retryAfterMs: null }
-        : classifyFailureMessage(extractErrorMessage(turnState.error));
-    const retryable = failure.retryable && turnProducedNothing(turnState);
+    const failure = classifyTurnFailure(turnState, status);
 
     return {
       status,
       failureClass: failure.failureClass,
-      retryable,
-      retryAfterMs: retryable ? failure.retryAfterMs : null,
+      retryable: failure.retryable,
+      retryAfterMs: failure.retryAfterMs,
       modelFallback,
       threadId,
       turnId: turnState.turnId,

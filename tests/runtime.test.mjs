@@ -136,14 +136,14 @@ function waitForChildExit(child, timeoutMs) {
   });
 }
 
-async function runStoredReviewJob(repo, binDir, jobId, request) {
+function startStoredReviewJob(repo, binDir, jobId, request, env = buildEnv(binDir)) {
   const logFile = resolveJobLogFile(repo, jobId);
   ensureStateDir(repo);
   fs.writeFileSync(logFile, "", "utf8");
   const child = spawn(
     process.execPath,
     [SCRIPT, "job-worker", "--cwd", repo, "--job-id", jobId],
-    { cwd: repo, env: buildEnv(binDir), stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
+    { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
   );
   const queuedJob = {
     id: jobId,
@@ -165,7 +165,34 @@ async function runStoredReviewJob(repo, binDir, jobId, request) {
   writeJobFile(repo, jobId, queuedJob);
   upsertJob(repo, queuedJob);
 
-  const processResult = await waitForChildExit(child, 15000);
+  return waitForChildExit(child, 15000);
+}
+
+async function runStoredReviewJob(repo, binDir, jobId, request) {
+  const processResult = await startStoredReviewJob(repo, binDir, jobId, request);
+  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
+  return { processResult, storedJob };
+}
+
+async function runStoredReviewJobWithMidRunChange(repo, binDir, jobId, request, change) {
+  const markerDir = makeTempDir();
+  const startedPath = path.join(markerDir, "review-started");
+  const releasePath = path.join(markerDir, "review-release");
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TEST_REVIEW_STARTED: startedPath,
+    CODEX_TEST_REVIEW_RELEASE: releasePath
+  };
+  const processResultPromise = startStoredReviewJob(repo, binDir, jobId, request, env);
+
+  try {
+    await waitFor(() => fs.existsSync(startedPath), { timeoutMs: 5000, intervalMs: 10 });
+    change();
+  } finally {
+    fs.writeFileSync(releasePath, "release\n");
+  }
+
+  const processResult = await processResultPromise;
   const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
   return { processResult, storedJob };
 }
@@ -4098,6 +4125,133 @@ test("a background review refuses to review a repository that moved under its pi
   // review failure without reading the message.
   assert.equal(job.failureClass, "state-drift");
   assert.equal(job.retryable, true);
+});
+
+test("a native review discards results when the working tree changes during the run", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "wait-for-review-release");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 1;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 2;\n");
+
+  const target = {
+    mode: "working-tree",
+    label: "working tree diff",
+    explicit: false
+  };
+  const { processResult, storedJob } = await runStoredReviewJobWithMidRunChange(
+    repo,
+    binDir,
+    `review-native-drift-${Date.now().toString(36)}`,
+    {
+      cwd: repo,
+      target,
+      stateIdentity: captureRepoStateIdentity(repo, target),
+      model: "gpt-5.5",
+      effort: null,
+      effortOverride: false,
+      focusText: "",
+      reviewName: "Review"
+    },
+    () => fs.writeFileSync(path.join(repo, "src.js"), "export const value = 3;\n")
+  );
+
+  assert.equal(processResult.code, 1);
+  assert.equal(storedJob.status, "failed");
+  assert.match(storedJob.errorMessage, /review completed.*state that has since moved/i);
+  assert.match(storedJob.errorMessage, /discarding the result/i);
+  assert.equal(storedJob.failureClass, "state-drift");
+  assert.equal(storedJob.retryable, true);
+});
+
+test("a self-collect review discards results when the working tree changes during the run", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "wait-for-review-release");
+  initGitRepo(repo);
+  for (const name of ["a.js", "b.js", "c.js"]) {
+    fs.writeFileSync(path.join(repo, name), `export const value = "${name}-v1";\n`);
+  }
+  run("git", ["add", "a.js", "b.js", "c.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  for (const name of ["a.js", "b.js", "c.js"]) {
+    fs.writeFileSync(path.join(repo, name), `export const value = "${name}-v2";\n`);
+  }
+
+  const target = {
+    mode: "working-tree",
+    label: "working tree diff",
+    explicit: false
+  };
+  const { processResult, storedJob } = await runStoredReviewJobWithMidRunChange(
+    repo,
+    binDir,
+    `review-self-collect-drift-${Date.now().toString(36)}`,
+    {
+      cwd: repo,
+      target,
+      stateIdentity: captureRepoStateIdentity(repo, target),
+      model: "gpt-5.5",
+      effort: null,
+      effortOverride: false,
+      focusText: "",
+      reviewName: "Adversarial Review"
+    },
+    () => fs.writeFileSync(path.join(repo, "a.js"), 'export const value = "a.js-v3";\n')
+  );
+
+  assert.equal(processResult.code, 1);
+  assert.equal(storedJob.status, "failed");
+  assert.match(storedJob.errorMessage, /review completed.*state that has since moved/i);
+  assert.match(storedJob.errorMessage, /discarding the result/i);
+  assert.equal(storedJob.failureClass, "state-drift");
+  assert.equal(storedJob.retryable, true);
+  const codexState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.match(codexState.lastTurnStart.prompt, /lightweight summary/i);
+});
+
+test("an inline-diff review returns its findings when the working tree changes during the run", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "wait-for-review-release");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 1;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 2;\n");
+
+  const target = {
+    mode: "working-tree",
+    label: "working tree diff",
+    explicit: false
+  };
+  const { processResult, storedJob } = await runStoredReviewJobWithMidRunChange(
+    repo,
+    binDir,
+    `review-inline-diff-${Date.now().toString(36)}`,
+    {
+      cwd: repo,
+      target,
+      stateIdentity: captureRepoStateIdentity(repo, target),
+      model: "gpt-5.5",
+      effort: null,
+      effortOverride: false,
+      focusText: "",
+      reviewName: "Adversarial Review"
+    },
+    () => fs.writeFileSync(path.join(repo, "src.js"), "export const value = 3;\n")
+  );
+
+  assert.equal(processResult.code, 0, processResult.stderr);
+  assert.equal(storedJob.status, "completed");
+  assert.match(storedJob.rendered, /Missing empty-state guard/);
+  const codexState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.match(codexState.lastTurnStart.prompt, /primary evidence/i);
+  assert.match(codexState.lastTurnStart.prompt, /export const value = 2;/);
+  assert.doesNotMatch(codexState.lastTurnStart.prompt, /export const value = 3;/);
 });
 
 test("a background branch review reports a deleted base ref as state drift", async () => {

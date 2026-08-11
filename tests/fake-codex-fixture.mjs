@@ -276,6 +276,27 @@ function emitTurnCompletedLater(threadId, turnId, item, delayMs) {
   }, delayMs);
 }
 
+function emitReviewCompleted(threadId, turnId, item) {
+  if (BEHAVIOR !== "wait-for-review-release") {
+    emitTurnCompleted(threadId, turnId, item);
+    return;
+  }
+
+  const startedPath = process.env.CODEX_TEST_REVIEW_STARTED;
+  const releasePath = process.env.CODEX_TEST_REVIEW_RELEASE;
+  if (!startedPath || !releasePath) {
+    throw new Error("wait-for-review-release requires review marker paths");
+  }
+  fs.writeFileSync(startedPath, "started\\n");
+  const interval = setInterval(() => {
+    if (!fs.existsSync(releasePath)) {
+      return;
+    }
+    clearInterval(interval);
+    emitTurnCompleted(threadId, turnId, item);
+  }, 10);
+}
+
 function nativeReviewText(target) {
   if (target.type === "baseBranch") {
     return "Reviewed changes against " + target.branch + ".\\nNo material issues found.";
@@ -556,7 +577,7 @@ rl.on("line", (line) => {
           send({ method: "turn/completed", params: { threadId: reviewThread.id, turn: buildTurn(turnId, "failed") } });
           break;
         }
-        emitTurnCompleted(reviewThread.id, turnId, [
+        emitReviewCompleted(reviewThread.id, turnId, [
           {
             started: { type: "enteredReviewMode", id: turnId, review: "current changes" }
           },
@@ -1194,6 +1215,8 @@ rl.on("line", (line) => {
 	            }
 	          });
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+	        } else if (BEHAVIOR === "wait-for-review-release") {
+	          emitReviewCompleted(thread.id, turnId, items);
 	        } else if (BEHAVIOR === "slow-task") {
 	          emitTurnCompletedLater(thread.id, turnId, items, 400);
 	        } else {

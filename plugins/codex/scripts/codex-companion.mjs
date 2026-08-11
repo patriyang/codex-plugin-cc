@@ -520,15 +520,21 @@ async function executeReviewRun(request) {
       base: request.base,
       scope: request.scope
     });
-  if (request.stateIdentity) {
-    const drift = describeRepoStateDrift(request.cwd, target, request.stateIdentity);
-    if (drift) {
-      throw Object.assign(
-        new Error(`Review target moved between enqueue and execution: ${drift}. Re-run the review.`),
-        { failureClass: STATE_DRIFT, retryable: true }
-      );
+  const assertPinnedState = (completed = false) => {
+    if (!request.stateIdentity) {
+      return;
     }
-  }
+    const drift = describeRepoStateDrift(request.cwd, target, request.stateIdentity);
+    if (!drift) {
+      return;
+    }
+    const message = completed
+      ? `Review completed against repository state that has since moved: ${drift}. Discarding the result; re-run the review.`
+      : `Review target moved between enqueue and execution: ${drift}. Re-run the review.`;
+    throw Object.assign(new Error(message), { failureClass: STATE_DRIFT, retryable: true });
+  };
+
+  assertPinnedState();
   const focusText = request.focusText?.trim() ?? "";
   const reviewName = request.reviewName ?? "Review";
   if (reviewName === "Review") {
@@ -538,6 +544,7 @@ async function executeReviewRun(request) {
       model: request.model,
       onProgress: request.onProgress
     });
+    assertPinnedState(true);
     const effectiveModel = result.modelFallback?.to ?? request.model;
     const payload = {
       review: reviewName,
@@ -596,6 +603,9 @@ async function executeReviewRun(request) {
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
   });
+  if (context.inputMode === "self-collect") {
+    assertPinnedState(true);
+  }
   const effectiveModel = result.modelFallback?.to ?? request.model;
   const parsed = parseStructuredOutput(result.status === 0 ? result.finalMessage : "", {
     status: result.status,

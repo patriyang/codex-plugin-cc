@@ -209,6 +209,51 @@ test("repo state identity detects changes to an untracked file's contents", () =
   assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
 });
 
+test("repo state identity detects changes to an untracked binary file", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "artifact.bin"), Buffer.from([0, 1, 2, 3]));
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  fs.writeFileSync(path.join(cwd, "artifact.bin"), Buffer.from([0, 1, 2, 4]));
+
+  assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
+});
+
+test("repo state identity detects same-size changes to a large untracked file", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "large.txt"), "a".repeat(25 * 1024));
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  fs.writeFileSync(path.join(cwd, "large.txt"), `${"a".repeat(25 * 1024 - 1)}b`);
+
+  assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
+});
+
+test("repo state identity detects trailing-newline-only changes to an untracked file", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "notes.txt"), "draft\n");
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  fs.writeFileSync(path.join(cwd, "notes.txt"), "draft\n\n");
+
+  assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
+});
+
 test("repo state identity detects further changes inside a dirty submodule", () => {
   const cwd = makeTempDir();
   const nestedRepo = path.join(cwd, "vendor", "dependency");

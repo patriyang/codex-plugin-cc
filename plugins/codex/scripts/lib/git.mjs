@@ -110,6 +110,24 @@ function inspectUntrackedFile(cwd, relativePath) {
 }
 
 function hashUntrackedPath(cwd, relativePath) {
+  const absolutePath = path.join(cwd, relativePath);
+  let stat;
+  try {
+    stat = fs.lstatSync(absolutePath);
+  } catch {
+    return "skipped:(skipped: broken symlink or unreadable file)";
+  }
+
+  if (stat.isFile()) {
+    const result = git(cwd, ["hash-object", "--no-filters", "--", relativePath]);
+    if (!result.error && result.status === 0) {
+      return `file:${result.stdout.trim()}`;
+    }
+    return "skipped:(skipped: broken symlink or unreadable file)";
+  }
+
+  // Preserve the existing handling for symlinks, directories, and other
+  // non-regular paths. Display limits must not affect regular-file identity.
   const inspected = inspectUntrackedFile(cwd, relativePath);
   if (inspected.skip) {
     return `skipped:${inspected.skip}`;

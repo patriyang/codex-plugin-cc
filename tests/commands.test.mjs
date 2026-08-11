@@ -25,9 +25,9 @@ test("review command auto-decides execution mode and uses a tracked background j
   assert.match(source, /\[--scope auto\|working-tree\|branch\]/);
   assert.doesNotMatch(source, /run_in_background/);
   assert.match(source, /review "--background --json \$ARGUMENTS"/);
-  assert.match(source, /status -C "\$\{workspaceRoot\}" \$\{jobId\} --wait --timeout-ms 240000 --json/);
+  assert.match(source, /status -C \$\{rootArg\} --wait --timeout-ms 240000 --json -- \$\{jobArg\}/);
   assert.match(source, /description:\s*"Wait for Codex review"/);
-  assert.match(source, /result -C "\$\{workspaceRoot\}" <job-id> --json/);
+  assert.match(source, /result -C \$\{rootArg\} --json -- \$\{jobArg\}/);
   assert.match(source, /waitTimedOut: true/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
   assert.match(source, /git status --short --untracked-files=all/);
@@ -63,9 +63,9 @@ test("adversarial review command auto-decides execution mode and uses a tracked 
   assert.match(source, /\[--scope auto\|working-tree\|branch\] \[--model <model\|spark>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh\|max\|ultra>\] \[focus \.\.\.\]/);
   assert.doesNotMatch(source, /run_in_background/);
   assert.match(source, /adversarial-review "--background --json \$ARGUMENTS"/);
-  assert.match(source, /status -C "\$\{workspaceRoot\}" \$\{jobId\} --wait --timeout-ms 240000 --json/);
+  assert.match(source, /status -C \$\{rootArg\} --wait --timeout-ms 240000 --json -- \$\{jobArg\}/);
   assert.match(source, /description:\s*"Wait for Codex adversarial review"/);
-  assert.match(source, /result -C "\$\{workspaceRoot\}" <job-id> --json/);
+  assert.match(source, /result -C \$\{rootArg\} --json -- \$\{jobArg\}/);
   assert.match(source, /waitTimedOut: true/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
   assert.match(source, /git status --short --untracked-files=all/);
@@ -98,9 +98,9 @@ test("deep review command auto-decides execution mode and uses a tracked backgro
   assert.match(source, /\[--scope auto\|working-tree\|branch\] \[--model <model\|spark>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh\|max\|ultra>\] \[focus \.\.\.\]/);
   assert.doesNotMatch(source, /run_in_background/);
   assert.match(source, /deep-review "--background --json \$ARGUMENTS"/);
-  assert.match(source, /status -C "\$\{workspaceRoot\}" \$\{jobId\} --wait --timeout-ms 240000 --json/);
+  assert.match(source, /status -C \$\{rootArg\} --wait --timeout-ms 240000 --json -- \$\{jobArg\}/);
   assert.match(source, /description:\s*"Wait for Codex deep review"/);
-  assert.match(source, /result -C "\$\{workspaceRoot\}" <job-id> --json/);
+  assert.match(source, /result -C \$\{rootArg\} --json -- \$\{jobArg\}/);
   assert.match(source, /waitTimedOut: true/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
   assert.match(source, /git status --short --untracked-files=all/);
@@ -210,9 +210,9 @@ test("implement routes Git metadata writes through scoped controller escalation"
   }
 
   for (const snippet of [
-    /git -C \"\$\{WORKTREE_ROOT\}\" status\b/,
-    /git -C \"\$\{WORKTREE_ROOT\}\" rev-parse\b/,
-    /git -C \"\$\{WORKTREE_ROOT\}\" log\b/
+    /git -C \$\{rootArg\} status\b/,
+    /git -C \$\{rootArg\} rev-parse\b/,
+    /git -C \$\{rootArg\} log\b/
   ]) {
     assert.match(source, snippet, `implement includes read-only Git snippet ${snippet}`);
     assert.doesNotMatch(allEscalatedCommands.join("\n"), snippet, `read-only Git command is not escalated: ${snippet}`);
@@ -620,8 +620,16 @@ test("the foreground wait mechanism is provisioned on every command that require
     const allowed = /^allowed-tools:(.*)$/m.exec(frontmatter);
     assert.ok(allowed, `${file} declares allowed-tools`);
     assert.match(allowed[1], /\bBash\(node:\*\)/, `${file} may invoke the companion script`);
-    assert.match(source, /status .*--wait --timeout-ms 240000 --json/, `${file} documents the bounded wait`);
-    assert.match(source, /result .*<job-id>.*--json/, `${file} documents persisted result retrieval`);
+    assert.match(
+      source,
+      /status -C \$\{rootArg\} --wait --timeout-ms 240000 --json -- \$\{jobArg\}/,
+      `${file} documents the bounded wait`
+    );
+    assert.match(
+      source,
+      /result -C \$\{rootArg\} --json -- \$\{jobArg\}/,
+      `${file} documents persisted result retrieval`
+    );
     const companionTimeout = /--timeout-ms\s+(\d+)/.exec(source);
     const bashTimeout = /\btimeout:\s*(\d+)/.exec(source);
     assert.ok(companionTimeout, `${file} declares the companion wait timeout`);
@@ -632,6 +640,45 @@ test("the foreground wait mechanism is provisioned on every command that require
     );
     assert.match(source, /PID-aware timeout branch/i, `${file} points to the failed-spawn recovery rule`);
     assert.doesNotMatch(source, /run_in_background|BashOutput/, `${file} does not use the harness-dependent wait`);
+  }
+});
+
+test("every companion command is built from shell-escaped dynamic values", () => {
+  // Regression for #107: wrapping an interpolated value in double quotes is not
+  // escaping. A checkout path containing `"` breaks the command outright, and
+  // one containing a backtick or $(...) is evaluated by the shell before the
+  // companion script ever runs. `${CLAUDE_PLUGIN_ROOT}` is the one legitimate
+  // double-quoted interpolation: the shell expands it, the model does not.
+  for (const file of [
+    "commands/review.md",
+    "commands/adversarial-review.md",
+    "commands/deep-review.md",
+    "commands/implement.md",
+    "commands/rescue.md"
+  ]) {
+    const source = read(file);
+    assert.match(source, /shellEscape\(/, `${file} names the escaping step`);
+    assert.match(source, /const rootArg = shellEscape\(/, `${file} escapes the workspace root`);
+    assert.match(source, /const jobArg = shellEscape\(jobId\)/, `${file} escapes the job id`);
+
+    const doubleQuoted = new Set(
+      [...source.matchAll(/"\$\{([A-Za-z_][A-Za-z0-9_]*)\}"/g)].map((match) => match[1])
+    );
+    doubleQuoted.delete("CLAUDE_PLUGIN_ROOT");
+    assert.deepEqual(
+      [...doubleQuoted],
+      [],
+      `${file} must not interpolate a dynamic value inside double quotes`
+    );
+
+    for (const line of source.split("\n")) {
+      if (!/codex-companion\.mjs|^git -C|`git -C/.test(line)) continue;
+      assert.doesNotMatch(
+        line,
+        /\$\{(workspaceRoot|WORKTREE_ROOT|jobId|threadId|IMPLEMENTER_THREAD_ID)\}/,
+        `${file} must pass a pre-escaped argument, not a raw value: ${line.trim()}`
+      );
+    }
   }
 });
 
@@ -673,8 +720,8 @@ test("dispatch is never a stopping point across every async surface", () => {
     assert.match(source, /same turn the terminal wait returns/i);
     assert.match(source, /never re-dispatch (a second|another)/i);
     assert.match(source, /dispatched-but-unread|dispatched .* unread/i);
-    assert.match(recovery, /status -C "\$\{workspaceRoot\}" <job-id> --json/);
-    assert.match(recovery, /result -C "\$\{workspaceRoot\}" <job-id> --json/);
+    assert.match(recovery, /status -C \$\{rootArg\} --json -- \$\{jobArg\}/);
+    assert.match(recovery, /result -C \$\{rootArg\} --json -- \$\{jobArg\}/);
     assert.match(source, /\.storedJob\.rendered/);
     for (const condition of ["failed", "cancelled", "empty", "malformed"]) {
       assert.match(background, new RegExp(`\\b${condition}\\b`, "i"), `${file} handles ${condition} review results`);
@@ -798,7 +845,7 @@ test("implement enqueues and awaits every long Codex job, including final review
   assert.match(dispatch, /review --background --json/);
   assert.match(dispatch, /status .*--wait --timeout-ms 240000 --json/);
   assert.match(dispatch, /waitTimedOut: true/);
-  assert.match(dispatch, /result .*<job-id>.*--json/);
+  assert.match(dispatch, /result -C \$\{rootArg\} --json -- \$\{jobArg\}/);
   assert.match(dispatch, /\.storedJob\.result\.rawOutput/);
   assert.match(dispatch, /\.storedJob\.threadId/);
   assert.doesNotMatch(dispatch, /run_in_background|BashOutput/);
@@ -896,8 +943,8 @@ test("rescue never depends on a background-subagent re-invocation to present its
   assert.doesNotMatch(rescue, /run the `codex:codex-rescue` subagent in the background/i);
 
   assert.match(rescue, /task --background --json/);
-  assert.match(rescue, /status -C "\$\{workspaceRoot\}" \$\{jobId\} --wait --timeout-ms 240000 --json/);
-  assert.match(rescue, /result -C "\$\{workspaceRoot\}" <job-id> --json/);
+  assert.match(rescue, /status -C \$\{rootArg\} --wait --timeout-ms 240000 --json -- \$\{jobArg\}/);
+  assert.match(rescue, /result -C \$\{rootArg\} --json -- \$\{jobArg\}/);
   assert.match(rescue, /\.storedJob\.rendered/);
 
   // The forwarding contract has to agree with the command doc.

@@ -49,9 +49,10 @@ import path from "node:path";
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
-import { classifyFailureMessage } from "./failure-class.mjs";
+import { CAPACITY, classifyFailureMessage } from "./failure-class.mjs";
 import { resolveWorktreeWritableRoots } from "./git.mjs";
 import { binaryAvailable } from "./process.mjs";
+import { getConfig } from "./state.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
@@ -1550,6 +1551,77 @@ export async function importExternalAgentSession(cwd, options = {}) {
   });
 }
 
+async function listAdvertisedModels(client) {
+  try {
+    const modelListDeadline = Date.now() + 3000;
+    const seenCursors = new Set();
+    const advertisedModels = [];
+    let cursor = null;
+    // Bound pages and total time so a malformed server cannot delay the turn indefinitely.
+    for (let page = 0; page < 10 && Date.now() < modelListDeadline; page += 1) {
+      const params = { includeHidden: true };
+      if (cursor !== null) {
+        params.cursor = cursor;
+      }
+      const remainingMs = modelListDeadline - Date.now();
+      if (remainingMs <= 0) {
+        break;
+      }
+      const modelListResponse = await client.request(
+        "model/list",
+        params,
+        { timeoutMs: Math.min(3000, remainingMs) }
+      );
+      const models = modelListResponse?.data;
+      const nextCursor = modelListResponse?.nextCursor;
+      if (!Array.isArray(models) || (nextCursor !== null && typeof nextCursor !== "string")) {
+        throw new Error("Unexpected model/list response.");
+      }
+      advertisedModels.push(...models);
+      if (nextCursor === null || seenCursors.has(nextCursor)) {
+        break;
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    return advertisedModels;
+  } catch {
+    // This lookup is advisory; fail open so model discovery cannot make a working run fail.
+    return [];
+  }
+}
+
+function advertisedModelName(entry) {
+  for (const value of [entry?.model, entry?.id]) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+export async function resolveFallbackModel(client, { failedModel, workspaceRoot, env = process.env }) {
+  const envModel = typeof env?.CODEX_COMPANION_FALLBACK_MODEL === "string"
+    ? env.CODEX_COMPANION_FALLBACK_MODEL.trim()
+    : "";
+  if (envModel.toLowerCase() === "none") {
+    return null;
+  }
+  if (envModel) {
+    return envModel;
+  }
+
+  const configuredModel = getConfig(workspaceRoot).fallbackModel;
+  if (typeof configuredModel === "string" && configuredModel.trim()) {
+    return configuredModel.trim();
+  }
+
+  const models = await listAdvertisedModels(client);
+  const eligibleModels = models.filter((entry) => !entry?.hidden && advertisedModelName(entry) !== failedModel);
+  const fallbackEntry = eligibleModels.find((entry) => entry?.isDefault === true) ?? eligibleModels[0];
+  return advertisedModelName(fallbackEntry);
+}
+
 /** @param {RunAppServerTurnOptions} [options] */
 export async function runAppServerTurn(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
@@ -1595,53 +1667,20 @@ export async function runAppServerTurn(cwd, options = {}) {
     let effortWarning = null;
     // model/list is a conservative advertisement, so an omitted effort is a warning rather than a rejection.
     if (typeof options.effort === "string" && options.effortOverride !== false) {
-      try {
-        const modelListDeadline = Date.now() + 3000;
-        const seenCursors = new Set();
-        let cursor = null;
-        let modelEntry = null;
-        // Bound pages and total time so a malformed server cannot delay the turn indefinitely.
-        for (let page = 0; page < 10 && Date.now() < modelListDeadline; page += 1) {
-          const params = { includeHidden: true };
-          if (cursor !== null) {
-            params.cursor = cursor;
-          }
-          const remainingMs = modelListDeadline - Date.now();
-          if (remainingMs <= 0) {
-            break;
-          }
-          const modelListResponse = await client.request(
-            "model/list",
-            params,
-            { timeoutMs: Math.min(3000, remainingMs) }
-          );
-          const models = modelListResponse?.data;
-          const nextCursor = modelListResponse?.nextCursor;
-          if (!Array.isArray(models) || (nextCursor !== null && typeof nextCursor !== "string")) {
-            throw new Error("Unexpected model/list response.");
-          }
-          modelEntry = typeof resolvedModel === "string"
-            ? models.find((entry) => entry?.model === resolvedModel || entry?.id === resolvedModel)
-            : null;
-          if (modelEntry || nextCursor === null || seenCursors.has(nextCursor)) {
-            break;
-          }
-          seenCursors.add(nextCursor);
-          cursor = nextCursor;
-        }
-        const advertisedEfforts = modelEntry?.supportedReasoningEfforts;
-        if (
-          modelEntry &&
-          Array.isArray(advertisedEfforts) &&
-          advertisedEfforts.every((entry) => typeof entry?.reasoningEffort === "string") &&
-          !advertisedEfforts.some((entry) => entry.reasoningEffort === options.effort)
-        ) {
-          const advertised = advertisedEfforts.map((entry) => entry.reasoningEffort).join(", ");
-          effortWarning = `${resolvedModel} does not advertise reasoning effort "${options.effort}" (advertised: ${advertised}). Codex may ignore or reject it; the effort actually used is not reported by the protocol.`;
-          emitProgress(options.onProgress, effortWarning);
-        }
-      } catch {
-        // This lookup is advisory; fail open so model discovery cannot make a working run fail.
+      const models = await listAdvertisedModels(client);
+      const modelEntry = typeof resolvedModel === "string"
+        ? models.find((entry) => entry?.model === resolvedModel || entry?.id === resolvedModel)
+        : null;
+      const advertisedEfforts = modelEntry?.supportedReasoningEfforts;
+      if (
+        modelEntry &&
+        Array.isArray(advertisedEfforts) &&
+        advertisedEfforts.every((entry) => typeof entry?.reasoningEffort === "string") &&
+        !advertisedEfforts.some((entry) => entry.reasoningEffort === options.effort)
+      ) {
+        const advertised = advertisedEfforts.map((entry) => entry.reasoningEffort).join(", ");
+        effortWarning = `${resolvedModel} does not advertise reasoning effort "${options.effort}" (advertised: ${advertised}). Codex may ignore or reject it; the effort actually used is not reported by the protocol.`;
+        emitProgress(options.onProgress, effortWarning);
       }
     }
 
@@ -1651,30 +1690,63 @@ export async function runAppServerTurn(cwd, options = {}) {
     }
 
     const sandboxPolicy = buildTurnSandboxPolicy(options.sandbox, writableRoots, resolvedSandbox);
-    const turnState = await captureTurn(
-      client,
-      threadId,
-      () =>
-        client.request("turn/start", {
+    const captureModelTurn = (model) =>
+      captureTurn(
+        client,
+        threadId,
+        () => client.request("turn/start", {
           threadId,
           input: buildTurnInput(prompt),
-          model: options.model ?? null,
+          model,
           effort: options.effort ?? null,
           outputSchema: options.outputSchema ?? null,
           sandboxPolicy
         }),
-      { onProgress: options.onProgress }
-    );
+        { onProgress: options.onProgress }
+      );
+
+    const failedModel = resolvedModel ?? options.model ?? null;
+    let turnState = await captureModelTurn(options.model ?? null);
+    const initialStatus = buildResultStatus(turnState);
+    const initialFailure = initialStatus === 0
+      ? { failureClass: null, retryable: false }
+      : classifyFailureMessage(turnState.error?.message);
+    let modelFallback = null;
+
+    const turnProducedNothing =
+      turnState.messages.length === 0 &&
+      turnState.fileChanges.length === 0 &&
+      turnState.commandExecutions.length === 0 &&
+      !turnState.lastAgentMessage;
+    if (initialStatus !== 0 && initialFailure.failureClass === CAPACITY && turnProducedNothing) {
+      const fallbackModel = await resolveFallbackModel(client, {
+        failedModel,
+        workspaceRoot: cwd,
+        env: process.env
+      });
+      if (fallbackModel && fallbackModel !== failedModel) {
+        emitProgress(
+          options.onProgress,
+          `Model ${failedModel} is at capacity; retrying on ${fallbackModel}.`,
+          "starting"
+        );
+        turnState = await captureModelTurn(fallbackModel);
+        modelFallback = { from: failedModel, to: fallbackModel, reason: "capacity" };
+      }
+    }
 
     const status = buildResultStatus(turnState);
     const failure = status === 0
       ? { failureClass: null, retryable: false }
-      : classifyFailureMessage(turnState.error?.message);
+      : initialFailure.failureClass === CAPACITY
+        ? initialFailure
+        : classifyFailureMessage(turnState.error?.message);
 
     return {
       status,
       failureClass: failure.failureClass,
       retryable: failure.retryable,
+      modelFallback,
       threadId,
       turnId: turnState.turnId,
       finalMessage: turnState.lastAgentMessage,

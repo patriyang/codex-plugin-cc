@@ -18,7 +18,7 @@ import {
 } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
 import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
-import { runAppServerTurn } from "../plugins/codex/scripts/lib/codex.mjs";
+import { resolveFallbackModel, runAppServerTurn } from "../plugins/codex/scripts/lib/codex.mjs";
 import { classifyFailureMessage } from "../plugins/codex/scripts/lib/failure-class.mjs";
 import { getProcessStartTime } from "../plugins/codex/scripts/lib/process.mjs";
 import { splitRawArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
@@ -28,9 +28,11 @@ import {
 } from "../plugins/codex/scripts/lib/claude-session-transfer.mjs";
 import {
   ensureStateDir,
+  getConfig,
   resolveJobFile,
   resolveJobLogFile,
   resolveStateDir,
+  setConfig,
   upsertJob,
   writeJobFile
 } from "../plugins/codex/scripts/lib/state.mjs";
@@ -299,6 +301,43 @@ test("setup reports ready when fake codex is installed and authenticated", () =>
   assert.equal(payload.ready, true);
   assert.match(payload.codex.detail, /advanced runtime available/);
   assert.equal(payload.sessionRuntime.mode, "direct");
+});
+
+test("setup configures, reports, and clears the fallback model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+
+  const configured = run("node", [SCRIPT, "setup", "--fallback-model", "configured-backup", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(configured.status, 0, configured.stderr);
+  const configuredPayload = JSON.parse(configured.stdout);
+  assert.equal(configuredPayload.fallbackModel, "configured-backup");
+  assert.match(configuredPayload.actionsTaken.join("\n"), /Configured fallback model configured-backup/);
+  assert.equal(getConfig(repo).fallbackModel, "configured-backup");
+
+  const conflicting = run(
+    "node",
+    [SCRIPT, "setup", "--fallback-model", "another-backup", "--clear-fallback-model", "--json"],
+    { cwd: repo, env: buildEnv(binDir) }
+  );
+  assert.notEqual(conflicting.status, 0);
+  assert.match(conflicting.stderr, /Choose either --fallback-model or --clear-fallback-model/);
+
+  const cleared = run("node", [SCRIPT, "setup", "--clear-fallback-model", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(cleared.status, 0, cleared.stderr);
+  const clearedPayload = JSON.parse(cleared.stdout);
+  assert.equal(clearedPayload.fallbackModel, null);
+  assert.match(clearedPayload.actionsTaken.join("\n"), /Cleared the configured fallback model/);
+  assert.equal(getConfig(repo).fallbackModel, null);
 });
 
 test("setup is ready without npm when Codex is already installed and authenticated", () => {
@@ -954,6 +993,67 @@ test("classifyFailureMessage recognizes capacity failures conservatively", () =>
   }
 });
 
+test("fallback model resolution honors env, config, discovery, and none precedence", async () => {
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  setConfig(repo, "fallbackModel", "configured-backup");
+
+  let modelListCalls = 0;
+  const client = {
+    async request(method) {
+      assert.equal(method, "model/list");
+      modelListCalls += 1;
+      return {
+        data: [
+          { model: "hidden-default", hidden: true, isDefault: true },
+          { model: "discovered-first", hidden: false, isDefault: false },
+          { model: "discovered-default", hidden: false, isDefault: true }
+        ],
+        nextCursor: null
+      };
+    }
+  };
+
+  assert.equal(
+    await resolveFallbackModel(client, {
+      failedModel: "failed-model",
+      workspaceRoot: repo,
+      env: { CODEX_COMPANION_FALLBACK_MODEL: "env-backup" }
+    }),
+    "env-backup"
+  );
+  assert.equal(modelListCalls, 0);
+
+  assert.equal(
+    await resolveFallbackModel(client, { failedModel: "failed-model", workspaceRoot: repo, env: {} }),
+    "configured-backup"
+  );
+  assert.equal(modelListCalls, 0);
+
+  assert.equal(
+    await resolveFallbackModel(client, {
+      failedModel: "failed-model",
+      workspaceRoot: repo,
+      env: { CODEX_COMPANION_FALLBACK_MODEL: "NoNe" }
+    }),
+    null
+  );
+  assert.equal(modelListCalls, 0);
+
+  setConfig(repo, "fallbackModel", null);
+  assert.equal(
+    await resolveFallbackModel(client, { failedModel: "failed-model", workspaceRoot: repo, env: {} }),
+    "discovered-default"
+  );
+  assert.equal(modelListCalls, 1);
+
+  assert.equal(
+    await resolveFallbackModel(client, { failedModel: "discovered-default", workspaceRoot: repo, env: {} }),
+    "discovered-first"
+  );
+  assert.equal(modelListCalls, 2);
+});
+
 test("a capacity rejection retries on the designated backup model", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -999,6 +1099,66 @@ test("a capacity rejection with no designated backup model reports a retryable f
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.failureClass, "capacity");
   assert.equal(payload.retryable, true);
+});
+
+test("a failing capacity fallback runs only once and remains retryable", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "all-models-at-capacity");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "summarize the repo", "--json"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_FALLBACK_MODEL: "gpt-5.6-terra" }
+  });
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.failureClass, "capacity");
+  assert.equal(payload.retryable, true);
+  assert.deepEqual(payload.modelFallback, {
+    from: "gpt-5.5",
+    to: "gpt-5.6-terra",
+    reason: "capacity"
+  });
+
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(state.capacityRejections, 2);
+  assert.equal(state.lastTurnStart.model, "gpt-5.6-terra");
+
+  const companionState = JSON.parse(
+    fs.readFileSync(path.join(resolveStateDir(repo), "state.json"), "utf8")
+  );
+  const jobLog = fs.readFileSync(companionState.jobs[0].logFile, "utf8");
+  assert.match(jobLog, /Model gpt-5\.5 is at capacity; retrying on gpt-5\.6-terra\./);
+});
+
+test("a capacity failure after producing output does not retry", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "model-at-capacity-after-output");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "summarize the repo", "--json"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_FALLBACK_MODEL: "gpt-5.6-terra" }
+  });
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.failureClass, "capacity");
+  assert.equal(payload.retryable, true);
+  assert.equal(payload.modelFallback, null);
+
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(state.capacityRejections, 1);
+  assert.equal(state.lastTurnStart.model, "gpt-5.5");
 });
 
 test("review accepts the quoted raw argument style for built-in base-branch review", () => {

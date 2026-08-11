@@ -590,10 +590,41 @@ rl.on("line", (line) => {
 	        // Capacity rejections are transient and content-independent: the server
 	        // refuses one model outright, before any item is produced, and the same
 	        // prompt succeeds on another model.
-	        if (BEHAVIOR === "model-at-capacity" && (message.params.model ?? null) === CAPACITY_BOUND_MODEL) {
+	        if (
+	          BEHAVIOR === "all-models-at-capacity" ||
+	          ((BEHAVIOR === "model-at-capacity" || BEHAVIOR === "model-at-capacity-after-output") &&
+	            (message.params.model ?? null) === CAPACITY_BOUND_MODEL)
+	        ) {
 	          state.capacityRejections = (state.capacityRejections || 0) + 1;
 	          saveState(state);
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          if (BEHAVIOR === "model-at-capacity-after-output") {
+	            send({
+	              method: "item/completed",
+	              params: {
+	                threadId: thread.id,
+	                turnId,
+	                item: {
+	                  type: "agentMessage",
+	                  id: "msg_preamble_" + turnId,
+	                  text: "I already started applying the requested changes."
+	                }
+	              }
+	            });
+	            send({
+	              method: "item/completed",
+	              params: {
+	                threadId: thread.id,
+	                turnId,
+	                item: {
+	                  type: "fileChange",
+	                  id: "change_" + turnId,
+	                  status: "completed",
+	                  changes: [{ path: path.join(process.cwd(), "README.md"), kind: "update" }]
+	                }
+	              }
+	            });
+	          }
 	          send({
 	            method: "error",
 	            params: {

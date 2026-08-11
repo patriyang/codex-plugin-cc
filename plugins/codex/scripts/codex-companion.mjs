@@ -87,7 +87,7 @@ const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "hi
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const SUBCOMMAND_USAGE = new Map([
-  ["setup", "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]"],
+  ["setup", "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--fallback-model <model>|--clear-fallback-model] [--json]"],
   ["review", "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]"],
   ["adversarial-review", "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
   ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
@@ -122,8 +122,8 @@ const TASK_PARSE_CONFIG = {
   stopAtFirstPositional: true
 };
 const SETUP_PARSE_CONFIG = {
-  valueOptions: ["cwd"],
-  booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+  valueOptions: ["cwd", "fallback-model"],
+  booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "clear-fallback-model"]
 };
 const TRANSFER_PARSE_CONFIG = {
   valueOptions: ["cwd", "source"],
@@ -330,6 +330,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     auth: authStatus,
     sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
     reviewGateEnabled: Boolean(config.stopReviewGate),
+    fallbackModel: config.fallbackModel ?? null,
     actionsTaken,
     nextSteps
   };
@@ -340,6 +341,9 @@ async function handleSetup(argv) {
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw new Error("Choose either --enable-review-gate or --disable-review-gate.");
+  }
+  if (options["fallback-model"] != null && options["clear-fallback-model"]) {
+    throw new Error("Choose either --fallback-model or --clear-fallback-model.");
   }
 
   const cwd = resolveCommandCwd(options);
@@ -352,6 +356,13 @@ async function handleSetup(argv) {
   } else if (options["disable-review-gate"]) {
     setConfig(workspaceRoot, "stopReviewGate", false);
     actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
+  }
+  if (options["fallback-model"] != null) {
+    setConfig(workspaceRoot, "fallbackModel", options["fallback-model"]);
+    actionsTaken.push(`Configured fallback model ${options["fallback-model"]} for ${workspaceRoot}.`);
+  } else if (options["clear-fallback-model"]) {
+    setConfig(workspaceRoot, "fallbackModel", null);
+    actionsTaken.push(`Cleared the configured fallback model for ${workspaceRoot}.`);
   }
 
   const finalReport = await buildSetupReport(cwd, actionsTaken);
@@ -511,6 +522,7 @@ async function executeReviewRun(request) {
       model: request.model ?? null,
       effort: request.effort ?? null,
       failureClass: result.failureClass,
+      modelFallback: result.modelFallback ?? null,
       retryable: result.retryable,
       threadId: result.threadId,
       sourceThreadId: result.sourceThreadId,
@@ -574,6 +586,7 @@ async function executeReviewRun(request) {
     effort: request.effort ?? null,
     effortWarning: result.effortWarning,
     failureClass: result.failureClass,
+    modelFallback: result.modelFallback,
     retryable: result.retryable,
     threadId: result.threadId,
     context: {
@@ -676,6 +689,7 @@ async function executeTaskRun(request) {
   const payload = {
     status: result.status,
     failureClass: result.failureClass,
+    modelFallback: result.modelFallback,
     retryable: result.retryable,
     threadId: result.threadId,
     rawOutput,

@@ -3984,6 +3984,68 @@ test("a background review refuses to review a repository that moved under its pi
   assert.equal(job.retryable, true);
 });
 
+test("a legacy background review without state identity still runs", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 1;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 2;\n");
+  const target = {
+    mode: "working-tree",
+    label: "working tree diff",
+    explicit: false
+  };
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "move pinned work"], { cwd: repo });
+
+  const jobId = `review-legacy-${Date.now().toString(36)}`;
+  const logFile = resolveJobLogFile(repo, jobId);
+  ensureStateDir(repo);
+  fs.writeFileSync(logFile, "", "utf8");
+  const child = spawn(
+    process.execPath,
+    [SCRIPT, "job-worker", "--cwd", repo, "--job-id", jobId],
+    { cwd: repo, env: buildEnv(binDir), stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
+  );
+  const queuedJob = {
+    id: jobId,
+    kind: "adversarial-review",
+    kindLabel: "adversarial-review",
+    title: "Codex Adversarial Review",
+    workspaceRoot: repo,
+    jobClass: "review",
+    summary: "Adversarial Review working tree diff",
+    write: false,
+    createdAt: new Date().toISOString(),
+    status: "queued",
+    phase: "queued",
+    pid: child.pid,
+    pidStartTime: null,
+    logFile,
+    request: {
+      cwd: repo,
+      target,
+      model: "gpt-5.5",
+      effort: null,
+      effortOverride: false,
+      focusText: "",
+      reviewName: "Adversarial Review"
+    }
+  };
+  writeJobFile(repo, jobId, queuedJob);
+  upsertJob(repo, queuedJob);
+
+  const result = await waitForChildExit(child, 15000);
+
+  assert.equal(result.code, 0, result.stderr);
+  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
+  assert.equal(storedJob.status, "completed");
+  assert.ok(JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8")).lastTurnStart);
+});
+
 test("review rejects --wait and --background together", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

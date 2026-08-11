@@ -26,8 +26,15 @@ import {
     runAppServerTurn
   } from "./lib/codex.mjs";
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
+import { STATE_DRIFT } from "./lib/failure-class.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
+import {
+  captureRepoStateIdentity,
+  collectReviewContext,
+  describeRepoStateDrift,
+  ensureGitRepository,
+  resolveReviewTarget
+} from "./lib/git.mjs";
 import {
   binaryAvailable,
   getProcessStartTime,
@@ -513,6 +520,15 @@ async function executeReviewRun(request) {
       base: request.base,
       scope: request.scope
     });
+  if (request.stateIdentity) {
+    const drift = describeRepoStateDrift(request.cwd, target, request.stateIdentity);
+    if (drift) {
+      throw Object.assign(
+        new Error(`Review target moved between enqueue and execution: ${drift}. Re-run the review.`),
+        { failureClass: STATE_DRIFT, retryable: true }
+      );
+    }
+  }
   const focusText = request.focusText?.trim() ?? "";
   const reviewName = request.reviewName ?? "Review";
   if (reviewName === "Review") {
@@ -1034,6 +1050,7 @@ async function handleReviewCommand(argv, config) {
       base: options.base,
       scope: options.scope,
       target,
+      stateIdentity: captureRepoStateIdentity(cwd, target),
       model,
       effort,
       effortOverride,

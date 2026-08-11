@@ -3,7 +3,13 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { collectReviewContext, resolveReviewTarget, resolveWorktreeWritableRoots } from "../plugins/codex/scripts/lib/git.mjs";
+import {
+  captureRepoStateIdentity,
+  collectReviewContext,
+  describeRepoStateDrift,
+  resolveReviewTarget,
+  resolveWorktreeWritableRoots
+} from "../plugins/codex/scripts/lib/git.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 
 test("resolveWorktreeWritableRoots returns the common git dir for linked worktrees only", () => {
@@ -122,6 +128,70 @@ test("resolveReviewTarget requires an explicit base when no default branch can b
     () => resolveReviewTarget(cwd, {}),
     /Unable to detect the repository default branch\. Pass --base <ref> or use --scope working-tree\./
   );
+});
+
+test("repo state identity reports no drift when a branch target is unchanged", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  run("git", ["checkout", "-b", "feature/test"], { cwd });
+
+  const target = resolveReviewTarget(cwd, { base: "main" });
+  const identity = captureRepoStateIdentity(cwd, target);
+
+  assert.match(identity.headOid, /^[0-9a-f]{40}$/);
+  assert.match(identity.baseOid, /^[0-9a-f]{40}$/);
+  assert.equal(describeRepoStateDrift(cwd, target, identity), null);
+});
+
+test("repo state identity detects when a branch target's base ref moves", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('base');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "base"], { cwd });
+  run("git", ["checkout", "-b", "feature/test"], { cwd });
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('feature');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "feature"], { cwd });
+
+  const target = resolveReviewTarget(cwd, { base: "main" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  run("git", ["branch", "-f", "main", "HEAD"], { cwd });
+
+  assert.match(describeRepoStateDrift(cwd, target, identity), /base ref main moved/i);
+});
+
+test("repo state identity detects further edits to an already-dirty tracked file", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v2');\n");
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v3');\n");
+
+  assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
+});
+
+test("repo state identity detects changes to an untracked file's contents", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "notes.txt"), "first draft\n");
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  fs.writeFileSync(path.join(cwd, "notes.txt"), "second draft\n");
+
+  assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
 });
 
 test("collectReviewContext keeps inline diffs for tiny adversarial reviews", () => {

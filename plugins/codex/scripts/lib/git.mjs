@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -15,6 +16,72 @@ function git(cwd, args, options = {}) {
 
 function gitChecked(cwd, args, options = {}) {
   return runCommandChecked("git", args, { cwd, ...options, shell: false });
+}
+
+function gitNullTerminatedPaths(cwd, args) {
+  return gitChecked(cwd, [...args, "-z"]).stdout.split("\0").filter(Boolean);
+}
+
+function hashWorkingTreePath(cwd, relativePath) {
+  const absolutePath = path.join(cwd, relativePath);
+  let stat;
+  try {
+    stat = fs.lstatSync(absolutePath);
+  } catch {
+    return "missing";
+  }
+
+  if (stat.isSymbolicLink()) {
+    return `symlink:${createHash("sha256").update(fs.readlinkSync(absolutePath)).digest("hex")}`;
+  }
+  if (!stat.isFile()) {
+    return `other:${stat.mode}:${stat.size}`;
+  }
+
+  return `file:${gitChecked(cwd, ["hash-object", "--no-filters", "--", relativePath]).stdout.trim()}`;
+}
+
+function hashUntrackedPath(cwd, relativePath) {
+  const absolutePath = path.join(cwd, relativePath);
+  let stat;
+  try {
+    stat = fs.lstatSync(absolutePath);
+  } catch {
+    return "missing";
+  }
+
+  if (stat.isSymbolicLink()) {
+    return `symlink:${createHash("sha256").update(fs.readlinkSync(absolutePath)).digest("hex")}`;
+  }
+  if (!stat.isFile()) {
+    return `other:${stat.mode}:${stat.size}`;
+  }
+  if (stat.size > MAX_UNTRACKED_BYTES) {
+    return `oversized:${stat.size}`;
+  }
+
+  return `file:${createHash("sha256").update(fs.readFileSync(absolutePath)).digest("hex")}`;
+}
+
+function captureWorkingTreeDigest(cwd) {
+  const digest = createHash("sha256");
+  const status = gitChecked(cwd, ["status", "--porcelain=v2", "--untracked-files=all", "-z"]).stdout;
+  digest.update(status);
+
+  // Porcelain v2 records tracked object IDs, but not an OID for unstaged
+  // working-tree content. Fold dirty tracked paths in so repeated edits cannot
+  // resolve to the same identity.
+  const trackedPaths = listUniqueFiles(gitNullTerminatedPaths(cwd, ["diff", "--name-only"]));
+  for (const relativePath of trackedPaths) {
+    digest.update(`\0tracked\0${relativePath}\0${hashWorkingTreePath(cwd, relativePath)}`);
+  }
+
+  const untrackedPaths = gitNullTerminatedPaths(cwd, ["ls-files", "--others", "--exclude-standard"]).sort();
+  for (const relativePath of untrackedPaths) {
+    digest.update(`\0untracked\0${relativePath}\0${hashUntrackedPath(cwd, relativePath)}`);
+  }
+
+  return digest.digest("hex");
 }
 
 function listUniqueFiles(...groups) {
@@ -150,6 +217,35 @@ export function getWorkingTreeState(cwd) {
     untracked,
     isDirty: staged.length > 0 || unstaged.length > 0 || untracked.length > 0
   };
+}
+
+export function captureRepoStateIdentity(cwd, target) {
+  const repoRoot = getRepoRoot(cwd);
+  const identity = {
+    headOid: gitChecked(repoRoot, ["rev-parse", "HEAD"]).stdout.trim()
+  };
+
+  if (target.mode === "branch") {
+    identity.baseOid = gitChecked(repoRoot, ["rev-parse", target.baseRef]).stdout.trim();
+  } else if (target.mode === "working-tree") {
+    identity.worktreeDigest = captureWorkingTreeDigest(repoRoot);
+  }
+
+  return identity;
+}
+
+export function describeRepoStateDrift(cwd, target, expected) {
+  const actual = captureRepoStateIdentity(cwd, target);
+  if (actual.headOid !== expected.headOid) {
+    return "HEAD moved";
+  }
+  if (target.mode === "branch" && actual.baseOid !== expected.baseOid) {
+    return `base ref ${target.baseRef} moved`;
+  }
+  if (target.mode === "working-tree" && actual.worktreeDigest !== expected.worktreeDigest) {
+    return "working tree moved";
+  }
+  return null;
 }
 
 export function resolveReviewTarget(cwd, options = {}) {

@@ -32,6 +32,28 @@ function appendModelAttribution(lines, meta) {
   return lines.length > before;
 }
 
+function failureClassificationLine(source) {
+  if (typeof source?.failureClass !== "string" || !source.failureClass.trim()) {
+    return null;
+  }
+  return `Failure class: ${source.failureClass}${source.retryable ? " (retryable)" : ""}`;
+}
+
+function appendFailureClassification(lines, source, prefix = "") {
+  const line = failureClassificationLine(source);
+  if (line) {
+    lines.push(`${prefix}${line}`);
+  }
+}
+
+function appendFailureClassificationToOutput(output, source) {
+  const line = failureClassificationLine(source);
+  if (!line || output.split(/\r?\n/).includes(line)) {
+    return output;
+  }
+  return `${output.trimEnd()}\n\n${line}\n`;
+}
+
 function validateReviewResultShape(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return "Expected a top-level JSON object.";
@@ -143,6 +165,7 @@ function pushJobDetails(lines, job, options = {}) {
   if (job.status === "failed" && job.errorMessage) {
     lines.push(`  Error: ${job.errorMessage}`);
   }
+  appendFailureClassification(lines, job, "  ");
   if (options.showElapsed && job.elapsed) {
     lines.push(`  Elapsed: ${job.elapsed}`);
   }
@@ -201,6 +224,7 @@ export function renderSetupReport(report) {
     `- auth: ${report.auth.detail}`,
     `- session runtime: ${report.sessionRuntime.label}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
+    `- fallback model: ${report.fallbackModel ?? "not configured"}`,
     ""
   ];
 
@@ -231,6 +255,7 @@ export function renderReviewResult(parsedResult, meta) {
     if (appendModelAttribution(lines, meta)) {
       lines.push("");
     }
+    appendFailureClassification(lines, parsedResult);
     lines.push("Codex did not return valid structured JSON.", "", `- Parse error: ${parsedResult.parseError}`);
 
     if (parsedResult.rawOutput) {
@@ -250,6 +275,7 @@ export function renderReviewResult(parsedResult, meta) {
       `Target: ${meta.targetLabel}`
     ];
     appendModelAttribution(lines, meta);
+    appendFailureClassification(lines, parsedResult);
     lines.push("Codex returned JSON with an unexpected review shape.", "", `- Validation error: ${validationError}`);
 
     if (parsedResult.rawOutput) {
@@ -269,6 +295,7 @@ export function renderReviewResult(parsedResult, meta) {
     `Target: ${meta.targetLabel}`
   ];
   appendModelAttribution(lines, meta);
+  appendFailureClassification(lines, parsedResult);
   lines.push(`Verdict: ${data.verdict}`, "", data.summary, "");
 
   if (findings.length === 0) {
@@ -306,6 +333,7 @@ export function renderNativeReviewResult(result, meta) {
     `Target: ${meta.targetLabel}`
   ];
   appendModelAttribution(lines, meta);
+  appendFailureClassification(lines, result);
   lines.push("");
 
   if (stdout) {
@@ -337,6 +365,7 @@ export function renderTaskResult(parsedResult, meta) {
     : [];
   const partialOutput = typeof parsedResult?.partialOutput === "string" ? parsedResult.partialOutput : "";
   const lines = [message];
+  appendFailureClassification(lines, parsedResult);
 
   if (touchedFiles.length > 0) {
     lines.push("", "Files already modified by this run:", "", ...touchedFiles.map((file) => `- ${file}`));
@@ -417,8 +446,14 @@ export function renderJobStatusReport(job) {
 export function renderStoredJobResult(job, storedJob) {
   const threadId = storedJob?.threadId ?? job.threadId ?? null;
   const resumeCommand = threadId ? `codex resume ${threadId}` : null;
+  const failureSource = storedJob?.failureClass
+    ? storedJob
+    : storedJob?.result?.failureClass
+      ? storedJob.result
+      : job;
   if (isStructuredReviewStoredResult(storedJob) && storedJob?.rendered) {
-    const output = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
+    const rendered = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
+    const output = appendFailureClassificationToOutput(rendered, failureSource);
     if (!threadId) {
       return output;
     }
@@ -430,7 +465,8 @@ export function renderStoredJobResult(job, storedJob) {
     (typeof storedJob?.result?.codex?.stdout === "string" && storedJob.result.codex.stdout) ||
     "";
   if (rawOutput) {
-    const output = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    const rendered = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    const output = appendFailureClassificationToOutput(rendered, failureSource);
     if (!threadId) {
       return output;
     }
@@ -438,7 +474,8 @@ export function renderStoredJobResult(job, storedJob) {
   }
 
   if (storedJob?.rendered) {
-    const output = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
+    const rendered = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
+    const output = appendFailureClassificationToOutput(rendered, failureSource);
     if (!threadId) {
       return output;
     }
@@ -460,6 +497,8 @@ export function renderStoredJobResult(job, storedJob) {
   if (job.summary) {
     lines.push(`Summary: ${job.summary}`);
   }
+
+  appendFailureClassification(lines, failureSource);
 
   if (job.errorMessage) {
     lines.push("", job.errorMessage);

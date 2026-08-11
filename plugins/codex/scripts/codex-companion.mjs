@@ -26,8 +26,15 @@ import {
     runAppServerTurn
   } from "./lib/codex.mjs";
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
+import { STATE_DRIFT } from "./lib/failure-class.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
+import {
+  captureRepoStateIdentity,
+  collectReviewContext,
+  describeRepoStateDrift,
+  ensureGitRepository,
+  resolveReviewTarget
+} from "./lib/git.mjs";
 import {
   binaryAvailable,
   getProcessStartTime,
@@ -87,7 +94,7 @@ const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "hi
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const SUBCOMMAND_USAGE = new Map([
-  ["setup", "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]"],
+  ["setup", "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--fallback-model <model>|--clear-fallback-model] [--json]"],
   ["review", "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]"],
   ["adversarial-review", "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
   ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
@@ -122,8 +129,8 @@ const TASK_PARSE_CONFIG = {
   stopAtFirstPositional: true
 };
 const SETUP_PARSE_CONFIG = {
-  valueOptions: ["cwd"],
-  booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+  valueOptions: ["cwd", "fallback-model"],
+  booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "clear-fallback-model"]
 };
 const TRANSFER_PARSE_CONFIG = {
   valueOptions: ["cwd", "source"],
@@ -330,6 +337,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     auth: authStatus,
     sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
     reviewGateEnabled: Boolean(config.stopReviewGate),
+    fallbackModel: config.fallbackModel ?? null,
     actionsTaken,
     nextSteps
   };
@@ -340,6 +348,15 @@ async function handleSetup(argv) {
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw new Error("Choose either --enable-review-gate or --disable-review-gate.");
+  }
+  if (options["fallback-model"] != null && options["clear-fallback-model"]) {
+    throw new Error("Choose either --fallback-model or --clear-fallback-model.");
+  }
+  const fallbackModel = options["fallback-model"] == null
+    ? null
+    : String(options["fallback-model"]).trim();
+  if (fallbackModel === "") {
+    throw new Error("--fallback-model requires a non-empty model name.");
   }
 
   const cwd = resolveCommandCwd(options);
@@ -352,6 +369,13 @@ async function handleSetup(argv) {
   } else if (options["disable-review-gate"]) {
     setConfig(workspaceRoot, "stopReviewGate", false);
     actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
+  }
+  if (fallbackModel != null) {
+    setConfig(workspaceRoot, "fallbackModel", fallbackModel);
+    actionsTaken.push(`Configured fallback model ${fallbackModel} for ${workspaceRoot}.`);
+  } else if (options["clear-fallback-model"]) {
+    setConfig(workspaceRoot, "fallbackModel", null);
+    actionsTaken.push(`Cleared the configured fallback model for ${workspaceRoot}.`);
   }
 
   const finalReport = await buildSetupReport(cwd, actionsTaken);
@@ -496,6 +520,21 @@ async function executeReviewRun(request) {
       base: request.base,
       scope: request.scope
     });
+  const assertPinnedState = (completed = false) => {
+    if (!request.stateIdentity) {
+      return;
+    }
+    const drift = describeRepoStateDrift(request.cwd, target, request.stateIdentity);
+    if (!drift) {
+      return;
+    }
+    const message = completed
+      ? `Review completed against repository state that has since moved: ${drift}. Discarding the result; re-run the review.`
+      : `Review target moved between enqueue and execution: ${drift}. Re-run the review.`;
+    throw Object.assign(new Error(message), { failureClass: STATE_DRIFT, retryable: true });
+  };
+
+  assertPinnedState();
   const focusText = request.focusText?.trim() ?? "";
   const reviewName = request.reviewName ?? "Review";
   if (reviewName === "Review") {
@@ -505,11 +544,16 @@ async function executeReviewRun(request) {
       model: request.model,
       onProgress: request.onProgress
     });
+    assertPinnedState(true);
+    const effectiveModel = result.modelFallback?.to ?? request.model;
     const payload = {
       review: reviewName,
       target,
-      model: request.model ?? null,
+      model: effectiveModel ?? null,
       effort: request.effort ?? null,
+      failureClass: result.failureClass,
+      modelFallback: result.modelFallback ?? null,
+      retryable: result.retryable,
       threadId: result.threadId,
       sourceThreadId: result.sourceThreadId,
       codex: {
@@ -523,13 +567,17 @@ async function executeReviewRun(request) {
       {
         status: result.status,
         stdout: result.reviewText,
-        stderr: result.stderr
+        stderr: result.stderr,
+        failureClass: result.failureClass,
+        retryable: result.retryable
       },
-      { reviewLabel: reviewName, targetLabel: target.label, model: request.model, reasoningSummary: result.reasoningSummary }
+      { reviewLabel: reviewName, targetLabel: target.label, model: effectiveModel, reasoningSummary: result.reasoningSummary }
     );
 
     return {
       exitStatus: result.status,
+      failureClass: result.failureClass,
+      retryable: result.retryable,
       threadId: result.threadId,
       turnId: result.turnId,
       payload,
@@ -542,6 +590,10 @@ async function executeReviewRun(request) {
   }
 
   const context = collectReviewContext(request.cwd, target);
+  // Validate the state the context was actually built from, not the state a few
+  // statements earlier: an inline diff is frozen into the prompt here, so this is
+  // the last moment its content can be checked against what was pinned.
+  assertPinnedState();
   const prompt =
     reviewName === "Deep Review"
       ? buildDeepReviewPrompt(context, focusText)
@@ -555,16 +607,25 @@ async function executeReviewRun(request) {
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
   });
+  if (context.inputMode === "self-collect") {
+    assertPinnedState(true);
+  }
+  const effectiveModel = result.modelFallback?.to ?? request.model;
   const parsed = parseStructuredOutput(result.status === 0 ? result.finalMessage : "", {
     status: result.status,
-    failureMessage: result.error?.message ?? result.stderr
+    failureMessage: result.error?.message ?? result.stderr,
+    failureClass: result.failureClass,
+    retryable: result.retryable
   });
   const payload = {
     review: reviewName,
     target,
-    model: request.model ?? null,
+    model: effectiveModel ?? null,
     effort: request.effort ?? null,
     effortWarning: result.effortWarning,
+    failureClass: result.failureClass,
+    modelFallback: result.modelFallback,
+    retryable: result.retryable,
     threadId: result.threadId,
     context: {
       repoRoot: context.repoRoot,
@@ -585,13 +646,15 @@ async function executeReviewRun(request) {
 
   return {
     exitStatus: result.status,
+    failureClass: result.failureClass,
+    retryable: result.retryable,
     threadId: result.threadId,
     turnId: result.turnId,
     payload,
     rendered: renderReviewResult(parsed, {
       reviewLabel: reviewName,
       targetLabel: context.target.label,
-      model: request.model,
+      model: effectiveModel,
       effort: request.effort ?? "codex default",
       reasoningSummary: result.reasoningSummary
     }),
@@ -650,6 +713,8 @@ async function executeTaskRun(request) {
       rawOutput,
       partialOutput,
       failureMessage,
+      failureClass: result.failureClass,
+      retryable: result.retryable,
       touchedFiles: result.touchedFiles,
       reasoningSummary: result.reasoningSummary
     },
@@ -661,6 +726,9 @@ async function executeTaskRun(request) {
   );
   const payload = {
     status: result.status,
+    failureClass: result.failureClass,
+    modelFallback: result.modelFallback,
+    retryable: result.retryable,
     threadId: result.threadId,
     rawOutput,
     partialOutput,
@@ -672,6 +740,8 @@ async function executeTaskRun(request) {
 
   return {
     exitStatus: result.status,
+    failureClass: result.failureClass,
+    retryable: result.retryable,
     threadId: result.threadId,
     turnId: result.turnId,
     payload,
@@ -996,6 +1066,7 @@ async function handleReviewCommand(argv, config) {
       base: options.base,
       scope: options.scope,
       target,
+      stateIdentity: captureRepoStateIdentity(cwd, target),
       model,
       effort,
       effortOverride,

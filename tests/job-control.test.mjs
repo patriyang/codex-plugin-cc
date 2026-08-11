@@ -278,6 +278,52 @@ test("runTrackedJob persists the worker start time in its running record", async
   assert.equal(storedJob.pidStartTime, "worker-start");
 });
 
+test("runTrackedJob catch persistence prefers explicit failure metadata and otherwise classifies the message", async () => {
+  const workspace = makeTempDir();
+
+  async function runFailure(jobId, error) {
+    await assert.rejects(
+      runTrackedJob(
+        {
+          id: jobId,
+          workspaceRoot: workspace,
+          title: "Codex Task",
+          status: "queued"
+        },
+        async () => {
+          throw error;
+        },
+        { getProcessStartTime: () => null }
+      ),
+      new RegExp(error.message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    );
+
+    return {
+      stored: JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8")),
+      indexed: listJobs(workspace).find((job) => job.id === jobId)
+    };
+  }
+
+  const explicitError = Object.assign(new Error("The selected model is at capacity."), {
+    failureClass: "state-drift",
+    retryable: false
+  });
+  const explicit = await runFailure("task-explicit-failure", explicitError);
+  assert.equal(explicit.stored.failureClass, "state-drift");
+  assert.equal(explicit.stored.retryable, false);
+  assert.equal(explicit.indexed.failureClass, "state-drift");
+  assert.equal(explicit.indexed.retryable, false);
+
+  const classified = await runFailure(
+    "task-classified-failure",
+    new Error("The selected model is currently overloaded.")
+  );
+  assert.equal(classified.stored.failureClass, "capacity");
+  assert.equal(classified.stored.retryable, true);
+  assert.equal(classified.indexed.failureClass, "capacity");
+  assert.equal(classified.indexed.retryable, true);
+});
+
 test("runTrackedJob cannot overwrite cancellation that lands before result persistence", async () => {
   const workspace = makeTempDir();
   const jobId = "task-cancel-race";

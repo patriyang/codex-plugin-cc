@@ -191,6 +191,65 @@ test("renderStoredJobResult prefers rendered output for structured review jobs",
   assert.match(output, /Resume in Codex: codex resume thr_123/);
 });
 
+test("renderStoredJobResult shows one failure classification line only for failed jobs", () => {
+  const failedOutput = renderStoredJobResult(
+    {
+      id: "review-failed",
+      status: "failed",
+      title: "Codex Review",
+      failureClass: "capacity",
+      retryable: true
+    },
+    {
+      status: "failed",
+      failureClass: "capacity",
+      retryable: true,
+      result: {
+        codex: { stdout: "Partial native review output." }
+      },
+      rendered: "Codex review failed.\nFailure class: capacity (retryable)\n"
+    }
+  );
+
+  assert.match(failedOutput, /Partial native review output\./);
+  assert.equal(failedOutput.match(/^Failure class: capacity \(retryable\)$/gm)?.length, 1);
+
+  const alreadyRenderedOutput = renderStoredJobResult(
+    {
+      id: "review-rendered-failure",
+      status: "failed",
+      title: "Codex Review",
+      failureClass: "capacity",
+      retryable: true
+    },
+    {
+      status: "failed",
+      failureClass: "capacity",
+      retryable: true,
+      rendered: "Codex review failed.\nFailure class: capacity (retryable)\n",
+      result: { result: null, parseError: "Review failed." }
+    }
+  );
+
+  assert.equal(alreadyRenderedOutput.match(/^Failure class: capacity \(retryable\)$/gm)?.length, 1);
+
+  const completedOutput = renderStoredJobResult(
+    {
+      id: "task-completed",
+      status: "completed",
+      title: "Codex Task"
+    },
+    {
+      status: "completed",
+      failureClass: null,
+      retryable: false,
+      result: { rawOutput: "Task completed." }
+    }
+  );
+
+  assert.doesNotMatch(completedOutput, /^Failure class:/m);
+});
+
 test("renderTaskResult leads with the failure reason instead of the partial message (#88)", () => {
   const output = renderTaskResult(
     {

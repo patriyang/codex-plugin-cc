@@ -297,7 +297,28 @@ Examples:
 Checks whether Codex is installed and authenticated.
 If Codex is missing and npm is available, it can offer to install Codex for you.
 
-You can also use `/codex:setup` to manage the optional review gate.
+You can also use `/codex:setup` to manage the optional review gate and the backup model.
+
+#### Choosing a backup model
+
+```bash
+/codex:setup --fallback-model gpt-5.6-terra
+/codex:setup --clear-fallback-model
+```
+
+When a Codex run is rejected because the selected model is at capacity, the plugin retries the run once on a backup model instead of failing. Capacity rejections are transient and have nothing to do with your prompt, so the same work usually succeeds immediately on another model.
+
+The backup model is resolved in this order:
+
+1. the `CODEX_COMPANION_FALLBACK_MODEL` environment variable — set it to `none` to turn the fallback off entirely
+2. the model configured with `/codex:setup --fallback-model`
+3. whatever Codex itself advertises, picking its default model and skipping the one that was at capacity
+
+Nothing is hardcoded, so the third step keeps working as OpenAI renames models.
+
+The retry only happens when the rejected turn produced nothing at all — no output, no commands, no file edits. A capacity rejection that arrives after work has started leaves the run failed rather than risking a repeat of something that already ran.
+
+Either way the failure is machine-readable: `/codex:status` and `/codex:result` report `failureClass` and `retryable` in their JSON, so a caller never has to pattern-match an error message to tell a transient capacity rejection from a real failure.
 
 #### Enabling review gate
 
@@ -345,6 +366,8 @@ For a review, `--background` enqueues a detached tracked job and the command the
 For rescue, `--background` backgrounds the subagent rather than the Codex run: the subagent blocks on a foreground `task`, so its report already contains Codex's full output. Presenting it depends on Claude Code re-invoking the command once the subagent finishes — a re-invocation that has been observed not to arrive for subagent callers. If a rescue goes quiet, recover it with the commands below instead of re-running it.
 
 `/codex:status` and `/codex:result <job-id>` inspect a tracked job from another turn, or recover a run whose turn ended before its result was read.
+
+A background review pins the target it resolved at enqueue time, along with the repository state that target points at. If the repository moves before the detached worker starts — you commit the changes it was going to review, switch branches, or the base branch is deleted — the job fails with `failureClass: "state-drift"` and `retryable: true` rather than reviewing whatever is there now. Re-running the review picks up the new state. This trades a rare visible failure for the far worse alternative: a clean review of a change nobody looked at.
 
 ## Codex Integration
 

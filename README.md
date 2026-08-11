@@ -74,8 +74,6 @@ One simple first run is:
 
 ```bash
 /codex:review --background
-/codex:status
-/codex:result
 ```
 
 ## Usage

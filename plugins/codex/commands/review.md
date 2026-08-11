@@ -59,7 +59,7 @@ Bash({
   timeout: 300000
 })
 ```
-- If the wait payload has `waitTimedOut: true`, re-arm the same bounded foreground wait. Otherwise, read the persisted result:
+- If the wait payload has `waitTimedOut: true`, follow the PID-aware timeout branch in `status.md` and re-arm only when it classifies the job as healthy. Otherwise, read the persisted result:
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result <job-id> --json
 ```

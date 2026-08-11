@@ -65,7 +65,7 @@ Bash({
   timeout: 300000
 })
 ```
-- A payload with `waitTimedOut: true` means the job is still active; issue the same bounded wait again. After a terminal payload, load the stored result:
+- On `waitTimedOut: true`, apply the PID-aware timeout branch in `status.md`; repeat the bounded wait only for a healthy job. After a terminal payload, load the stored result:
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result <job-id> --json
 ```

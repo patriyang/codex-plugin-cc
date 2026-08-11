@@ -107,7 +107,7 @@ Bash({
   timeout: 300000
 })
 ```
-- If the status JSON has `waitTimedOut: true`, re-arm the same bounded foreground wait for that job ID. Otherwise retrieve the persisted result:
+- If the status JSON has `waitTimedOut: true`, follow the PID-aware timeout branch in `status.md` and re-arm only when the job is healthy. Otherwise retrieve the persisted result:
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result -C "${WORKTREE_ROOT}" <job-id> --json
 ```

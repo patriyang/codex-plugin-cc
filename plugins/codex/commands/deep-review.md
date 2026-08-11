@@ -64,7 +64,7 @@ Bash({
   timeout: 300000
 })
 ```
-- When the JSON says `waitTimedOut: true`, re-arm that same wait. When it does not, retrieve the persisted deep-review result:
+- When the JSON says `waitTimedOut: true`, use the PID-aware timeout branch in `status.md` and re-arm only a healthy job. When it does not, retrieve the persisted deep-review result:
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result <job-id> --json
 ```

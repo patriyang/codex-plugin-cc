@@ -44,6 +44,9 @@ test("review command auto-decides execution mode and uses a tracked background j
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
   assert.match(readme, /A background review runs as a detached tracked job with a job ID/i);
   assert.doesNotMatch(readme, /detached shell rather than a tracked job/i);
+  const firstRun = readme.slice(readme.indexOf("One simple first run is:"), readme.indexOf("## Usage"));
+  assert.match(firstRun, /\/codex:review --background/);
+  assert.doesNotMatch(firstRun, /\/codex:(status|result)/);
 });
 
 test("adversarial review command auto-decides execution mode and uses a tracked background job while staying review-only", () => {
@@ -595,6 +598,15 @@ test("the foreground wait mechanism is provisioned on every command that require
     assert.match(allowed[1], /\bBash\(node:\*\)/, `${file} may invoke the companion script`);
     assert.match(source, /status .*--wait --timeout-ms 240000 --json/, `${file} documents the bounded wait`);
     assert.match(source, /result .*<job-id>.*--json/, `${file} documents persisted result retrieval`);
+    const companionTimeout = /--timeout-ms\s+(\d+)/.exec(source);
+    const bashTimeout = /\btimeout:\s*(\d+)/.exec(source);
+    assert.ok(companionTimeout, `${file} declares the companion wait timeout`);
+    assert.ok(bashTimeout, `${file} declares the foreground Bash timeout`);
+    assert.ok(
+      Number(bashTimeout[1]) > Number(companionTimeout[1]),
+      `${file} keeps the foreground Bash timeout above the companion wait timeout`
+    );
+    assert.match(source, /PID-aware timeout branch/i, `${file} points to the failed-spawn recovery rule`);
     assert.doesNotMatch(source, /run_in_background|BashOutput/, `${file} does not use the harness-dependent wait`);
   }
 });
@@ -631,6 +643,7 @@ test("dispatch is never a stopping point across every async surface", () => {
   // trained the controller to hand the user a checkpoint instead of the result.
   for (const file of ["commands/review.md", "commands/adversarial-review.md", "commands/deep-review.md"]) {
     const source = read(file);
+    const background = source.slice(source.indexOf("Background flow:"));
     assert.match(source, /waitTimedOut: true/);
     assert.match(source, /same turn the terminal wait returns/i);
     assert.match(source, /never re-dispatch (a second|another)/i);
@@ -638,6 +651,14 @@ test("dispatch is never a stopping point across every async surface", () => {
     assert.match(source, /status <job-id> --json/);
     assert.match(source, /result <job-id> --json/);
     assert.match(source, /\.storedJob\.rendered/);
+    for (const condition of ["failed", "cancelled", "empty", "malformed"]) {
+      assert.match(background, new RegExp(`\\b${condition}\\b`, "i"), `${file} handles ${condition} review results`);
+    }
+    assert.match(
+      background,
+      /(?:failed|cancelled|empty|malformed)[\s\S]{0,300}(?:surface|report|include)|(?:surface|report|include)[\s\S]{0,300}(?:failed|cancelled|empty|malformed)/i,
+      `${file} surfaces failed or unusable review results`
+    );
     // Broad enough to catch near-miss regressions of the old dead end.
     assert.doesNotMatch(source, /Check .{0,4}\/codex:status.{0,4} for /i);
   }
@@ -681,8 +702,16 @@ test("status documents the bounded job-scoped wait and tracked background comman
   }
   assert.match(status, /foreground `Bash` call/i);
   assert.match(status, /timeout comfortably larger than `--timeout-ms`/i);
-  assert.match(status, /issue another bounded foreground wait/i);
+  assert.match(status, /healthy\. Re-arm the same bounded wait/i);
   assert.match(status, /result <job-id> --json/);
+  assert.match(status, /job\.status/);
+  assert.match(status, /job\.pid/);
+  assert.match(status, /`running`/);
+  assert.match(status, /`queued`[\s\S]{0,160}(?:finite|real) `job\.pid`/i);
+  assert.match(status, /`queued`[\s\S]{0,160}(?:null|absent)[\s\S]{0,80}`job\.pid`/i);
+  assert.match(status, /stop re-arming/i);
+  assert.match(status, /failed dispatch/i);
+  assert.match(status, /job ID[\s\S]{0,100}job record/i);
   assert.match(status, /foreground `Bash` call that returns always continues the current turn/i);
   assert.match(status, /not to arrive for subagent callers/i);
 

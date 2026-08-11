@@ -20,6 +20,7 @@ import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoin
 import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import { resolveFallbackModel, runAppServerTurn } from "../plugins/codex/scripts/lib/codex.mjs";
 import { classifyFailureMessage } from "../plugins/codex/scripts/lib/failure-class.mjs";
+import { captureRepoStateIdentity } from "../plugins/codex/scripts/lib/git.mjs";
 import { getProcessStartTime } from "../plugins/codex/scripts/lib/process.mjs";
 import { splitRawArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
 import {
@@ -133,6 +134,40 @@ function waitForChildExit(child, timeoutMs) {
       resolve({ code, signal, stdout, stderr });
     });
   });
+}
+
+async function runStoredReviewJob(repo, binDir, jobId, request) {
+  const logFile = resolveJobLogFile(repo, jobId);
+  ensureStateDir(repo);
+  fs.writeFileSync(logFile, "", "utf8");
+  const child = spawn(
+    process.execPath,
+    [SCRIPT, "job-worker", "--cwd", repo, "--job-id", jobId],
+    { cwd: repo, env: buildEnv(binDir), stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
+  );
+  const queuedJob = {
+    id: jobId,
+    kind: "adversarial-review",
+    kindLabel: "adversarial-review",
+    title: "Codex Adversarial Review",
+    workspaceRoot: repo,
+    jobClass: "review",
+    summary: `Adversarial Review ${request.target.label}`,
+    write: false,
+    createdAt: new Date().toISOString(),
+    status: "queued",
+    phase: "queued",
+    pid: child.pid,
+    pidStartTime: null,
+    logFile,
+    request
+  };
+  writeJobFile(repo, jobId, queuedJob);
+  upsertJob(repo, queuedJob);
+
+  const processResult = await waitForChildExit(child, 15000);
+  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
+  return { processResult, storedJob };
 }
 
 after(async () => {
@@ -3984,6 +4019,74 @@ test("a background review refuses to review a repository that moved under its pi
   assert.equal(job.retryable, true);
 });
 
+test("a background branch review reports a deleted base ref as state drift", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 1;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  run("git", ["checkout", "-b", "feature"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 2;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "feature work"], { cwd: repo });
+  const target = {
+    mode: "branch",
+    label: "branch diff against main",
+    baseRef: "main",
+    explicit: false
+  };
+  const stateIdentity = captureRepoStateIdentity(repo, target);
+  run("git", ["branch", "-D", "main"], { cwd: repo });
+
+  const { processResult, storedJob } = await runStoredReviewJob(
+    repo,
+    binDir,
+    `review-deleted-base-${Date.now().toString(36)}`,
+    {
+      cwd: repo,
+      target,
+      stateIdentity,
+      model: "gpt-5.5",
+      effort: null,
+      effortOverride: false,
+      focusText: "",
+      reviewName: "Adversarial Review"
+    }
+  );
+
+  assert.equal(processResult.code, 1);
+  assert.equal(storedJob.status, "failed");
+  assert.match(storedJob.errorMessage, /moved between enqueue and execution/);
+  assert.match(storedJob.errorMessage, /base ref main no longer resolves/);
+  assert.equal(storedJob.failureClass, "state-drift");
+  assert.equal(storedJob.retryable, true);
+  const stateFile = path.join(binDir, "fake-codex-state.json");
+  const codexState = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, "utf8")) : {};
+  assert.equal(codexState.lastTurnStart ?? null, null);
+});
+
+test("a background review rejects an unresolvable base ref before enqueue", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 1;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run(
+    "node",
+    [SCRIPT, "adversarial-review", "--background", "--base", "missing-base", "--json"],
+    { cwd: repo, env: buildEnv(binDir) }
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /rev-parse.*missing-base/i);
+  assert.doesNotMatch(result.stderr, /moved between enqueue and execution/);
+});
+
 test("a legacy background review without state identity still runs", async () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -4001,31 +4104,11 @@ test("a legacy background review without state identity still runs", async () =>
   run("git", ["add", "src.js"], { cwd: repo });
   run("git", ["commit", "-m", "move pinned work"], { cwd: repo });
 
-  const jobId = `review-legacy-${Date.now().toString(36)}`;
-  const logFile = resolveJobLogFile(repo, jobId);
-  ensureStateDir(repo);
-  fs.writeFileSync(logFile, "", "utf8");
-  const child = spawn(
-    process.execPath,
-    [SCRIPT, "job-worker", "--cwd", repo, "--job-id", jobId],
-    { cwd: repo, env: buildEnv(binDir), stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
-  );
-  const queuedJob = {
-    id: jobId,
-    kind: "adversarial-review",
-    kindLabel: "adversarial-review",
-    title: "Codex Adversarial Review",
-    workspaceRoot: repo,
-    jobClass: "review",
-    summary: "Adversarial Review working tree diff",
-    write: false,
-    createdAt: new Date().toISOString(),
-    status: "queued",
-    phase: "queued",
-    pid: child.pid,
-    pidStartTime: null,
-    logFile,
-    request: {
+  const { processResult, storedJob } = await runStoredReviewJob(
+    repo,
+    binDir,
+    `review-legacy-${Date.now().toString(36)}`,
+    {
       cwd: repo,
       target,
       model: "gpt-5.5",
@@ -4034,14 +4117,9 @@ test("a legacy background review without state identity still runs", async () =>
       focusText: "",
       reviewName: "Adversarial Review"
     }
-  };
-  writeJobFile(repo, jobId, queuedJob);
-  upsertJob(repo, queuedJob);
+  );
 
-  const result = await waitForChildExit(child, 15000);
-
-  assert.equal(result.code, 0, result.stderr);
-  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(repo, jobId), "utf8"));
+  assert.equal(processResult.code, 0, processResult.stderr);
   assert.equal(storedJob.status, "completed");
   assert.ok(JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8")).lastTurnStart);
 });

@@ -22,6 +22,33 @@ function gitNullTerminatedPaths(cwd, args) {
   return gitChecked(cwd, [...args, "-z"]).stdout.split("\0").filter(Boolean);
 }
 
+function resolveOid(cwd, ref) {
+  return gitChecked(cwd, ["rev-parse", ref]).stdout.trim();
+}
+
+function tryResolveOid(cwd, ref) {
+  const result = git(cwd, ["rev-parse", ref]);
+  if (result.error) {
+    throw result.error;
+  }
+  return result.status === 0 ? result.stdout.trim() || null : null;
+}
+
+function hashNestedGitRepository(absolutePath) {
+  if (!fs.existsSync(path.join(absolutePath, ".git"))) {
+    return null;
+  }
+
+  const head = git(absolutePath, ["rev-parse", "HEAD"]);
+  const status = git(absolutePath, ["status", "--porcelain", "--untracked-files=all"]);
+  if (head.error || head.status !== 0 || status.error || status.status !== 0) {
+    return null;
+  }
+
+  const statusDigest = createHash("sha256").update(status.stdout).digest("hex");
+  return `submodule:${head.stdout.trim()}:${statusDigest}`;
+}
+
 function hashWorkingTreePath(cwd, relativePath) {
   const absolutePath = path.join(cwd, relativePath);
   let stat;
@@ -34,6 +61,9 @@ function hashWorkingTreePath(cwd, relativePath) {
   if (stat.isSymbolicLink()) {
     return `symlink:${createHash("sha256").update(fs.readlinkSync(absolutePath)).digest("hex")}`;
   }
+  if (stat.isDirectory()) {
+    return hashNestedGitRepository(absolutePath) ?? `other:${stat.mode}:${stat.size}`;
+  }
   if (!stat.isFile()) {
     return `other:${stat.mode}:${stat.size}`;
   }
@@ -41,26 +71,41 @@ function hashWorkingTreePath(cwd, relativePath) {
   return `file:${gitChecked(cwd, ["hash-object", "--no-filters", "--", relativePath]).stdout.trim()}`;
 }
 
-function hashUntrackedPath(cwd, relativePath) {
+function inspectUntrackedFile(cwd, relativePath) {
   const absolutePath = path.join(cwd, relativePath);
   let stat;
   try {
-    stat = fs.lstatSync(absolutePath);
+    stat = fs.statSync(absolutePath);
   } catch {
-    return "missing";
+    return { skip: "(skipped: broken symlink or unreadable file)" };
   }
 
-  if (stat.isSymbolicLink()) {
-    return `symlink:${createHash("sha256").update(fs.readlinkSync(absolutePath)).digest("hex")}`;
-  }
-  if (!stat.isFile()) {
-    return `other:${stat.mode}:${stat.size}`;
+  if (stat.isDirectory()) {
+    return { skip: "(skipped: directory)" };
   }
   if (stat.size > MAX_UNTRACKED_BYTES) {
-    return `oversized:${stat.size}`;
+    return { skip: `(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)` };
   }
 
-  return `file:${createHash("sha256").update(fs.readFileSync(absolutePath)).digest("hex")}`;
+  let buffer;
+  try {
+    buffer = fs.readFileSync(absolutePath);
+  } catch {
+    return { skip: "(skipped: broken symlink or unreadable file)" };
+  }
+  if (!isProbablyText(buffer)) {
+    return { skip: "(skipped: binary file)" };
+  }
+
+  return { content: buffer.toString("utf8").trimEnd() };
+}
+
+function hashUntrackedPath(cwd, relativePath) {
+  const inspected = inspectUntrackedFile(cwd, relativePath);
+  if (inspected.skip) {
+    return `skipped:${inspected.skip}`;
+  }
+  return `file:${createHash("sha256").update(inspected.content).digest("hex")}`;
 }
 
 function captureWorkingTreeDigest(cwd) {
@@ -222,11 +267,11 @@ export function getWorkingTreeState(cwd) {
 export function captureRepoStateIdentity(cwd, target) {
   const repoRoot = getRepoRoot(cwd);
   const identity = {
-    headOid: gitChecked(repoRoot, ["rev-parse", "HEAD"]).stdout.trim()
+    headOid: resolveOid(repoRoot, "HEAD")
   };
 
   if (target.mode === "branch") {
-    identity.baseOid = gitChecked(repoRoot, ["rev-parse", target.baseRef]).stdout.trim();
+    identity.baseOid = resolveOid(repoRoot, target.baseRef);
   } else if (target.mode === "working-tree") {
     identity.worktreeDigest = captureWorkingTreeDigest(repoRoot);
   }
@@ -235,14 +280,24 @@ export function captureRepoStateIdentity(cwd, target) {
 }
 
 export function describeRepoStateDrift(cwd, target, expected) {
-  const actual = captureRepoStateIdentity(cwd, target);
-  if (actual.headOid !== expected.headOid) {
+  const repoRoot = getRepoRoot(cwd);
+  const headOid = tryResolveOid(repoRoot, "HEAD");
+  if (!headOid) {
+    return "HEAD no longer resolves";
+  }
+  if (headOid !== expected.headOid) {
     return "HEAD moved";
   }
-  if (target.mode === "branch" && actual.baseOid !== expected.baseOid) {
-    return `base ref ${target.baseRef} moved`;
+  if (target.mode === "branch") {
+    const baseOid = tryResolveOid(repoRoot, target.baseRef);
+    if (!baseOid) {
+      return `base ref ${target.baseRef} no longer resolves`;
+    }
+    if (baseOid !== expected.baseOid) {
+      return `base ref ${target.baseRef} moved`;
+    }
   }
-  if (target.mode === "working-tree" && actual.worktreeDigest !== expected.worktreeDigest) {
+  if (target.mode === "working-tree" && captureWorkingTreeDigest(repoRoot) !== expected.worktreeDigest) {
     return "working tree moved";
   }
   return null;
@@ -311,31 +366,12 @@ function formatSection(title, body) {
 }
 
 function formatUntrackedFile(cwd, relativePath) {
-  const absolutePath = path.join(cwd, relativePath);
-  let stat;
-  try {
-    stat = fs.statSync(absolutePath);
-  } catch {
-    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
-  }
-  if (stat.isDirectory()) {
-    return `### ${relativePath}\n(skipped: directory)`;
-  }
-  if (stat.size > MAX_UNTRACKED_BYTES) {
-    return `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+  const inspected = inspectUntrackedFile(cwd, relativePath);
+  if (inspected.skip) {
+    return `### ${relativePath}\n${inspected.skip}`;
   }
 
-  let buffer;
-  try {
-    buffer = fs.readFileSync(absolutePath);
-  } catch {
-    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
-  }
-  if (!isProbablyText(buffer)) {
-    return `### ${relativePath}\n(skipped: binary file)`;
-  }
-
-  return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
+  return [`### ${relativePath}`, "```", inspected.content, "```"].join("\n");
 }
 
 function collectWorkingTreeContext(cwd, state, options = {}) {

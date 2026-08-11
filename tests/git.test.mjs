@@ -164,6 +164,21 @@ test("repo state identity detects when a branch target's base ref moves", () => 
   assert.match(describeRepoStateDrift(cwd, target, identity), /base ref main moved/i);
 });
 
+test("repo state identity reports when a branch target's base ref disappears", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('base');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "base"], { cwd });
+  run("git", ["checkout", "-b", "feature/test"], { cwd });
+
+  const target = resolveReviewTarget(cwd, { base: "main" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  run("git", ["branch", "-D", "main"], { cwd });
+
+  assert.match(describeRepoStateDrift(cwd, target, identity), /base ref main no longer resolves/i);
+});
+
 test("repo state identity detects further edits to an already-dirty tracked file", () => {
   const cwd = makeTempDir();
   initGitRepo(cwd);
@@ -190,6 +205,46 @@ test("repo state identity detects changes to an untracked file's contents", () =
   const target = resolveReviewTarget(cwd, { scope: "working-tree" });
   const identity = captureRepoStateIdentity(cwd, target);
   fs.writeFileSync(path.join(cwd, "notes.txt"), "second draft\n");
+
+  assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
+});
+
+test("repo state identity detects further changes inside a dirty submodule", () => {
+  const cwd = makeTempDir();
+  const nestedRepo = path.join(cwd, "vendor", "dependency");
+  initGitRepo(cwd);
+  fs.mkdirSync(nestedRepo, { recursive: true });
+  initGitRepo(nestedRepo);
+  fs.writeFileSync(path.join(nestedRepo, "version.txt"), "v1\n");
+  run("git", ["add", "version.txt"], { cwd: nestedRepo });
+  run("git", ["commit", "-m", "dependency v1"], { cwd: nestedRepo });
+  run("git", ["add", "vendor/dependency"], { cwd });
+  run("git", ["commit", "-m", "track dependency"], { cwd });
+  fs.writeFileSync(path.join(nestedRepo, "version.txt"), "v2\n");
+  run("git", ["add", "version.txt"], { cwd: nestedRepo });
+  run("git", ["commit", "-m", "dependency v2"], { cwd: nestedRepo });
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  fs.writeFileSync(path.join(nestedRepo, "version.txt"), "v3\n");
+
+  assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
+});
+
+test("repo state identity detects changes through an untracked symlink", () => {
+  const cwd = makeTempDir();
+  const outside = makeTempDir();
+  const destination = path.join(outside, "notes.txt");
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(destination, "first draft\n");
+  fs.symlinkSync(destination, path.join(cwd, "linked-notes.txt"));
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  fs.writeFileSync(destination, "second draft\n");
 
   assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
 });

@@ -3566,6 +3566,13 @@ test("a background review reviews the target it was validated and named for", as
   assert.equal(resultPayload.storedJob.result.target.mode, "branch");
   assert.equal(resultPayload.storedJob.result.target.label, "branch diff against main");
   assert.match(resultPayload.storedJob.rendered, /^Target: branch diff against main$/m);
+
+  // The label alone would still match if the worker reported the pinned target
+  // while collecting different content, so assert what Codex actually received:
+  // the enqueue-time branch diff, and none of the later working-tree edit.
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.match(state.lastTurnStart.prompt, /export const value = 2;/);
+  assert.doesNotMatch(state.lastTurnStart.prompt, /export const value = 3;/);
 });
 
 test("review rejects --wait and --background together", () => {

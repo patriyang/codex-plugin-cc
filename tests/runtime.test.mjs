@@ -20,6 +20,7 @@ import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoin
 import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import { runAppServerTurn } from "../plugins/codex/scripts/lib/codex.mjs";
 import { getProcessStartTime } from "../plugins/codex/scripts/lib/process.mjs";
+import { splitRawArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
 import {
   resolveClaudeSessionPath,
   TRANSCRIPT_PATH_ENV
@@ -2374,6 +2375,30 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   assert.match(resultPayload.storedJob.rendered, /Handled the requested task/);
 });
 
+test("task-worker remains an alias for the job worker", async () => {
+  const repo = makeTempDir();
+  const jobId = `task-alias-${Date.now().toString(36)}`;
+  const child = spawn(
+    process.execPath,
+    [SCRIPT, "task-worker", "--cwd", repo, "--job-id", jobId],
+    { cwd: repo, env: { ...process.env }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
+  );
+  const queuedJob = {
+    id: jobId,
+    workspaceRoot: repo,
+    status: "queued",
+    phase: "queued",
+    pid: child.pid,
+    pidStartTime: null
+  };
+  writeJobFile(repo, jobId, queuedJob);
+  upsertJob(repo, queuedJob);
+
+  const result = await waitForChildExit(child, 15000);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /missing its job request payload/);
+});
+
 test("task --background handshakes queued persistence before releasing its worker", async (t) => {
   if (process.platform === "win32") {
     t.skip("uses the POSIX process-start-time probe");
@@ -3212,7 +3237,7 @@ test("adversarial review rejects staged-only scope to match review target select
   assert.match(result.stderr, /Use one of: auto, working-tree, branch, or pass --base <ref>/i);
 });
 
-test("review --background still runs in the foreground and returns the full result", () => {
+test("review --background enqueues a detached worker and exposes per-job status", async () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -3228,23 +3253,173 @@ test("review --background still runs in the foreground and returns the full resu
   });
 
   assert.equal(launched.status, 0, launched.stderr);
-  assert.match(
-    launched.stderr,
-    /\[codex\] --background does not background the review; the script runs it in the foreground and returns the full result\. Detaching is the caller's job \(Claude Code: run_in_background\); there is no job id to poll\./
-  );
+  assert.doesNotMatch(launched.stderr, /\[codex\] --background does not background/);
   const launchPayload = JSON.parse(launched.stdout);
-  assert.equal(launchPayload.review, "Review");
-  assert.match(launchPayload.codex.stdout, /No material issues found/);
+  assert.equal(launchPayload.status, "queued");
+  assert.match(launchPayload.jobId, /^review-/);
 
-  const status = run("node", [SCRIPT, "status"], {
-    cwd: repo,
-    env: buildEnv(binDir)
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    {
+      cwd: repo,
+      env: buildEnv(binDir)
+    }
+  );
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.id, launchPayload.jobId);
+  assert.equal(waitedPayload.job.status, "completed");
+
+  const resultPayload = await waitFor(() => {
+    const result = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], {
+      cwd: repo,
+      env: buildEnv(binDir)
+    });
+    if (result.status !== 0) {
+      return null;
+    }
+    return JSON.parse(result.stdout);
   });
 
-  assert.equal(status.status, 0, status.stderr);
-  assert.match(status.stdout, /# Codex Status/);
-  assert.match(status.stdout, /Codex Review/);
-  assert.match(status.stdout, /completed/);
+  assert.equal(resultPayload.job.id, launchPayload.jobId);
+  assert.equal(resultPayload.job.status, "completed");
+  assert.match(resultPayload.storedJob.rendered, /No material issues found/);
+});
+
+test("review --background returns the workspace needed to wait and read from another cwd", async () => {
+  const ambientCwd = makeTempDir();
+  const repo = path.join(makeTempDir(), "repo with ' quote");
+  const binDir = makeTempDir();
+  fs.mkdirSync(repo);
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "review", "-C", repo, "--background", "--json"], {
+    cwd: ambientCwd,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  assert.equal(launchPayload.workspaceRoot, fs.realpathSync(repo));
+
+  const waitedStatus = run(
+    "node",
+    [
+      SCRIPT,
+      "status",
+      "-C",
+      launchPayload.workspaceRoot,
+      launchPayload.jobId,
+      "--wait",
+      "--timeout-ms",
+      "15000",
+      "--json"
+    ],
+    { cwd: ambientCwd, env }
+  );
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.id, launchPayload.jobId);
+  assert.equal(waitedPayload.job.status, "completed");
+
+  const resultPayload = await waitFor(() => {
+    const result = run(
+      "node",
+      [SCRIPT, "result", "-C", launchPayload.workspaceRoot, launchPayload.jobId, "--json"],
+      { cwd: ambientCwd, env }
+    );
+    if (result.status !== 0) {
+      return null;
+    }
+    return JSON.parse(result.stdout);
+  });
+
+  assert.equal(resultPayload.job.id, launchPayload.jobId);
+  assert.equal(resultPayload.job.status, "completed");
+  assert.match(resultPayload.storedJob.rendered, /No material issues found/);
+
+  const renderedLaunch = run("node", [SCRIPT, "review", "-C", repo, "--background"], {
+    cwd: ambientCwd,
+    env
+  });
+
+  assert.equal(renderedLaunch.status, 0, renderedLaunch.stderr);
+  const waitCommand = /^Block on it with: (.+)$/m.exec(renderedLaunch.stdout);
+  assert.ok(waitCommand, renderedLaunch.stdout);
+  const waitArgs = splitRawArgumentString(waitCommand[1]);
+  assert.equal(waitArgs[0], "codex-companion.mjs");
+  assert.equal(waitArgs[3], fs.realpathSync(repo));
+
+  const renderedWait = run("node", [SCRIPT, ...waitArgs.slice(1)], {
+    cwd: ambientCwd,
+    env
+  });
+
+  assert.equal(renderedWait.status, 0, renderedWait.stderr);
+  const renderedWaitPayload = JSON.parse(renderedWait.stdout);
+  assert.equal(renderedWaitPayload.job.status, "completed");
+
+  // The snapshot hint is a slash command, but /codex:status forwards its raw
+  // arguments to this script, so it must carry the workspace too.
+  const snapshotCommand = /^Snapshot without waiting: \/codex:status (.+)$/m.exec(renderedLaunch.stdout);
+  assert.ok(snapshotCommand, renderedLaunch.stdout);
+  const snapshotArgs = splitRawArgumentString(snapshotCommand[1]);
+  assert.equal(snapshotArgs[1], fs.realpathSync(repo));
+
+  const renderedSnapshot = run("node", [SCRIPT, "status", ...snapshotArgs, "--json"], {
+    cwd: ambientCwd,
+    env
+  });
+
+  assert.equal(renderedSnapshot.status, 0, renderedSnapshot.stderr);
+  assert.equal(JSON.parse(renderedSnapshot.stdout).job.status, "completed");
+});
+
+test("deep-review --background enqueues a detached worker and stores its rendered result", async () => {
+  const { repo, binDir } = setupDeepReviewRepo();
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "deep-review", "--background", "--json"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  assert.equal(launchPayload.status, "queued");
+  assert.match(launchPayload.jobId, /^review-/);
+
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    { cwd: repo, env }
+  );
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.id, launchPayload.jobId);
+  assert.equal(waitedPayload.job.status, "completed");
+
+  const resultPayload = await waitFor(() => {
+    const result = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+    if (result.status !== 0) {
+      return null;
+    }
+    return JSON.parse(result.stdout);
+  });
+
+  assert.equal(resultPayload.job.id, launchPayload.jobId);
+  assert.equal(resultPayload.job.status, "completed");
+  assert.match(resultPayload.storedJob.rendered, /# Codex Deep Review/);
+  assert.match(resultPayload.storedJob.rendered, /Missing empty-state guard/);
 });
 
 test("review rejects --wait and --background together", () => {

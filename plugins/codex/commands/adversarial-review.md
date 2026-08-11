@@ -1,7 +1,7 @@
 ---
 description: Run a Codex review that challenges the implementation approach and design choices
 argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus ...]'
-allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), BashOutput
+allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*)
 ---
 
 Run an adversarial Codex review through the shared plugin runtime.
@@ -19,7 +19,7 @@ Core constraint:
 
 Execution mode rules:
 - If the raw arguments include `--wait`, run in the foreground.
-- If the raw arguments include `--background`, run in a Claude background task.
+- If the raw arguments include `--background`, enqueue the adversarial review as a detached tracked job.
 - Otherwise, decide the mode yourself. Never ask the user; do not use `AskUserQuestion`. Estimate the review size first:
   - For working-tree review, start with `git status --short --untracked-files=all`.
   - For working-tree review, also inspect both `git diff --shortstat --cached` and `git diff --shortstat`.
@@ -35,7 +35,7 @@ Argument handling:
 - Preserve the user's arguments exactly.
 - Do not strip `--wait` or `--background` yourself.
 - Do not weaken the adversarial framing or rewrite the user's focus text.
-- The companion script accepts `--wait` and `--background` as mutually exclusive flags, but it does not itself background the review; Claude Code's `Bash(..., run_in_background: true)` is what actually detaches the run.
+- The companion script accepts `--wait` and `--background` as mutually exclusive flags. With `--background`, it detaches the adversarial review, persists a tracked job, and immediately returns the job ID; pass `--json` in the background flow to capture that ID.
 - `/codex:adversarial-review` uses the same review target selection as `/codex:review`.
 - It supports working-tree review, branch review, and `--base <ref>`.
 - It does not support `--scope staged` or `--scope unstaged`.
@@ -53,15 +53,23 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review "$AR
 - Do not fix any issues mentioned in the review output.
 
 Background flow:
-- Launch the review with `Bash` in the background:
+- Start the adversarial review from foreground `Bash`. Put the generated flags and unchanged raw arguments in the same string so they are parsed as one command line:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review "--background --json $ARGUMENTS"
+```
+- Extract `jobId` and `workspaceRoot` from that JSON and wait for that job in a foreground `Bash` call whose tool timeout is comfortably larger than the companion timeout:
 ```typescript
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review "$ARGUMENTS"`,
-  description: "Codex adversarial review",
-  run_in_background: true
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status -C "${workspaceRoot}" ${jobId} --wait --timeout-ms 240000 --json`,
+  description: "Wait for Codex adversarial review",
+  timeout: 300000
 })
 ```
-- Launch it, tell the user in one line that the review is running, and end the turn. Do not poll `BashOutput` in a loop while it runs.
-- Claude Code re-invokes you when the command exits. That re-invocation is the second half of this command, not a fresh request: read the output with `BashOutput` and present the review in that same turn. Do not wait to be asked "is it done?" or "continue".
-- If it exited non-zero, or the output is empty or malformed, say so and surface the most actionable stderr lines. A failed review must not vanish silently.
-- Never re-dispatch a second review over the same diff, and never hand the user a "check `/codex:status`" note in place of the findings. A background review is a plain shell — it mints no job id, so `/codex:status` has nothing to show for it.
+- On `waitTimedOut: true`, apply the PID-aware timeout branch in `status.md`; repeat the bounded wait only for a healthy job. After a terminal payload, load the stored result:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result -C "${workspaceRoot}" <job-id> --json
+```
+- Read `.storedJob.rendered` from the result JSON and return it verbatim in the same turn the terminal wait returns. Do not wait for "is it done?" or "continue".
+- If the enqueue or read fails, the job ends as `failed` or `cancelled`, or any JSON or review output is empty or malformed, report that and include the most actionable failure lines. A failed review must not vanish silently.
+- Never re-dispatch a second adversarial review over the same diff, and never substitute a "check `/codex:status`" note for its findings.
+- If a dispatched adversarial review is unread when a later turn begins, recover its record with `status -C "${workspaceRoot}" <job-id> --json`; continue the bounded wait if active, then use `result -C "${workspaceRoot}" <job-id> --json` once terminal. Do not launch a duplicate or call the existing run stuck.

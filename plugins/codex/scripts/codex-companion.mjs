@@ -79,8 +79,8 @@ const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
-const TASK_WORKER_STARTUP_TIMEOUT_MS = 10000;
-const TASK_WORKER_STARTUP_POLL_INTERVAL_MS = 25;
+const JOB_WORKER_STARTUP_TIMEOUT_MS = 10000;
+const JOB_WORKER_STARTUP_POLL_INTERVAL_MS = 25;
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_CODEX_REASONING_EFFORT = "high";
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
@@ -710,11 +710,15 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
   };
 }
 
-function renderQueuedTaskLaunch(payload) {
+function shellEscape(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+function renderQueuedJobLaunch(payload) {
   return [
     `${payload.title} started in the background as ${payload.jobId}.`,
-    `Block on it with: codex-companion.mjs status ${payload.jobId} --wait --json`,
-    `Snapshot without waiting: /codex:status ${payload.jobId}`,
+    `Block on it with: codex-companion.mjs status -C ${shellEscape(payload.workspaceRoot)} ${payload.jobId} --wait --json`,
+    `Snapshot without waiting: /codex:status -C ${shellEscape(payload.workspaceRoot)} ${payload.jobId}`,
     ""
   ].join("\n");
 }
@@ -840,9 +844,9 @@ async function runForegroundCommand(job, runner, options = {}) {
   return execution;
 }
 
-function spawnDetachedTaskWorker(cwd, jobId) {
+function spawnDetachedJobWorker(cwd, jobId) {
   const scriptPath = path.join(ROOT_DIR, "scripts", "codex-companion.mjs");
-  const child = spawn(process.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
+  const child = spawn(process.execPath, [scriptPath, "job-worker", "--cwd", cwd, "--job-id", jobId], {
     cwd,
     env: process.env,
     detached: true,
@@ -853,8 +857,8 @@ function spawnDetachedTaskWorker(cwd, jobId) {
   return child;
 }
 
-async function waitForReadyTaskWorker(workspaceRoot, jobId) {
-  const deadline = Date.now() + TASK_WORKER_STARTUP_TIMEOUT_MS;
+async function waitForReadyJobWorker(workspaceRoot, jobId) {
+  const deadline = Date.now() + JOB_WORKER_STARTUP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
       const storedJob = readStoredJob(workspaceRoot, jobId);
@@ -871,13 +875,13 @@ async function waitForReadyTaskWorker(workspaceRoot, jobId) {
       // The parent may still be writing the handshake records.
     }
 
-    await new Promise((resolve) => setTimeout(resolve, TASK_WORKER_STARTUP_POLL_INTERVAL_MS));
+    await new Promise((resolve) => setTimeout(resolve, JOB_WORKER_STARTUP_POLL_INTERVAL_MS));
   }
 
   return null;
 }
 
-function enqueueBackgroundTask(cwd, job, request) {
+function enqueueBackgroundJob(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
@@ -892,7 +896,7 @@ function enqueueBackgroundTask(cwd, job, request) {
   };
   writeJobFile(job.workspaceRoot, job.id, placeholderRecord);
 
-  const child = spawnDetachedTaskWorker(cwd, job.id);
+  const child = spawnDetachedJobWorker(cwd, job.id);
   let pidStartTime = null;
   try {
     if (Number.isFinite(child.pid)) {
@@ -918,6 +922,7 @@ function enqueueBackgroundTask(cwd, job, request) {
   return {
     payload: {
       jobId: job.id,
+      workspaceRoot: job.workspaceRoot,
       status: "queued",
       title: job.title,
       summary: job.summary,
@@ -948,11 +953,6 @@ async function handleReviewCommand(argv, config) {
 
   if (options.wait && options.background) {
     throw new Error("Choose either --wait or --background.");
-  }
-  if (options.background) {
-    process.stderr.write(
-      "[codex] --background does not background the review; the script runs it in the foreground and returns the full result. Detaching is the caller's job (Claude Code: run_in_background); there is no job id to poll.\n"
-    );
   }
 
   const cwd = resolveCommandCwd(options);
@@ -986,6 +986,24 @@ async function handleReviewCommand(argv, config) {
     jobClass: "review",
     summary: metadata.summary
   });
+
+  if (options.background) {
+    ensureCodexAvailable(cwd);
+    const request = {
+      cwd,
+      base: options.base,
+      scope: options.scope,
+      model,
+      effort,
+      effortOverride,
+      focusText,
+      reviewName: config.reviewName
+    };
+    const { payload } = enqueueBackgroundJob(cwd, job, request);
+    outputCommandResult(payload, renderQueuedJobLaunch(payload), options.json);
+    return;
+  }
+
   await runForegroundCommand(
     job,
     (progress) =>
@@ -1062,8 +1080,8 @@ async function handleTask(argv) {
       resumeId,
       jobId: job.id
     });
-    const { payload } = enqueueBackgroundTask(cwd, job, request);
-    outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    const { payload } = enqueueBackgroundJob(cwd, job, request);
+    outputCommandResult(payload, renderQueuedJobLaunch(payload), options.json);
     return;
   }
 
@@ -1097,25 +1115,37 @@ async function handleTransfer(argv) {
   outputCommandResult(payload, rendered, options.json);
 }
 
-async function handleTaskWorker(argv) {
+async function handleJobWorker(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd", "job-id"]
   });
 
   if (!options["job-id"]) {
-    throw new Error("Missing required --job-id for task-worker.");
+    throw new Error("Missing required --job-id for job-worker.");
   }
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const storedJob = await waitForReadyTaskWorker(workspaceRoot, options["job-id"]);
+  const storedJob = await waitForReadyJobWorker(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw new Error(`Timed out waiting for queued job ${options["job-id"]} to become ready.`);
   }
 
   const request = storedJob.request;
   if (!request || typeof request !== "object") {
-    throw new Error(`Stored job ${options["job-id"]} is missing its task request payload.`);
+    throw new Error(`Stored job ${options["job-id"]} is missing its job request payload.`);
+  }
+
+  let executeJob;
+  switch (storedJob.jobClass) {
+    case "task":
+      executeJob = executeTaskRun;
+      break;
+    case "review":
+      executeJob = executeReviewRun;
+      break;
+    default:
+      throw new Error(`Stored job ${options["job-id"]} has unsupported job class "${storedJob.jobClass}".`);
   }
 
   const { logFile, progress } = createTrackedProgress(
@@ -1134,7 +1164,7 @@ async function handleTaskWorker(argv) {
       logFile
     },
     () =>
-      executeTaskRun({
+      executeJob({
         ...request,
         onProgress: progress
       }),
@@ -1344,8 +1374,9 @@ async function main() {
     case "transfer":
       await handleTransfer(argv);
       break;
+    case "job-worker":
     case "task-worker":
-      await handleTaskWorker(argv);
+      await handleJobWorker(argv);
       break;
     case "status":
       await handleStatus(argv);

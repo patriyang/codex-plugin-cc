@@ -1,7 +1,7 @@
 ---
 description: Run a deep Codex review covering correctness, conciseness, and code quality
 argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus ...]'
-allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), BashOutput
+allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*)
 ---
 
 Run a deep Codex review through the shared plugin runtime.
@@ -18,7 +18,7 @@ Core constraint:
 
 Execution mode rules:
 - If the raw arguments include `--wait`, run in the foreground.
-- If the raw arguments include `--background`, run in a Claude background task.
+- If the raw arguments include `--background`, enqueue the deep review as a detached tracked job.
 - Otherwise, decide the mode yourself. Never ask the user; do not use `AskUserQuestion`. Estimate the review size first:
   - For working-tree review, start with `git status --short --untracked-files=all`.
   - For working-tree review, also inspect both `git diff --shortstat --cached` and `git diff --shortstat`.
@@ -34,7 +34,7 @@ Argument handling:
 - Preserve the user's arguments exactly.
 - Do not strip `--wait` or `--background` yourself.
 - Do not weaken the deep-review framing or rewrite the user's focus text.
-- The companion script accepts `--wait` and `--background` as mutually exclusive flags, but it does not itself background the review; Claude Code's `Bash(..., run_in_background: true)` is what actually detaches the run.
+- The companion script accepts `--wait` and `--background` as mutually exclusive flags. `--background` now enqueues the deep review as a tracked job and returns its job ID immediately; add `--json` in the background flow so that ID is machine-readable.
 - `/codex:deep-review` uses the same review target selection as `/codex:review`.
 - It supports working-tree review, branch review, and `--base <ref>`.
 - It does not support `--scope staged` or `--scope unstaged`.
@@ -52,15 +52,23 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" deep-review "$ARGUMENTS
 - Do not fix any issues mentioned in the review output.
 
 Background flow:
-- Launch the review with `Bash` in the background:
+- Enqueue the deep review in foreground `Bash`, keeping the added flags and the user's raw arguments inside one argument for the companion parser:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" deep-review "--background --json $ARGUMENTS"
+```
+- Parse `jobId` and `workspaceRoot` from the enqueue response. Await it through foreground `Bash`, giving the tool a timeout comfortably above the bounded status wait:
 ```typescript
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" deep-review "$ARGUMENTS"`,
-  description: "Codex deep review",
-  run_in_background: true
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status -C "${workspaceRoot}" ${jobId} --wait --timeout-ms 240000 --json`,
+  description: "Wait for Codex deep review",
+  timeout: 300000
 })
 ```
-- Launch it, tell the user in one line that the review is running, and end the turn. Do not poll `BashOutput` in a loop while it runs.
-- Claude Code re-invokes you when the command exits. That re-invocation is the second half of this command, not a fresh request: read the output with `BashOutput` and present the review in that same turn. Do not wait to be asked "is it done?" or "continue".
-- If it exited non-zero, or the output is empty or malformed, say so and surface the most actionable stderr lines. A failed review must not vanish silently.
-- Never re-dispatch a second review over the same diff, and never hand the user a "check `/codex:status`" note in place of the findings. A background review is a plain shell — it mints no job id, so `/codex:status` has nothing to show for it.
+- When the JSON says `waitTimedOut: true`, use the PID-aware timeout branch in `status.md` and re-arm only a healthy job. When it does not, retrieve the persisted deep-review result:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result -C "${workspaceRoot}" <job-id> --json
+```
+- Read `.storedJob.rendered` from the result JSON and present it verbatim in the same turn the terminal wait returns; never wait for the user to ask "is it done?" or "continue".
+- If enqueueing or result retrieval exits non-zero, the job becomes `failed` or `cancelled`, or the JSON or review output is empty or malformed, report the failure with the most actionable lines. A failed review must not vanish silently.
+- Never re-dispatch another deep review over the same diff, and never replace the findings with a "check `/codex:status`" note.
+- If a later turn inherits a dispatched-but-unread deep review, use `status -C "${workspaceRoot}" <job-id> --json` to recover it from disk, resume the bounded wait while active, and call `result -C "${workspaceRoot}" <job-id> --json` after it is terminal. Do not re-dispatch or describe the job as stuck.

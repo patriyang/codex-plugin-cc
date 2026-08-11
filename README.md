@@ -74,8 +74,6 @@ One simple first run is:
 
 ```bash
 /codex:review --background
-/codex:status
-/codex:result
 ```
 
 ## Usage
@@ -102,7 +100,7 @@ Examples:
 /codex:review --background
 ```
 
-This command is read-only and will not perform any changes. A background review runs as a detached shell rather than a tracked job, and Claude presents the findings itself as soon as it finishes — you should not have to prompt it to continue. Use [`/codex:cancel`](#codexcancel) to cancel an ongoing task.
+This command is read-only and will not perform any changes. A background review runs as a detached tracked job with a job ID; Claude waits on that job and presents the findings as soon as it finishes, so you should not have to prompt it to continue. Use [`/codex:cancel`](#codexcancel) to cancel an ongoing run.
 
 ### `/codex:adversarial-review`
 

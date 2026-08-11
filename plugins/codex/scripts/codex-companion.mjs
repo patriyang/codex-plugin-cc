@@ -590,6 +590,10 @@ async function executeReviewRun(request) {
   }
 
   const context = collectReviewContext(request.cwd, target);
+  // Validate the state the context was actually built from, not the state a few
+  // statements earlier: an inline diff is frozen into the prompt here, so this is
+  // the last moment its content can be checked against what was pinned.
+  assertPinnedState();
   const prompt =
     reviewName === "Deep Review"
       ? buildDeepReviewPrompt(context, focusText)

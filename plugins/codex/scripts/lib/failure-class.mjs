@@ -6,11 +6,11 @@ export function classifyFailureMessage(message) {
     return { failureClass: null, retryable: false };
   }
 
-  if (
-    /\bat capacity\b/i.test(message) ||
-    /\bis (currently )?overloaded\b/i.test(message) ||
-    /\btry a different model\b/i.test(message)
-  ) {
+  // Match capacity wording only. "Try a different model" is advice the server
+  // also appends to unrelated model-compatibility errors, so on its own it says
+  // nothing about capacity — the real capacity message carries "at capacity"
+  // alongside it.
+  if (/\bat capacity\b/i.test(message) || /\bis (currently )?overloaded\b/i.test(message)) {
     return { failureClass: CAPACITY, retryable: true };
   }
 

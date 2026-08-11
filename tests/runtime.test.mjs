@@ -1082,9 +1082,9 @@ test("task reports the actual Codex auth error when the run is rejected", () => 
 test("classifyFailureMessage recognizes capacity failures conservatively", () => {
   const capacityMessages = [
     "The selected model is at capacity.",
+    "Selected model is at capacity. Please try a different model.",
     "The selected model is overloaded.",
-    "The selected model is currently overloaded.",
-    "Try a different model and retry the request."
+    "The selected model is currently overloaded."
   ];
   for (const message of capacityMessages) {
     assert.deepEqual(classifyFailureMessage(message), {
@@ -1097,7 +1097,11 @@ test("classifyFailureMessage recognizes capacity failures conservatively", () =>
     "Authentication expired.",
     "Capacity planning is unavailable.",
     "The request overloaded the worker.",
-    "Try another model."
+    "Try another model.",
+    // "Try a different model" is advice the server also appends to errors that
+    // have nothing to do with capacity, so it must not classify on its own.
+    "This model does not support image input. Please try a different model.",
+    "Try a different model and retry the request."
   ];
   for (const message of ordinaryMessages) {
     assert.deepEqual(classifyFailureMessage(message), {

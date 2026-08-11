@@ -589,8 +589,11 @@ rl.on("line", (line) => {
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
 	        // Capacity rejections are transient and content-independent: the server
-	        // refuses one model outright, before any item is produced, and the same
-	        // prompt succeeds on another model.
+	        // refuses one model outright and the same prompt succeeds on another.
+	        // Usually that lands before any item is produced, but the
+	        // "-after-output" and "-after-command-start" variants below emit it
+	        // once work is already under way, which is what the retry guard has to
+	        // recognize as unsafe.
 	        if (
 	          BEHAVIOR === "all-models-at-capacity" ||
 	          ((BEHAVIOR === "model-at-capacity" ||

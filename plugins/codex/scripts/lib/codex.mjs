@@ -1555,7 +1555,9 @@ export async function importExternalAgentSession(cwd, options = {}) {
   });
 }
 
-async function listAdvertisedModels(client) {
+// `stopWhen` lets a caller that is hunting one entry stop as soon as it appears
+// instead of paying for the remaining pages.
+async function listAdvertisedModels(client, stopWhen = null) {
   try {
     const modelListDeadline = Date.now() + 3000;
     const seenCursors = new Set();
@@ -1582,7 +1584,7 @@ async function listAdvertisedModels(client) {
         throw new Error("Unexpected model/list response.");
       }
       advertisedModels.push(...models);
-      if (nextCursor === null || seenCursors.has(nextCursor)) {
+      if (stopWhen?.(advertisedModels) || nextCursor === null || seenCursors.has(nextCursor)) {
         break;
       }
       seenCursors.add(nextCursor);
@@ -1671,10 +1673,11 @@ export async function runAppServerTurn(cwd, options = {}) {
     let effortWarning = null;
     // model/list is a conservative advertisement, so an omitted effort is a warning rather than a rejection.
     if (typeof options.effort === "string" && options.effortOverride !== false) {
-      const models = await listAdvertisedModels(client);
-      const modelEntry = typeof resolvedModel === "string"
-        ? models.find((entry) => entry?.model === resolvedModel || entry?.id === resolvedModel)
-        : null;
+      const matchesResolvedModel = (entry) => entry?.model === resolvedModel || entry?.id === resolvedModel;
+      const models = typeof resolvedModel === "string"
+        ? await listAdvertisedModels(client, (entries) => entries.some(matchesResolvedModel))
+        : await listAdvertisedModels(client);
+      const modelEntry = typeof resolvedModel === "string" ? models.find(matchesResolvedModel) : null;
       const advertisedEfforts = modelEntry?.supportedReasoningEfforts;
       if (
         modelEntry &&

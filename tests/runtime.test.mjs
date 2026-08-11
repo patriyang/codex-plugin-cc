@@ -20,6 +20,7 @@ import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoin
 import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import { runAppServerTurn } from "../plugins/codex/scripts/lib/codex.mjs";
 import { getProcessStartTime } from "../plugins/codex/scripts/lib/process.mjs";
+import { splitRawArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
 import {
   resolveClaudeSessionPath,
   TRANSCRIPT_PATH_ENV
@@ -3289,8 +3290,9 @@ test("review --background enqueues a detached worker and exposes per-job status"
 
 test("review --background returns the workspace needed to wait and read from another cwd", async () => {
   const ambientCwd = makeTempDir();
-  const repo = makeTempDir();
+  const repo = path.join(makeTempDir(), "repo with ' quote");
   const binDir = makeTempDir();
+  fs.mkdirSync(repo);
   installFakeCodex(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
@@ -3344,6 +3346,27 @@ test("review --background returns the workspace needed to wait and read from ano
   assert.equal(resultPayload.job.id, launchPayload.jobId);
   assert.equal(resultPayload.job.status, "completed");
   assert.match(resultPayload.storedJob.rendered, /No material issues found/);
+
+  const renderedLaunch = run("node", [SCRIPT, "review", "-C", repo, "--background"], {
+    cwd: ambientCwd,
+    env
+  });
+
+  assert.equal(renderedLaunch.status, 0, renderedLaunch.stderr);
+  const waitCommand = /^Block on it with: (.+)$/m.exec(renderedLaunch.stdout);
+  assert.ok(waitCommand, renderedLaunch.stdout);
+  const waitArgs = splitRawArgumentString(waitCommand[1]);
+  assert.equal(waitArgs[0], "codex-companion.mjs");
+  assert.equal(waitArgs[3], fs.realpathSync(repo));
+
+  const renderedWait = run("node", [SCRIPT, ...waitArgs.slice(1)], {
+    cwd: ambientCwd,
+    env
+  });
+
+  assert.equal(renderedWait.status, 0, renderedWait.stderr);
+  const renderedWaitPayload = JSON.parse(renderedWait.stdout);
+  assert.equal(renderedWaitPayload.job.status, "completed");
 });
 
 test("deep-review --background enqueues a detached worker and stores its rendered result", async () => {

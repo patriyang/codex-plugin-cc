@@ -644,12 +644,13 @@ test("dispatch is never a stopping point across every async surface", () => {
   for (const file of ["commands/review.md", "commands/adversarial-review.md", "commands/deep-review.md"]) {
     const source = read(file);
     const background = source.slice(source.indexOf("Background flow:"));
+    const recovery = background.slice(background.lastIndexOf("\n- ") + 1);
     assert.match(source, /waitTimedOut: true/);
     assert.match(source, /same turn the terminal wait returns/i);
     assert.match(source, /never re-dispatch (a second|another)/i);
     assert.match(source, /dispatched-but-unread|dispatched .* unread/i);
-    assert.match(source, /status <job-id> --json/);
-    assert.match(source, /result <job-id> --json/);
+    assert.match(recovery, /status -C "\$\{workspaceRoot\}" <job-id> --json/);
+    assert.match(recovery, /result -C "\$\{workspaceRoot\}" <job-id> --json/);
     assert.match(source, /\.storedJob\.rendered/);
     for (const condition of ["failed", "cancelled", "empty", "malformed"]) {
       assert.match(background, new RegExp(`\\b${condition}\\b`, "i"), `${file} handles ${condition} review results`);
@@ -733,7 +734,10 @@ test("status documents the bounded job-scoped wait and tracked background comman
   assert.doesNotMatch(companion, /status: "succeeded"/);
 
   // The queued-launch line must hand the model a command it can actually run.
-  assert.match(companion, /codex-companion\.mjs status \$\{payload\.jobId\} --wait --json/);
+  assert.match(
+    companion,
+    /codex-companion\.mjs status -C \$\{shellEscape\(payload\.workspaceRoot\)\} \$\{payload\.jobId\} --wait --json/
+  );
 });
 
 test("every command that returns stdout verbatim also surfaces the [codex] stderr notice", () => {

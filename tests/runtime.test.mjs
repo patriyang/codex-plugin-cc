@@ -2457,7 +2457,7 @@ test("write task output focuses on the Codex result without generic follow-up hi
   assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
 });
 
-test("write task in linked worktree passes the git common dir as an extra writable root", () => {
+test("write task in linked worktree carries the git common dir and disabled MCP servers through start and resume", () => {
   const repo = makeTempDir();
   const worktreeParent = makeTempDir();
   const worktree = path.join(worktreeParent, "linked-worktree");

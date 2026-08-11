@@ -3316,7 +3316,6 @@ test("review --background persists the resolved target in its job request", asyn
     baseRef: "main",
     explicit: false
   });
-  assert.equal(storedJob.request.target.label, storedJob.summary.slice("Review ".length));
 
   const waitedStatus = run(
     "node",

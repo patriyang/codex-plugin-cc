@@ -11,7 +11,7 @@ function read(relativePath) {
   return fs.readFileSync(path.join(PLUGIN_ROOT, relativePath), "utf8");
 }
 
-test("review command auto-decides execution mode and uses background Bash while staying review-only", () => {
+test("review command auto-decides execution mode and uses a tracked background job while staying review-only", () => {
   const source = read("commands/review.md");
   assert.doesNotMatch(source, /allowed-tools:.*AskUserQuestion/);
   assert.match(source, /Never ask the user/i);
@@ -23,24 +23,30 @@ test("review command auto-decides execution mode and uses background Bash while 
   assert.match(source, /```typescript/);
   assert.match(source, /review "\$ARGUMENTS"/);
   assert.match(source, /\[--scope auto\|working-tree\|branch\]/);
-  assert.match(source, /run_in_background:\s*true/);
-  assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" review "\$ARGUMENTS"`/);
-  assert.match(source, /description:\s*"Codex review"/);
-  assert.match(source, /Do not poll `BashOutput` in a loop/);
+  assert.doesNotMatch(source, /run_in_background/);
+  assert.match(source, /review "--background --json \$ARGUMENTS"/);
+  assert.match(source, /status \$\{jobId\} --wait --timeout-ms 240000 --json/);
+  assert.match(source, /description:\s*"Wait for Codex review"/);
+  assert.match(source, /result <job-id> --json/);
+  assert.match(source, /waitTimedOut: true/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
   assert.match(source, /git status --short --untracked-files=all/);
   assert.match(source, /git diff --shortstat/);
   assert.match(source, /Treat untracked files or directories as reviewable work/i);
   assert.match(source, /Choose the foreground only when the review is clearly tiny, roughly 1-2 files total/i);
   assert.match(source, /In every other case, including unclear size, choose the background/i);
-  assert.match(source, /The companion script[^.\n]*does not itself background the review/i);
-  assert.match(source, /Claude Code's `Bash\(..., run_in_background: true\)` is what actually detaches the run/i);
+  assert.match(source, /`--background` detaches the review as a tracked job and returns its job ID immediately/i);
+  assert.match(source, /dispatched-but-unread review/i);
   assert.match(source, /When in doubt, run the review/i);
   assert.match(source, /Tell the user which mode you chose/i);
   assert.match(source, /does not support staged-only review, unstaged-only review, or extra focus text/i);
+
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  assert.match(readme, /A background review runs as a detached tracked job with a job ID/i);
+  assert.doesNotMatch(readme, /detached shell rather than a tracked job/i);
 });
 
-test("adversarial review command auto-decides execution mode and uses background Bash while staying review-only", () => {
+test("adversarial review command auto-decides execution mode and uses a tracked background job while staying review-only", () => {
   const source = read("commands/adversarial-review.md");
   assert.doesNotMatch(source, /allowed-tools:.*AskUserQuestion/);
   assert.match(source, /Never ask the user/i);
@@ -52,18 +58,20 @@ test("adversarial review command auto-decides execution mode and uses background
   assert.match(source, /```typescript/);
   assert.match(source, /adversarial-review "\$ARGUMENTS"/);
   assert.match(source, /\[--scope auto\|working-tree\|branch\] \[--model <model\|spark>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh\|max\|ultra>\] \[focus \.\.\.\]/);
-  assert.match(source, /run_in_background:\s*true/);
-  assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" adversarial-review "\$ARGUMENTS"`/);
-  assert.match(source, /description:\s*"Codex adversarial review"/);
-  assert.match(source, /Do not poll `BashOutput` in a loop/);
+  assert.doesNotMatch(source, /run_in_background/);
+  assert.match(source, /adversarial-review "--background --json \$ARGUMENTS"/);
+  assert.match(source, /status \$\{jobId\} --wait --timeout-ms 240000 --json/);
+  assert.match(source, /description:\s*"Wait for Codex adversarial review"/);
+  assert.match(source, /result <job-id> --json/);
+  assert.match(source, /waitTimedOut: true/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
   assert.match(source, /git status --short --untracked-files=all/);
   assert.match(source, /git diff --shortstat/);
   assert.match(source, /Treat untracked files or directories as reviewable work/i);
   assert.match(source, /Choose the foreground only when the scoped review is clearly tiny, roughly 1-2 files total/i);
   assert.match(source, /In every other case, including unclear size, choose the background/i);
-  assert.match(source, /The companion script[^.\n]*does not itself background the review/i);
-  assert.match(source, /Claude Code's `Bash\(..., run_in_background: true\)` is what actually detaches the run/i);
+  assert.match(source, /With `--background`, it detaches the adversarial review, persists a tracked job, and immediately returns the job ID/i);
+  assert.match(source, /dispatched adversarial review is unread/i);
   assert.match(source, /When in doubt, run the review/i);
   assert.match(source, /Tell the user which mode you chose/i);
   assert.match(source, /uses the same review target selection as `\/codex:review`/i);
@@ -73,7 +81,7 @@ test("adversarial review command auto-decides execution mode and uses background
   assert.match(source, /Flags must come before the focus text/i);
 });
 
-test("deep review command auto-decides execution mode and uses background Bash while staying review-only", () => {
+test("deep review command auto-decides execution mode and uses a tracked background job while staying review-only", () => {
   const source = read("commands/deep-review.md");
   assert.doesNotMatch(source, /allowed-tools:.*AskUserQuestion/);
   assert.match(source, /Never ask the user/i);
@@ -85,18 +93,20 @@ test("deep review command auto-decides execution mode and uses background Bash w
   assert.match(source, /```typescript/);
   assert.match(source, /deep-review "\$ARGUMENTS"/);
   assert.match(source, /\[--scope auto\|working-tree\|branch\] \[--model <model\|spark>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh\|max\|ultra>\] \[focus \.\.\.\]/);
-  assert.match(source, /run_in_background:\s*true/);
-  assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" deep-review "\$ARGUMENTS"`/);
-  assert.match(source, /description:\s*"Codex deep review"/);
-  assert.match(source, /Do not poll `BashOutput` in a loop/);
+  assert.doesNotMatch(source, /run_in_background/);
+  assert.match(source, /deep-review "--background --json \$ARGUMENTS"/);
+  assert.match(source, /status \$\{jobId\} --wait --timeout-ms 240000 --json/);
+  assert.match(source, /description:\s*"Wait for Codex deep review"/);
+  assert.match(source, /result <job-id> --json/);
+  assert.match(source, /waitTimedOut: true/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
   assert.match(source, /git status --short --untracked-files=all/);
   assert.match(source, /git diff --shortstat/);
   assert.match(source, /Treat untracked files or directories as reviewable work/i);
   assert.match(source, /Choose the foreground only when the scoped review is clearly tiny, roughly 1-2 files total/i);
   assert.match(source, /In every other case, including unclear size, choose the background/i);
-  assert.match(source, /The companion script[^.\n]*does not itself background the review/i);
-  assert.match(source, /Claude Code's `Bash\(..., run_in_background: true\)` is what actually detaches the run/i);
+  assert.match(source, /`--background` now enqueues the deep review as a tracked job and returns its job ID immediately/i);
+  assert.match(source, /inherits a dispatched-but-unread deep review/i);
   assert.match(source, /When in doubt, run the review/i);
   assert.match(source, /Tell the user which mode you chose/i);
   assert.match(source, /uses the same review target selection as `\/codex:review`/i);
@@ -569,11 +579,9 @@ test("setup command can offer Codex install and still points users to codex logi
   assert.match(readme, /\/codex:setup --disable-review-gate/);
 });
 
-test("the follow-through mechanism is actually provisioned on every command that requires it", () => {
-  // The pre-change prose said "Do not call `BashOutput`", so omitting it from
-  // allowed-tools was consistent. Now that the follow-through depends on it,
-  // an unprovisioned command fails closed at exactly the moment it used to
-  // hand the user a checkpoint -- and the old escape hatch is gone.
+test("the foreground wait mechanism is provisioned on every command that requires it", () => {
+  // Every long-running command now uses callable foreground Bash waits rather
+  // than depending on BashOutput or a harness callback to resume the caller.
   for (const file of [
     "commands/review.md",
     "commands/adversarial-review.md",
@@ -584,8 +592,10 @@ test("the follow-through mechanism is actually provisioned on every command that
     const frontmatter = source.slice(0, source.indexOf("\n---", 4));
     const allowed = /^allowed-tools:(.*)$/m.exec(frontmatter);
     assert.ok(allowed, `${file} declares allowed-tools`);
-    assert.match(allowed[1], /\bBashOutput\b/, `${file} may call BashOutput`);
-    assert.match(source, /`BashOutput`/, `${file} names BashOutput as the read mechanism`);
+    assert.match(allowed[1], /\bBash\(node:\*\)/, `${file} may invoke the companion script`);
+    assert.match(source, /status .*--wait --timeout-ms 240000 --json/, `${file} documents the bounded wait`);
+    assert.match(source, /result .*<job-id>.*--json/, `${file} documents persisted result retrieval`);
+    assert.doesNotMatch(source, /run_in_background|BashOutput/, `${file} does not use the harness-dependent wait`);
   }
 });
 
@@ -621,10 +631,13 @@ test("dispatch is never a stopping point across every async surface", () => {
   // trained the controller to hand the user a checkpoint instead of the result.
   for (const file of ["commands/review.md", "commands/adversarial-review.md", "commands/deep-review.md"]) {
     const source = read(file);
-    assert.match(source, /re-invokes you when the command exits/i);
-    assert.match(source, /second half of this command/i);
-    assert.match(source, /present the review in that same turn/i);
-    assert.match(source, /never re-dispatch a second review/i);
+    assert.match(source, /waitTimedOut: true/);
+    assert.match(source, /same turn the terminal wait returns/i);
+    assert.match(source, /never re-dispatch (a second|another)/i);
+    assert.match(source, /dispatched-but-unread|dispatched .* unread/i);
+    assert.match(source, /status <job-id> --json/);
+    assert.match(source, /result <job-id> --json/);
+    assert.match(source, /\.storedJob\.rendered/);
     // Broad enough to catch near-miss regressions of the old dead end.
     assert.doesNotMatch(source, /Check .{0,4}\/codex:status.{0,4} for /i);
   }
@@ -655,14 +668,23 @@ test("implement never passes --wait to task, which is redundant with its foregro
   assert.match(companion, taskOptions, "task's boolean options should include `wait`");
 });
 
-test("status documents the job-scoped wait without hardcoding runtime values", () => {
+test("status documents the bounded job-scoped wait and tracked background commands", () => {
   const status = read("commands/status.md");
   const companion = fs.readFileSync(path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs"), "utf8");
 
-  assert.match(status, /status <job-id> --wait --json/);
+  assert.match(status, /status <job-id> --wait --timeout-ms 240000 --json/);
   assert.match(status, /`--wait` requires a job ID/i);
   assert.match(status, /Never hand-roll a poll loop/i);
-  assert.match(status, /Only `task --background` mints a job ID/i);
+  assert.match(status, /Every tracked run persists a job record/i);
+  for (const command of ["task", "review", "adversarial-review", "deep-review"]) {
+    assert.ok(status.includes(`\`${command} --background\``), `${command} background runs mint a job ID`);
+  }
+  assert.match(status, /foreground `Bash` call/i);
+  assert.match(status, /timeout comfortably larger than `--timeout-ms`/i);
+  assert.match(status, /issue another bounded foreground wait/i);
+  assert.match(status, /result <job-id> --json/);
+  assert.match(status, /foreground `Bash` call that returns always continues the current turn/i);
+  assert.match(status, /not to arrive for subagent callers/i);
 
   // waitTimedOut only reaches the caller through --json: the text renderer is
   // handed snapshot.job, and the wrapper carrying the flag is discarded.
@@ -704,37 +726,58 @@ test("every command that returns stdout verbatim also surfaces the [codex] stder
   assert.match(agent, /Unknown option: \.\.\.`\), which is a caller mistake and must be reported/i);
 });
 
-test("implement backgrounds every long Codex dispatch, including final review and single-shot", () => {
-  // See #42. The controller is Claude Code, whose foreground Bash call is
-  // killed at the harness ceiling. `review` and a non-`--background` `task`
-  // both run in the foreground inside the script (handleReviewCommand and
-  // handleTask call runForegroundCommand), so detaching is the caller's job.
-  // Every dispatch site must point at Dispatch and Follow-Through, not just
-  // the per-task implementer.
+test("implement enqueues and awaits every long Codex job, including final review and single-shot", () => {
+  // Every dispatch site must use the tracked enqueue contract and point at
+  // Dispatch and Follow-Through, not just the per-task implementer.
   const implement = read("commands/implement.md");
+
+  const dispatch = implement.slice(
+    implement.indexOf("## Dispatch and Follow-Through"),
+    implement.indexOf("## Task Extraction")
+  );
+  assert.match(dispatch, /task --background --json/);
+  assert.match(dispatch, /review --background --json/);
+  assert.match(dispatch, /status .*--wait --timeout-ms 240000 --json/);
+  assert.match(dispatch, /waitTimedOut: true/);
+  assert.match(dispatch, /result .*<job-id>.*--json/);
+  assert.match(dispatch, /\.storedJob\.result\.rawOutput/);
+  assert.match(dispatch, /\.storedJob\.threadId/);
+  assert.doesNotMatch(dispatch, /run_in_background|BashOutput/);
+
+  for (const line of implement.split("\n")) {
+    if (!/codex-companion\.mjs" task /.test(line)) continue;
+    assert.match(line, /\s--background\b/, `task invocation must enqueue a job: ${line.trim()}`);
+    assert.match(line, /\s--json\b/, `task invocation must return JSON: ${line.trim()}`);
+  }
 
   const finalReview = implement.slice(implement.indexOf("## Final Review"), implement.indexOf("## Aggregated Report"));
   assert.ok(finalReview.includes("codex-companion.mjs\" review"), "final review section still dispatches a review");
   assert.match(finalReview, /Dispatch and Follow-Through/);
-  assert.doesNotMatch(finalReview, /\s--wait\b/, "review runs in the foreground already; --wait cannot detach it");
+  assert.match(finalReview, /\s--background\b/);
+  assert.match(finalReview, /\s--json\b/);
+  assert.match(finalReview, /\.storedJob\.rendered/);
+  assert.doesNotMatch(finalReview, /run_in_background/);
 
   const singleShot = implement.slice(implement.indexOf("## Single-Shot Mode"), implement.indexOf("## Argument and Flag Reference"));
   assert.ok(singleShot.includes("codex-companion.mjs\" task"), "single-shot section still dispatches a task");
   assert.match(singleShot, /Dispatch and Follow-Through/);
+  assert.match(singleShot, /\s--background\b/);
+  assert.match(singleShot, /\s--json\b/);
 });
 
-test("implement documents how to recover a dispatch the harness killed", () => {
-  // See #42. A killed run loses the report, never the edits: Codex writes to
-  // the worktree as it goes, and runTrackedJob's signal handler leaves the
-  // failed record carrying the threadId it had when it died (covered by
-  // runtime.test.mjs's SIGTERM test). Without this, the controller re-dispatches
-  // fresh on top of half-finished work.
+test("implement distinguishes an interrupted wait from a killed task worker", () => {
+  // An interrupted foreground wait leaves the detached job running. If the
+  // worker itself is killed, Codex's edits remain in the worktree and the
+  // failed record carries its threadId (covered by runtime.test.mjs's SIGTERM
+  // test), so the controller must not re-dispatch over half-finished work.
   const implement = read("commands/implement.md");
   const dispatch = implement.slice(
     implement.indexOf("## Dispatch and Follow-Through"),
     implement.indexOf("## Task Extraction")
   );
 
+  assert.match(dispatch, /bounded foreground wait is interrupted/i);
+  assert.match(dispatch, /detached Codex job continues/i);
   assert.match(dispatch, /killed/i);
   // The recovery handle: read the dead job's thread id back, then resume it.
   assert.match(dispatch, /threadId/);
@@ -755,8 +798,8 @@ test("implement scopes kill-recovery to task threads, since review threads are e
     implement.indexOf("## Task Extraction")
   );
 
-  // Resume is for `task` dispatches specifically, not "a dispatch".
-  assert.match(dispatch, /`task` dispatch/i);
+  // Resume is for `task` jobs specifically, not any tracked job.
+  assert.match(dispatch, /`task` jobs/i);
   // A killed native review gets re-dispatched, and the doc says why.
   assert.match(dispatch, /ephemeral/i);
   assert.match(dispatch, /re-?dispatch (the|a) (final )?review|dispatch a fresh review/i);

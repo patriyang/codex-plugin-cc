@@ -1,7 +1,7 @@
 ---
 description: Implement a plan via Codex subagent-driven development — dispatch fresh Codex implementer + spec reviewer + code quality reviewer per task
 argument-hint: "[--sequential|--single-shot] [--background|--wait] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [plan or path to plan]"
-allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), BashOutput, AskUserQuestion, TaskCreate, TaskUpdate, TaskList
+allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion, TaskCreate, TaskUpdate, TaskList
 ---
 
 Execute a plan via subagent-driven development with Codex agents in the implementer + spec-reviewer + code-quality-reviewer roles.
@@ -96,18 +96,29 @@ All `git` commands in this loop, and all `codex-companion.mjs` invocations, run 
 
 ## Dispatch and Follow-Through
 
-This loop is sequential: the controller cannot take the next step until the current dispatch returns. But implementer and reviewer runs at `xhigh` routinely exceed the foreground `Bash` timeout ceiling, so a foreground call will be killed mid-run and lose the run and its report.
+This loop is sequential: the controller cannot take the next step until the current job finishes. Implementer and reviewer runs at `xhigh` routinely outlast a single foreground `Bash` window, so enqueue the Codex work detached and use bounded foreground waits against its persisted job record.
 
-- Dispatch each step with `Bash(..., run_in_background: true)` and let Claude Code re-invoke you when the command exits. Keep foreground `Bash` only for steps you expect to finish well inside the timeout.
-- `--json` suppresses progress output to stderr, so stdout stays a single JSON blob. Reading it back with `BashOutput` still parses cleanly for `.rawOutput` and `.threadId`.
-- The re-invocation is the next step of this loop, not a fresh request. Read the output, parse the report, and continue through the remaining steps in the same turn.
+- Enqueue every implementer, spec-reviewer, and code-quality-reviewer step with `task --background --json`. The enqueue call returns immediately; read its `jobId` from the single JSON blob. The Final Review uses `review --background --json` under the same contract.
+- Block on that ID in a foreground `Bash` call, setting the tool timeout comfortably above the companion wait timeout:
+```typescript
+Bash({
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status -C "${WORKTREE_ROOT}" ${jobId} --wait --timeout-ms 240000 --json`,
+  description: "Wait for Codex job",
+  timeout: 300000
+})
+```
+- If the status JSON has `waitTimedOut: true`, re-arm the same bounded foreground wait for that job ID. Otherwise retrieve the persisted result:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result -C "${WORKTREE_ROOT}" <job-id> --json
+```
+- `--json` keeps stdout as a single JSON blob throughout. In the result payload, the task report is `.storedJob.result.rawOutput`, its partial failure text and reason are `.storedJob.result.partialOutput` and `.storedJob.result.failureMessage`, and the resumable thread ID is `.storedJob.threadId`.
 - **"Dispatched" is never a stopping point.** Do not end a turn with an unread Codex run and a note that you will check back, and do not wait to be told "continue" or "keep going". The loop advances only when you advance it.
 - Never abandon a still-running dispatch and re-dispatch on top of it. Two live Codex threads mutating `WORKTREE_ROOT` will corrupt each other's work.
-- If a dispatch exits non-zero or returns empty or malformed output, treat it as `BLOCKED` (step 3) rather than assuming the step succeeded. Recover according to which role failed:
-  - **A failed implementer dispatch may already have applied edits** even though its report never arrived — the payload's `rawOutput` is empty in that case, with the aborted turn's partial text under `partialOutput` and the reason under `failureMessage`. Inspect `touchedFiles` and `git status` / `git diff` in `WORKTREE_ROOT` before doing anything, then resume that same thread with `--resume-id "${IMPLEMENTER_THREAD_ID}"`. Never dispatch a fresh implementer on top of applied work.
+- If enqueueing or result retrieval exits non-zero, the job ends as `failed` or `cancelled`, or any returned JSON or report is empty or malformed, treat the step as `BLOCKED` (step 3) rather than assuming it succeeded. Recover according to which role failed:
+  - **A failed implementer dispatch may already have applied edits** even though its report never arrived — `.storedJob.result.rawOutput` is empty in that case, with the aborted turn's partial text under `.storedJob.result.partialOutput` and the reason under `.storedJob.result.failureMessage`. Inspect `.storedJob.result.touchedFiles` and `git status` / `git diff` in `WORKTREE_ROOT` before doing anything, then resume that same thread with `--resume-id "${IMPLEMENTER_THREAD_ID}"`. Never dispatch a fresh implementer on top of applied work.
   - **A failed spec or code-quality reviewer changed nothing on disk** (they run without `--write`). Dispatch a fresh reviewer of the same role. Never resume `${IMPLEMENTER_THREAD_ID}` to recover a review — that abandons the review and hands control back to the write-capable implementer.
-- If the harness kills a `task` dispatch, the edits are already on disk in `WORKTREE_ROOT`; only the report is lost. Recover its `threadId` with `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status -C "${WORKTREE_ROOT}" --json` (or `result <job-id> --json`), then resume that same thread with `--resume-id "${threadId}"`; do not re-dispatch fresh over the killed run's edits.
-- That resume works only for `task` dispatches, which run on persistent threads. A killed `review` (including the Final Review) has nothing to resume — review threads are ephemeral, so their recorded `threadId` does not survive the run. Reviews are read-only and change nothing on disk, so re-dispatch the review from scratch instead.
+- If a bounded foreground wait is interrupted, the detached Codex job continues; recover it with `status <job-id> --json` and re-arm the wait instead of re-dispatching. If the `task` worker itself was killed, its edits are already on disk in `WORKTREE_ROOT`; only the report is lost. Recover `.storedJob.threadId` with `result <job-id> --json`, then resume that same thread with `--resume-id "${threadId}"`; do not dispatch fresh over the killed job's edits.
+- That resume works only for `task` jobs, which run on persistent threads. A killed `review` (including the Final Review) has no thread to resume — review threads are ephemeral, and reviews change nothing on disk, so dispatch a fresh review instead.
 
 ## Task Extraction
 
@@ -147,22 +158,22 @@ Substitute placeholders:
 - `{{TASK_CONTEXT}}` — scene-setting context for this task
 - `{{REVIEWER_FEEDBACK}}` — empty on first dispatch
 
-Invoke Codex with `--json` so the controller can read the structured payload:
+Enqueue Codex with `--background --json` so the controller gets a job ID and can later read the structured result:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --write --fresh --json [--model <m>] [--effort <e>] "<filled prompt>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --write --fresh --background --json [--model <m>] [--effort <e>] "<filled prompt>"
 ```
 
 - The controller must have the implementer's report before it can act, so this step blocks the loop. Run it per Dispatch and Follow-Through above rather than as a plain foreground call.
 - Use `--fresh` so the implementer gets a clean Codex thread.
-- Use `--json` and parse the returned JSON: read `.rawOutput` for the report body (the `## Status` section step 3 inspects) and record `.threadId` as `IMPLEMENTER_THREAD_ID` for this task — it stays fixed for the whole task's fix loop.
+- After the enqueue-and-wait contract returns the result JSON, read `.storedJob.result.rawOutput` for the report body (the `## Status` section step 3 inspects) and record `.storedJob.threadId` as `IMPLEMENTER_THREAD_ID` for this task — it stays fixed for the whole task's fix loop.
 - For `--model`, use the user's value if they passed one; otherwise pass `--model gpt-5.6-luna` explicitly. `/codex:implement` defaults to `gpt-5.6-luna` rather than the runtime default of `gpt-5.5`.
 - For `--effort`, use the user's value if they passed one; otherwise pass `--effort xhigh` explicitly. `/codex:implement` defaults to `xhigh` rather than the runtime default of `high`.
 - The prompt is the substituted template text. Pass it as a single positional argument (heredoc/quoting as needed).
 
 ### 3. Parse implementer report
 
-The report body is the `.rawOutput` field of the JSON payload from step 2. Locate the `## Status` heading within it. Branch on value:
+The report body is the `.storedJob.result.rawOutput` field of the result JSON from step 2. Locate the `## Status` heading within it. Branch on value:
 
 - **NEEDS_CONTEXT** → The operator can unblock with a reply. If Codex listed discrete options, present them via `AskUserQuestion`; otherwise show the questions inline and collect answers. Re-dispatch step 2 with `{{TASK_CONTEXT}}` augmented (or with the operator's decision appended) and `--resume-id "${IMPLEMENTER_THREAD_ID}"` so the implementer keeps its working context.
 - **BLOCKED** → The operator alone cannot unblock. Diagnose the specific reason Codex gave:
@@ -219,7 +230,7 @@ Load `${CLAUDE_PLUGIN_ROOT}/prompts/sdd-spec-reviewer.md`. Substitute:
 Invoke Codex read-only (same `--model`/`--effort` resolution as step 2 — default `--model gpt-5.6-luna`, `--effort xhigh`):
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --fresh [--model <m>] [--effort <e>] "<filled prompt>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --fresh --background --json [--model <m>] [--effort <e>] "<filled prompt>"
 ```
 
 (No `--write`. Spec reviewer must not edit code.)
@@ -240,7 +251,7 @@ Load `${CLAUDE_PLUGIN_ROOT}/prompts/sdd-code-quality-reviewer.md`. Substitute:
 Invoke read-only (same `--model`/`--effort` resolution as step 2 — default `--model gpt-5.6-luna`, `--effort xhigh`):
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --fresh [--model <m>] [--effort <e>] "<filled prompt>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --fresh --background --json [--model <m>] [--effort <e>] "<filled prompt>"
 ```
 
 ### 8. Parse code quality verdict
@@ -274,12 +285,12 @@ git -C "${WORKTREE_ROOT}" log --oneline ${ORIGINAL_BASE_SHA}..HEAD
 Dispatch one final Codex code review across the entire branch:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" review -C "${WORKTREE_ROOT}" --base <original-base>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" review -C "${WORKTREE_ROOT}" --background --json --base <original-base>
 ```
 
-Dispatch this review with `Bash(..., run_in_background: true)` per **Dispatch and Follow-Through**: branch-wide review is the longest call; `review` runs in the foreground inside the script, and `--background` does not detach it — Claude Code's `run_in_background` is what does.
+Use the enqueue-and-bounded-wait contract in **Dispatch and Follow-Through** for this branch-wide review, then load its persisted result by job ID.
 
-Present its output verbatim. Then suggest `superpowers:finishing-a-development-branch` to wrap up.
+Present `.storedJob.rendered` from the Final Review result JSON verbatim. Then suggest `superpowers:finishing-a-development-branch` to wrap up.
 
 ## Aggregated Report
 
@@ -309,10 +320,10 @@ This is the aggregate of every implementer/reviewer report and is what Claude us
 
 If the user passed `--single-shot`, skip task extraction and the per-task loop. Instead, wrap the full plan in the legacy implementer prompt (asking for the four-section report: Accomplished / Bugs Flagged / Deviations From Plan / Next Steps) and invoke Codex once:
 
-Dispatch this single-shot task with `Bash(..., run_in_background: true)` per **Dispatch and Follow-Through**: one Codex agent handling the entire plan is the longest possible call.
+Use the enqueue-and-bounded-wait contract in **Dispatch and Follow-Through** for this single-shot task; one Codex agent handling the entire plan is the longest possible call.
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --write --fresh [--model <m>] [--effort <e>] "<wrapped plan>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C "${WORKTREE_ROOT}" --write --fresh --background --json [--model <m>] [--effort <e>] "<wrapped plan>"
 ```
 
 (Same `--model`/`--effort` resolution as sequential mode — default `--model gpt-5.6-luna`, `--effort xhigh` unless the user passed one.)
@@ -343,7 +354,7 @@ Show the report. Propose next steps.
 
 - `--single-shot` → legacy one-Codex-agent mode.
 - `--sequential` → explicit SDD mode (also the default).
-- `--background` / `--wait` → Claude-side execution control only. Do not forward either to `task`: `task` now accepts `--wait` as an explicit no-op (foreground is `task`'s default), so there is nothing to forward — SDD always blocks on each dispatch regardless, see Dispatch and Follow-Through.
+- User-supplied `--background` / `--wait` → Claude-side execution control only. Do not forward either raw flag to `task`; independently add `task --background --json` to every Codex step so SDD can use the tracked enqueue-and-wait contract. `task --wait` remains an explicit no-op and is never needed here.
 - `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run. If omitted, `--model` defaults to `gpt-5.6-luna` and `--effort` defaults to `xhigh` (both passed explicitly by this command, overriding the runtime defaults of `gpt-5.5` / `high`).
 - `-C "${WORKTREE_ROOT}"` → applied to every Codex invocation in this run (established in Pre-flight Checks). Pins the implementer/reviewer workspace to the task's worktree instead of `codex-companion.mjs`'s default of the controller's own process cwd.
 - `--resume` / `--fresh` → ignored in SDD mode (the orchestrator picks per-step). SDD resumes the implementer by explicit thread id via `--resume-id "${IMPLEMENTER_THREAD_ID}"` (not `--resume-last`, which would resolve to whichever `task`-class thread was dispatched most recently — often a reviewer, not the implementer).

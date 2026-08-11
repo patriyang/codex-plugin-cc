@@ -1,7 +1,7 @@
 ---
 description: Run a Codex code review against local git state
 argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch]'
-allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), BashOutput
+allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*)
 ---
 
 Run a Codex review through the shared built-in reviewer.
@@ -16,7 +16,7 @@ Core constraint:
 
 Execution mode rules:
 - If the raw arguments include `--wait`, run the review in the foreground.
-- If the raw arguments include `--background`, run the review in a Claude background task.
+- If the raw arguments include `--background`, enqueue the review as a detached tracked job.
 - Otherwise, decide the mode yourself. Never ask the user; do not use `AskUserQuestion`. Estimate the review size first:
   - For working-tree review, start with `git status --short --untracked-files=all`.
   - For working-tree review, also inspect both `git diff --shortstat --cached` and `git diff --shortstat`.
@@ -32,7 +32,7 @@ Argument handling:
 - Preserve the user's arguments exactly.
 - Do not strip `--wait` or `--background` yourself.
 - Do not add extra review instructions or rewrite the user's intent.
-- The companion script accepts `--wait` and `--background` as mutually exclusive flags, but it does not itself background the review; Claude Code's `Bash(..., run_in_background: true)` is what actually detaches the run.
+- The companion script accepts `--wait` and `--background` as mutually exclusive flags. `--background` detaches the review as a tracked job and returns its job ID immediately; the background flow also passes `--json` so the controller can read that ID deterministically.
 - `/codex:review` is native-review only. It does not support staged-only review, unstaged-only review, or extra focus text.
 - If the user needs custom review instructions or more adversarial framing, they should use `/codex:adversarial-review`.
 
@@ -47,15 +47,23 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" review "$ARGUMENTS"
 - Do not fix any issues mentioned in the review output.
 
 Background flow:
-- Launch the review with `Bash` in the background:
+- Enqueue the review from a foreground `Bash` call. Keep the generated flags and the preserved raw arguments in one string so the companion script can parse them together:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" review "--background --json $ARGUMENTS"
+```
+- Read `jobId` from the returned JSON, then block with a bounded foreground wait. The `Bash` tool timeout must be comfortably larger than `--timeout-ms`:
 ```typescript
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" review "$ARGUMENTS"`,
-  description: "Codex review",
-  run_in_background: true
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status ${jobId} --wait --timeout-ms 240000 --json`,
+  description: "Wait for Codex review",
+  timeout: 300000
 })
 ```
-- Launch it, tell the user in one line that the review is running, and end the turn. Do not poll `BashOutput` in a loop while it runs.
-- Claude Code re-invokes you when the command exits. That re-invocation is the second half of this command, not a fresh request: read the output with `BashOutput` and present the review in that same turn. Do not wait to be asked "is it done?" or "continue".
-- If it exited non-zero, or the output is empty or malformed, say so and surface the most actionable stderr lines. A failed review must not vanish silently.
-- Never re-dispatch a second review over the same diff, and never hand the user a "check `/codex:status`" note in place of the findings. A background review is a plain shell — it mints no job id, so `/codex:status` has nothing to show for it.
+- If the wait payload has `waitTimedOut: true`, re-arm the same bounded foreground wait. Otherwise, read the persisted result:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result <job-id> --json
+```
+- Read `.storedJob.rendered` from the result JSON and present it verbatim in the same turn the terminal wait returns. Do not wait to be asked "is it done?" or "continue".
+- If enqueueing or reading the job exits non-zero, the job reaches `failed` or `cancelled`, or the JSON or review output is empty or malformed, say so and surface the most actionable failure lines. A failed review must not vanish silently.
+- Never re-dispatch a second review over the same diff, and never hand the user a "check `/codex:status`" note in place of the findings.
+- If you ever enter a later turn holding a dispatched-but-unread review, recover it from disk with `status <job-id> --json`; if it is still active, resume the bounded wait, and when it is terminal use `result <job-id> --json`. Do not re-dispatch it or report it as stuck.

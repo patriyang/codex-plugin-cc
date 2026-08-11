@@ -710,7 +710,7 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
   };
 }
 
-function renderQueuedTaskLaunch(payload) {
+function renderQueuedJobLaunch(payload) {
   return [
     `${payload.title} started in the background as ${payload.jobId}.`,
     `Block on it with: codex-companion.mjs status ${payload.jobId} --wait --json`,
@@ -995,7 +995,7 @@ async function handleReviewCommand(argv, config) {
       reviewName: config.reviewName
     };
     const { payload } = enqueueBackgroundJob(cwd, job, request);
-    outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    outputCommandResult(payload, renderQueuedJobLaunch(payload), options.json);
     return;
   }
 
@@ -1076,7 +1076,7 @@ async function handleTask(argv) {
       jobId: job.id
     });
     const { payload } = enqueueBackgroundJob(cwd, job, request);
-    outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    outputCommandResult(payload, renderQueuedJobLaunch(payload), options.json);
     return;
   }
 
@@ -1131,9 +1131,16 @@ async function handleJobWorker(argv) {
     throw new Error(`Stored job ${options["job-id"]} is missing its job request payload.`);
   }
 
-  const executeJob = storedJob.jobClass === "review" ? executeReviewRun : storedJob.jobClass === "task" ? executeTaskRun : null;
-  if (!executeJob) {
-    throw new Error(`Stored job ${options["job-id"]} has unsupported job class "${storedJob.jobClass}".`);
+  let executeJob;
+  switch (storedJob.jobClass) {
+    case "task":
+      executeJob = executeTaskRun;
+      break;
+    case "review":
+      executeJob = executeReviewRun;
+      break;
+    default:
+      throw new Error(`Stored job ${options["job-id"]} has unsupported job class "${storedJob.jobClass}".`);
   }
 
   const { logFile, progress } = createTrackedProgress(

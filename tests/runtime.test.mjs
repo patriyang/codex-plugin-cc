@@ -2374,6 +2374,30 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   assert.match(resultPayload.storedJob.rendered, /Handled the requested task/);
 });
 
+test("task-worker remains an alias for the job worker", async () => {
+  const repo = makeTempDir();
+  const jobId = `task-alias-${Date.now().toString(36)}`;
+  const child = spawn(
+    process.execPath,
+    [SCRIPT, "task-worker", "--cwd", repo, "--job-id", jobId],
+    { cwd: repo, env: { ...process.env }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
+  );
+  const queuedJob = {
+    id: jobId,
+    workspaceRoot: repo,
+    status: "queued",
+    phase: "queued",
+    pid: child.pid,
+    pidStartTime: null
+  };
+  writeJobFile(repo, jobId, queuedJob);
+  upsertJob(repo, queuedJob);
+
+  const result = await waitForChildExit(child, 15000);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /missing its job request payload/);
+});
+
 test("task --background handshakes queued persistence before releasing its worker", async (t) => {
   if (process.platform === "win32") {
     t.skip("uses the POSIX process-start-time probe");
@@ -3261,6 +3285,44 @@ test("review --background enqueues a detached worker and exposes per-job status"
   assert.equal(resultPayload.job.id, launchPayload.jobId);
   assert.equal(resultPayload.job.status, "completed");
   assert.match(resultPayload.storedJob.rendered, /No material issues found/);
+});
+
+test("deep-review --background enqueues a detached worker and stores its rendered result", async () => {
+  const { repo, binDir } = setupDeepReviewRepo();
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "deep-review", "--background", "--json"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  assert.equal(launchPayload.status, "queued");
+  assert.match(launchPayload.jobId, /^review-/);
+
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    { cwd: repo, env }
+  );
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.id, launchPayload.jobId);
+  assert.equal(waitedPayload.job.status, "completed");
+
+  const resultPayload = await waitFor(() => {
+    const result = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+    if (result.status !== 0) {
+      return null;
+    }
+    return JSON.parse(result.stdout);
+  });
+
+  assert.equal(resultPayload.job.id, launchPayload.jobId);
+  assert.equal(resultPayload.job.status, "completed");
+  assert.match(resultPayload.storedJob.rendered, /# Codex Deep Review/);
+  assert.match(resultPayload.storedJob.rendered, /Missing empty-state guard/);
 });
 
 test("review rejects --wait and --background together", () => {

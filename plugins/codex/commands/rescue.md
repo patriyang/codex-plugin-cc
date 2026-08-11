@@ -4,7 +4,7 @@ argument-hint: "[--background|--wait] [--resume|--fresh] [--model <model|spark>]
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 
-Invoke the `codex:codex-rescue` subagent via the `Agent` tool (`subagent_type: "codex:codex-rescue"`), forwarding the raw user request as the prompt.
+Invoke the `codex:codex-rescue` subagent via the `Agent` tool (`subagent_type: "codex:codex-rescue"`) in the foreground, forwarding the raw user request as the prompt.
 `codex:codex-rescue` is a subagent, not a skill — do not call `Skill(codex:codex-rescue)` (no such skill) or `Skill(codex:rescue)` (that re-enters this command and hangs the session). The command runs inline so the `Agent` tool stays in scope; forked general-purpose subagents do not expose it.
 The final user-visible response must be Codex's output verbatim.
 
@@ -13,13 +13,13 @@ $ARGUMENTS
 
 Execution mode:
 
-- If the request includes `--background`, run the `codex:codex-rescue` subagent in the background.
-- If the request includes `--wait`, run the `codex:codex-rescue` subagent in the foreground.
-- If neither flag is present, default to foreground.
-- `--background` and `--wait` are execution flags for Claude Code. Do not forward them to `task`, and do not treat them as part of the natural-language task text.
-- `--background` backgrounds the *subagent*, not the Codex run. The subagent still calls `task` in the foreground and blocks on it, so its report is Codex's full output — not a dispatch notice. There is no job to poll and nothing to fetch afterwards.
-- Claude Code re-invokes you when a background subagent finishes; that re-invocation is the rest of this command. Present the subagent's output verbatim then, in the same turn.
-- Do not close out a turn with a dispatched-but-unread rescue and a "check back later" note, and do not wait to be told "continue". The user asked for the rescue result, not for the dispatch.
+- Always invoke the `codex:codex-rescue` subagent in the foreground. `--background` backgrounds the tracked Codex task inside that subagent; it never backgrounds the `Agent` call.
+- If the request includes `--background`, have the foreground subagent enqueue the Codex task with `task --background --json`.
+- If the request includes `--wait`, have the foreground subagent run the Codex task in the foreground.
+- If neither flag is present, invoke the subagent in the foreground and let it apply its self-chosen foreground/background guidance for the Codex task.
+- `--background` and `--wait` are mutually exclusive execution flags. Never dispatch both; reject that combination before invoking the subagent.
+- `--wait` remains a foreground execution flag: strip it before invoking `task`, and do not treat it as natural-language task text. `--background` is forwarded to `task` as `--background --json`, and neither execution flag belongs in the natural-language task text.
+- In the foreground flow, the subagent's stdout is Codex's result. In the background flow, the subagent's stdout is the enqueue JSON; the controller reads `jobId` and `workspaceRoot`, waits, and fetches the persisted result.
 - `--model` and `--effort` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
 - If the request includes `--resume`, do not ask whether to continue. The user already chose.
 - If the request includes `--fresh`, do not ask whether to continue. The user already chose.
@@ -41,12 +41,39 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task-resume-candidate -
 
 Operating rules:
 
-- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task ...` and return that command's stdout as-is.
-- Return the Codex companion stdout verbatim to the user.
+- The controller always invokes the subagent in the foreground. The subagent is a thin forwarder only: it uses exactly one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task ...` and returns that command's stdout as-is.
+- The subagent never waits, polls, fetches, or cancels a background task. The controller owns the bounded wait and persisted-result fetch.
+- Return the subagent stdout verbatim to the user in the foreground flow; in the background flow, treat it as dispatch JSON until the controller has read and presented `.storedJob.rendered`.
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
-- Do not ask the subagent to inspect files, monitor progress, poll `/codex:status`, fetch `/codex:result`, call `/codex:cancel`, summarize output, or do follow-up work of its own.
+- Do not ask the subagent to inspect files, monitor progress, poll `/codex:status`, fetch `/codex:result`, call `/codex:cancel`, summarize output, or do follow-up work of its own. Do not route the controller's wait through `/codex:status`; `disable-model-invocation: true` means that slash command cannot be invoked by the model, so use the direct companion `status` Bash call below.
 - Leave `--effort` unset unless the user explicitly asks for a specific reasoning effort; the runtime defaults to `high`.
 - Leave the model unset unless the user explicitly asks for one; the runtime defaults to `gpt-5.5`. If they ask for `spark`, map it to `gpt-5.3-codex-spark`.
 - Leave `--resume` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.
 - If the helper reports that Codex is missing or unauthenticated, stop and tell the user to run `/codex:setup`.
 - If the user did not supply a request, ask what Codex should investigate or fix.
+
+Foreground flow:
+
+- Invoke `codex:codex-rescue` through the foreground `Agent` call. The subagent runs one foreground `task` invocation without passing `--wait` and returns its stdout.
+- This foreground flow applies to a rescue report. If the no-flag subagent guidance selects background and returns `task --background --json` enqueue JSON, treat that dispatch JSON as a request to follow the Background flow; do not return it as the rescue result.
+- Return a foreground rescue report verbatim, with no commentary before or after it.
+
+Background flow:
+
+- Invoke `codex:codex-rescue` through the foreground `Agent` call. Tell the subagent to use exactly one `Bash` call for `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --background --json ...`, return the enqueue payload, and do no waiting, polling, or result fetching.
+- Treat the subagent stdout as dispatch JSON. Read `jobId` and `workspaceRoot` from it, then block with a bounded foreground wait. The `Bash` tool timeout must be comfortably larger than `--timeout-ms`:
+```typescript
+Bash({
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status -C "${workspaceRoot}" ${jobId} --wait --timeout-ms 240000 --json`,
+  description: "Wait for Codex rescue",
+  timeout: 300000
+})
+```
+- If the wait payload has `waitTimedOut: true`, follow the PID-aware timeout branch in `status.md` and re-arm only when it classifies the job as healthy. Otherwise, read the persisted result:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result -C "${workspaceRoot}" <job-id> --json
+```
+- Read `.storedJob.rendered` from the result JSON and present it verbatim in the same turn the terminal wait returns. Do not replace the rescue result with a status note or wait to be asked "is it done?" or "continue".
+- If enqueueing or reading the job exits non-zero, the job reaches `failed` or `cancelled`, or the dispatch JSON, result JSON, or rescue output is empty or malformed, report the failure and surface the most actionable failure lines. Empty or malformed Agent/Bash output, or a reported nonzero Agent invocation, must surface the available tool and stderr failure lines; never silently treat it as a successful rescue. A failed rescue must not vanish silently.
+- Never re-dispatch a second rescue for the same request. Do not close out a turn with a dispatched-but-unread rescue or a "check `/codex:status`" note in place of its result.
+- If a later turn inherits a dispatched-but-unread rescue, recover it from disk with `status -C "${workspaceRoot}" <job-id> --json`; if it is still active, resume the bounded wait, and when it is terminal use `result -C "${workspaceRoot}" <job-id> --json`. Do not re-dispatch it or report it as stuck.

@@ -421,6 +421,24 @@ A turn that goes silent is interrupted rather than left to hang. Four budgets de
 
 While several quick tools are in flight, the most patient one sets the window, since the watchdog is asking whether anything at all is happening on the turn. When one fires, the run fails with `failureClass: "stalled"`.
 
+### MCP Servers
+
+Threads this plugin starts inherit whatever MCP servers your `~/.codex/config.toml` configures; the plugin does not add or configure any of its own.
+
+Those threads are non-interactive by construction — they run with `approvalPolicy: "never"` and there is nobody at the keyboard to answer a prompt — so **the plugin approves MCP tool calls on its own**. That is a real consequence worth knowing: an MCP server you have configured can be called, unattended, by any reviewer or delegated task this plugin runs, and an MCP tool is not confined by the thread's sandbox the way a shell command is.
+
+To keep a particular server out of these threads, name it in `CODEX_DISABLED_MCP_SERVERS`:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `CODEX_DISABLED_MCP_SERVERS` | *(unset)* | Comma-separated MCP server names to disable on threads this plugin starts. Your interactive `codex` sessions are unaffected. |
+
+```bash
+export CODEX_DISABLED_MCP_SERVERS=codegraph,some-other-server
+```
+
+Names must match `[A-Za-z0-9_-]+` — the plugin splices each one into a Codex config path, and a name needing quotes would make Codex read it as a new server definition and fail the thread outright. Anything else is skipped with a warning on stderr, leaving that server enabled.
+
 ### Moving The Work Over To Codex
 
 Delegated tasks and any [stop gate](#enabling-review-gate) run can also be directly resumed inside Codex by running `codex resume` either with the specific session ID you received from running `/codex:result` or `/codex:status` or by selecting it from the list.

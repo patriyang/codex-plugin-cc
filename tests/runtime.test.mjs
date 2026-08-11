@@ -271,6 +271,131 @@ test("app-server request resolves when the peer replies before the timeout", asy
   assert.deepEqual(result, { data: [], nextCursor: null });
 });
 
+test("MCP tool approval elicitation is accepted and the tool output reaches the turn", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "mcp-elicitation-approval");
+
+  const previousPath = process.env.PATH;
+  process.env.PATH = buildEnv(binDir).PATH;
+  t.after(() => {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  });
+
+  const result = await runAppServerTurn(repo, {
+    prompt: "run the codegraph status tool",
+    sandbox: "read-only"
+  });
+
+  assert.equal(result.status, 0, result.error?.message);
+  assert.equal(result.finalMessage, "MCP tool output: codegraph_status completed.");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(state.lastElicitationReply, {
+    id: "elicitation_turn_1",
+    result: { action: "accept", content: {}, _meta: null }
+  });
+});
+
+test("MCP data elicitation without an approval kind is declined", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "mcp-elicitation-decline");
+
+  const previousPath = process.env.PATH;
+  process.env.PATH = buildEnv(binDir).PATH;
+  t.after(() => {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  });
+
+  const result = await runAppServerTurn(repo, {
+    prompt: "collect the requested filter",
+    sandbox: "read-only"
+  });
+
+  assert.equal(result.status, 0, result.error?.message);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(state.lastElicitationReply, {
+    id: "elicitation_turn_1",
+    result: { action: "decline", content: null, _meta: null }
+  });
+});
+
+// Consent is given to exactly one recognized shape. An approval kind this client has never seen,
+// a null one, and a url-mode flow all get the same answer as a plain data form.
+for (const { behavior, label } of [
+  { behavior: "mcp-elicitation-unknown-kind", label: "an unrecognized approval kind" },
+  { behavior: "mcp-elicitation-null-kind", label: "a null approval kind" },
+  { behavior: "mcp-elicitation-url-mode", label: "a url-mode approval" }
+]) {
+  test(`MCP elicitation carrying ${label} is declined rather than accepted`, async (t) => {
+    const repo = makeTempDir();
+    const binDir = makeTempDir();
+    const statePath = path.join(binDir, "fake-codex-state.json");
+    installFakeCodex(binDir, behavior);
+
+    const previousPath = process.env.PATH;
+    process.env.PATH = buildEnv(binDir).PATH;
+    t.after(() => {
+      if (previousPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = previousPath;
+      }
+    });
+
+    const result = await runAppServerTurn(repo, {
+      prompt: "answer the elicitation",
+      sandbox: "read-only"
+    });
+
+    assert.equal(result.status, 0, result.error?.message);
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.deepEqual(state.lastElicitationReply, {
+      id: "elicitation_turn_1",
+      result: { action: "decline", content: null, _meta: null }
+    });
+  });
+}
+
+test("unrelated app-server requests still receive the unsupported-method error", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "unknown-server-request");
+
+  const previousPath = process.env.PATH;
+  process.env.PATH = buildEnv(binDir).PATH;
+  t.after(() => {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  });
+
+  const result = await runAppServerTurn(repo, {
+    prompt: "ignore the unrelated request",
+    sandbox: "read-only"
+  });
+
+  assert.equal(result.status, 0, result.error?.message);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(state.lastUnknownServerRequestReply, {
+    id: "unknown_turn_1",
+    error: { code: -32601, message: "Unsupported server request: unknown/server/request" }
+  });
+});
+
 test("app-server connect timeout destroys a client whose initialize never replies", async () => {
   const workspace = makeTempDir();
   const binDir = makeTempDir();
@@ -2369,12 +2494,16 @@ test("write task output focuses on the Codex result without generic follow-up hi
   assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
 });
 
-test("write task in linked worktree passes the git common dir as an extra writable root", () => {
+test("write task in linked worktree carries the git common dir and disabled MCP servers through start and resume", () => {
   const repo = makeTempDir();
   const worktreeParent = makeTempDir();
   const worktree = path.join(worktreeParent, "linked-worktree");
   const binDir = makeTempDir();
   const statePath = path.join(binDir, "fake-codex-state.json");
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_DISABLED_MCP_SERVERS: "codegraph,hermes-vault"
+  };
   installFakeCodex(binDir);
 
   try {
@@ -2384,33 +2513,99 @@ test("write task in linked worktree passes the git common dir as an extra writab
     run("git", ["commit", "-m", "init"], { cwd: repo });
     run("git", ["worktree", "add", "-b", "linked-runtime-test", worktree], { cwd: repo });
 
-    const result = run("node", [SCRIPT, "task", "--write", "fix the failing test"], {
-      cwd: worktree,
-      env: buildEnv(binDir)
-    });
+    const result = run("node", [SCRIPT, "task", "--write", "fix the failing test"], { cwd: worktree, env });
 
     assert.equal(result.status, 0, result.stderr);
     const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(state.lastTurnStart.sandboxPolicy?.type, "workspaceWrite");
-    assert.deepEqual(state.lastThreadStart.config?.["sandbox_workspace_write.writable_roots"], [
-      fs.realpathSync(path.join(repo, ".git"))
-    ]);
-
-    const resume = run("node", [SCRIPT, "task", "--resume", "--write", "follow up"], {
-      cwd: worktree,
-      env: buildEnv(binDir)
+    assert.deepEqual(state.lastThreadStart.config, {
+      "mcp_servers.codegraph.enabled": false,
+      "mcp_servers.hermes-vault.enabled": false,
+      "sandbox_workspace_write.writable_roots": [fs.realpathSync(path.join(repo, ".git"))]
     });
+
+    const resume = run("node", [SCRIPT, "task", "--resume", "--write", "follow up"], { cwd: worktree, env });
 
     assert.equal(resume.status, 0, resume.stderr);
     const resumedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(resumedState.lastTurnStart.sandboxPolicy?.type, "workspaceWrite");
-    assert.deepEqual(resumedState.lastThreadResume.config?.["sandbox_workspace_write.writable_roots"], [
-      fs.realpathSync(path.join(repo, ".git"))
-    ]);
+    assert.deepEqual(resumedState.lastThreadResume.config, {
+      "mcp_servers.codegraph.enabled": false,
+      "mcp_servers.hermes-vault.enabled": false,
+      "sandbox_workspace_write.writable_roots": [fs.realpathSync(path.join(repo, ".git"))]
+    });
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(worktreeParent, { recursive: true, force: true });
   }
+});
+
+test("task disables named MCP servers in thread/start config", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "fix the failing test"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_DISABLED_MCP_SERVERS: "codegraph,hermes-vault" }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(state.lastThreadStart.config, {
+    "mcp_servers.codegraph.enabled": false,
+    "mcp_servers.hermes-vault.enabled": false
+  });
+});
+
+test("task omits MCP config when disabled-server env is unset", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  delete env.CODEX_DISABLED_MCP_SERVERS;
+  const result = run("node", [SCRIPT, "task", "fix the failing test"], { cwd: repo, env });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state.lastThreadStart.config, undefined);
+});
+
+test("task trims, deduplicates, and skips invalid disabled MCP server names", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "fix the failing test"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_DISABLED_MCP_SERVERS: " codegraph , , bad.name , codegraph "
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(state.lastThreadStart.config, {
+    "mcp_servers.codegraph.enabled": false
+  });
+  assert.match(result.stderr, /bad\.name.*bare TOML key/);
 });
 
 test("write task in normal checkout does not add writable root config", () => {

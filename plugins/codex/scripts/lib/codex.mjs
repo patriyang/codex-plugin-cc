@@ -93,11 +93,15 @@ function buildThreadParams(cwd, options = {}) {
     serviceName: SERVICE_NAME,
     ephemeral: options.ephemeral ?? true
   };
+  const config = { ...(options.config ?? {}) };
+  for (const name of resolveDisabledMcpServers()) {
+    config[`mcp_servers.${name}.enabled`] = false;
+  }
   if (options.writableRoots?.length > 0) {
-    params.config = {
-      ...(options.config ?? {}),
-      "sandbox_workspace_write.writable_roots": options.writableRoots
-    };
+    config["sandbox_workspace_write.writable_roots"] = options.writableRoots;
+  }
+  if (Object.keys(config).length > 0) {
+    params.config = config;
   }
   return params;
 }
@@ -111,11 +115,15 @@ function buildResumeParams(threadId, cwd, options = {}) {
     approvalPolicy: options.approvalPolicy ?? "never",
     sandbox: options.sandbox ?? "read-only"
   };
+  const config = { ...(options.config ?? {}) };
+  for (const name of resolveDisabledMcpServers()) {
+    config[`mcp_servers.${name}.enabled`] = false;
+  }
   if (options.writableRoots?.length > 0) {
-    params.config = {
-      ...(options.config ?? {}),
-      "sandbox_workspace_write.writable_roots": options.writableRoots
-    };
+    config["sandbox_workspace_write.writable_roots"] = options.writableRoots;
+  }
+  if (Object.keys(config).length > 0) {
+    params.config = config;
   }
   return params;
 }
@@ -192,6 +200,27 @@ function resolveToolMaxInFlightMs(options = {}) {
     return envValue;
   }
   return DEFAULT_TOOL_MAX_INFLIGHT_MS;
+}
+
+function resolveDisabledMcpServers() {
+  const seen = new Set();
+  const disabled = [];
+  for (const entry of (process.env.CODEX_DISABLED_MCP_SERVERS ?? "").split(",")) {
+    const name = entry.trim();
+    if (!name || seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    // Only a bare TOML key can be spliced into a dotted config path. Quoting the name instead
+    // makes Codex read the segment as a new server table with no transport, which fails
+    // thread/start for the whole run rather than just leaving that server enabled.
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      process.stderr.write(`Skipping disabled MCP server "${name}": not a bare TOML key.\n`);
+      continue;
+    }
+    disabled.push(name);
+  }
+  return disabled;
 }
 
 function shorten(text, limit = 72) {

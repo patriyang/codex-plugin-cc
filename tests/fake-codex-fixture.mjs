@@ -16,6 +16,7 @@ const readline = require("node:readline");
 	const STATE_PATH = ${JSON.stringify(statePath)};
 	const BEHAVIOR = ${JSON.stringify(behavior)};
 	const interruptibleTurns = new Map();
+	const pendingServerRequests = new Map();
 	if (BEHAVIOR === "close-stalls") {
 	  const keepAlive = setInterval(() => {}, 1000);
 	  process.on("SIGTERM", () => {});
@@ -212,6 +213,83 @@ function send(message) {
   process.stdout.write(JSON.stringify(message) + "\\n");
 }
 
+function requestServerReply(id, method, params, onReply) {
+  pendingServerRequests.set(id, onReply);
+  send({ id, method, params });
+}
+
+function emitMcpApprovalCompletion(state, threadId, turnId, reply) {
+  state.lastElicitationReply = reply;
+  saveState(state);
+  if (reply.error) {
+    send({ method: "turn/started", params: { threadId, turn: buildTurn(turnId) } });
+    send({ method: "error", params: { threadId, turnId, error: { message: "user rejected MCP tool call" } } });
+    send({ method: "turn/completed", params: { threadId, turn: buildTurn(turnId, "failed") } });
+    return;
+  }
+
+  const toolOutput = "MCP tool output: codegraph_status completed.";
+  send({ method: "turn/started", params: { threadId, turn: buildTurn(turnId) } });
+  send({
+    method: "item/started",
+    params: {
+      threadId,
+      turnId,
+      item: {
+        type: "mcpToolCall",
+        id: "mcp_" + turnId,
+        server: "codegraph",
+        tool: "codegraph_status",
+        status: "inProgress"
+      }
+    }
+  });
+  send({
+    method: "item/completed",
+    params: {
+      threadId,
+      turnId,
+      item: {
+        type: "mcpToolCall",
+        id: "mcp_" + turnId,
+        server: "codegraph",
+        tool: "codegraph_status",
+        status: "completed",
+        result: toolOutput
+      }
+    }
+  });
+  send({
+    method: "item/completed",
+    params: {
+      threadId,
+      turnId,
+      item: { type: "agentMessage", id: "msg_" + turnId, text: toolOutput, phase: "final_answer" }
+    }
+  });
+  send({ method: "turn/completed", params: { threadId, turn: buildTurn(turnId, "completed") } });
+}
+
+function emitMcpDeclineCompletion(state, threadId, turnId, reply) {
+  state.lastElicitationReply = reply;
+  saveState(state);
+  if (reply.error) {
+    send({ method: "turn/started", params: { threadId, turn: buildTurn(turnId) } });
+    send({ method: "error", params: { threadId, turnId, error: { message: "user rejected MCP tool call" } } });
+    send({ method: "turn/completed", params: { threadId, turn: buildTurn(turnId, "failed") } });
+    return;
+  }
+
+  emitTurnCompleted(threadId, turnId, {
+    completed: {
+      type: "agentMessage",
+      id: "msg_" + turnId,
+      text: "MCP elicitation declined.",
+      phase: "final_answer"
+    }
+  });
+}
+
 function nextThread(state, cwd, ephemeral) {
   const thread = {
     id: "thr_" + state.nextThreadId++,
@@ -400,6 +478,12 @@ rl.on("line", (line) => {
 
   const message = JSON.parse(line);
   const state = loadState();
+  const pendingReply = pendingServerRequests.get(message.id);
+  if (pendingReply) {
+    pendingServerRequests.delete(message.id);
+    pendingReply(message);
+    return;
+  }
 
   try {
     switch (message.method) {
@@ -720,6 +804,124 @@ rl.on("line", (line) => {
 	          send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "failed") } });
 	          break;
 	        }
+
+        if (BEHAVIOR === "mcp-elicitation-approval") {
+          requestServerReply(
+            "elicitation_" + turnId,
+            "mcpServer/elicitation/request",
+            {
+              threadId: thread.id,
+              turnId,
+              serverName: "codegraph",
+              mode: "form",
+              _meta: {
+                codex_approval_kind: "mcp_tool_call",
+                persist: ["session", "always"],
+                tool_description: "Index health check (files / nodes / edges). Skip unless debugging.",
+                tool_params: {},
+                tool_params_display: []
+              },
+              message: "Allow the codegraph MCP server to run tool \\"codegraph_status\\"?",
+              requestedSchema: { type: "object", properties: {} }
+            },
+            (reply) => emitMcpApprovalCompletion(state, thread.id, turnId, reply)
+          );
+          break;
+        }
+
+        if (BEHAVIOR === "mcp-elicitation-decline") {
+          requestServerReply(
+            "elicitation_" + turnId,
+            "mcpServer/elicitation/request",
+            {
+              threadId: thread.id,
+              turnId,
+              serverName: "codegraph",
+              mode: "form",
+              _meta: {},
+              message: "Please provide the requested codegraph filter.",
+              requestedSchema: { type: "object", properties: { filter: { type: "string" } } }
+            },
+            (reply) => emitMcpDeclineCompletion(state, thread.id, turnId, reply)
+          );
+          break;
+        }
+
+        if (BEHAVIOR === "mcp-elicitation-unknown-kind") {
+          requestServerReply(
+            "elicitation_" + turnId,
+            "mcpServer/elicitation/request",
+            {
+              threadId: thread.id,
+              turnId,
+              serverName: "codegraph",
+              mode: "form",
+              _meta: { codex_approval_kind: "some_future_kind" },
+              message: "Approve something this client has never heard of?",
+              requestedSchema: { type: "object", properties: {} }
+            },
+            (reply) => emitMcpDeclineCompletion(state, thread.id, turnId, reply)
+          );
+          break;
+        }
+
+        if (BEHAVIOR === "mcp-elicitation-null-kind") {
+          requestServerReply(
+            "elicitation_" + turnId,
+            "mcpServer/elicitation/request",
+            {
+              threadId: thread.id,
+              turnId,
+              serverName: "codegraph",
+              mode: "form",
+              _meta: { codex_approval_kind: null },
+              message: "Please provide the requested codegraph filter.",
+              requestedSchema: { type: "object", properties: { filter: { type: "string" } } }
+            },
+            (reply) => emitMcpDeclineCompletion(state, thread.id, turnId, reply)
+          );
+          break;
+        }
+
+        if (BEHAVIOR === "mcp-elicitation-url-mode") {
+          requestServerReply(
+            "elicitation_" + turnId,
+            "mcpServer/elicitation/request",
+            {
+              threadId: thread.id,
+              turnId,
+              serverName: "codegraph",
+              mode: "url",
+              _meta: { codex_approval_kind: "mcp_tool_call" },
+              message: "Finish signing in to codegraph.",
+              url: "https://example.invalid/oauth",
+              elicitationId: "elicit_" + turnId
+            },
+            (reply) => emitMcpDeclineCompletion(state, thread.id, turnId, reply)
+          );
+          break;
+        }
+
+        if (BEHAVIOR === "unknown-server-request") {
+          requestServerReply(
+            "unknown_" + turnId,
+            "unknown/server/request",
+            { threadId: thread.id, turnId },
+            (reply) => {
+              state.lastUnknownServerRequestReply = reply;
+              saveState(state);
+              emitTurnCompleted(thread.id, turnId, {
+                completed: {
+                  type: "agentMessage",
+                  id: "msg_" + turnId,
+                  text: "Unknown server request ignored.",
+                  phase: "final_answer"
+                }
+              });
+            }
+          );
+          break;
+        }
 
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
           ? structuredReviewPayload(prompt)

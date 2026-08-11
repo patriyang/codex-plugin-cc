@@ -31,7 +31,7 @@
  *   itemActivityCount: number,
  *   stallCleanup: Promise<void> | null,
  *   stalled: boolean,
- *   activeTools: Map<string, { threadId: string | null, itemId: string | null, toolClass: string, label: string, deadlineTimer: ReturnType<typeof setTimeout> | null, armedAt: number | null }>,
+ *   activeTools: Map<string, { threadId: string | null, itemId: string | null, toolClass: string, label: string, inactivityTimeoutMs: number, deadlineTimer: ReturnType<typeof setTimeout> | null, armedAt: number | null }>,
  *   lastAgentMessage: string,
  *   reviewText: string,
  *   reasoningSummary: string[],
@@ -63,6 +63,7 @@ const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_TURN_STALL_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_TOOL_STALL_TIMEOUT_MS = 90 * 1000;
+const DEFAULT_MCP_TOOL_STALL_TIMEOUT_MS = 180 * 1000;
 const DEFAULT_TOOL_MAX_INFLIGHT_MS = 5 * 60 * 1000;
 // Quick tools should answer fast and/or stream; a silent one past the tool budget is wedged,
 // and even a chatty one past the max-in-flight cap is looping. Long tools (shell commands,
@@ -169,6 +170,17 @@ function resolveToolStallTimeoutMs(options = {}) {
     return envValue;
   }
   return DEFAULT_TOOL_STALL_TIMEOUT_MS;
+}
+
+function resolveMcpToolStallTimeoutMs(options = {}) {
+  if (options.mcpToolStallTimeoutMs !== undefined) {
+    return Number(options.mcpToolStallTimeoutMs);
+  }
+  const envValue = Number(process.env.CODEX_MCP_TOOL_STALL_TIMEOUT_MS);
+  if (Number.isFinite(envValue) && envValue >= 0) {
+    return envValue;
+  }
+  return DEFAULT_MCP_TOOL_STALL_TIMEOUT_MS;
 }
 
 function resolveToolMaxInFlightMs(options = {}) {
@@ -468,13 +480,14 @@ function activeToolKey(threadId, itemId) {
   return `${threadId ?? "root"}:${itemId ?? "?"}`;
 }
 
-function hasActiveQuickTool(state) {
+function maxActiveQuickToolStallTimeout(state) {
+  let maxTimeoutMs = null;
   for (const tool of state.activeTools.values()) {
     if (tool.toolClass === "quick") {
-      return true;
+      maxTimeoutMs = maxTimeoutMs === null ? tool.inactivityTimeoutMs : Math.max(maxTimeoutMs, tool.inactivityTimeoutMs);
     }
   }
-  return false;
+  return maxTimeoutMs;
 }
 
 function activeToolLabels(state) {
@@ -490,7 +503,7 @@ function activeToolLabels(state) {
 // Wall-clock cap for a single in-flight quick tool. Armed once when the tool starts and NOT rearmed
 // by activity, so a tool that stays alive by streaming forever still gets cut off. Long tools get no
 // cap.
-function trackToolStart(state, client, threadId, item, label, maxInFlightMs) {
+function trackToolStart(state, client, threadId, item, label, maxInFlightMs, inactivityTimeoutMs) {
   const cls = toolClass(item);
   if (!cls) {
     return;
@@ -502,6 +515,7 @@ function trackToolStart(state, client, threadId, item, label, maxInFlightMs) {
     itemId: item?.id ?? null,
     toolClass: cls,
     label,
+    inactivityTimeoutMs,
     deadlineTimer: null,
     armedAt: null
   };
@@ -763,11 +777,21 @@ function bumpActivity(state, client, stallTimeouts) {
   state.lastActivityAt = Date.now();
   state.activityCount += 1;
 
-  // A single global inactivity timer covers the whole turn. Use the short tool budget while any
-  // quick tool is in flight; otherwise (only long tools, or none) fall back to the generous turn
-  // backstop, since long tools (shell commands, subagent collaborations) can run long and silent.
-  const stallMode = hasActiveQuickTool(state) ? "tool" : "idle";
-  const stallTimeoutMs = stallMode === "tool" ? stallTimeouts.tool : stallTimeouts.turn;
+  // A single global inactivity timer covers the whole turn. The most patient quick tool in flight
+  // controls the silence window because the watchdog measures whether anything at all is happening
+  // on the turn. The turn backstop remains the outer bound; long tools use it directly.
+  // A zero or non-finite turn budget means the backstop is switched off, so there is no outer bound
+  // to clamp against and the tool budget stands on its own.
+  const quickToolTimeoutMs = maxActiveQuickToolStallTimeout(state);
+  const turnBackstopMs = stallTimeouts.turn;
+  const clampsToBackstop = Number.isFinite(turnBackstopMs) && turnBackstopMs > 0;
+  const stallMode = quickToolTimeoutMs === null ? "idle" : "tool";
+  const stallTimeoutMs =
+    stallMode === "tool"
+      ? clampsToBackstop
+        ? Math.min(quickToolTimeoutMs, turnBackstopMs)
+        : quickToolTimeoutMs
+      : turnBackstopMs;
 
   clearActivityTimer(state);
   if (stallTimeoutMs > 0 && Number.isFinite(stallTimeoutMs)) {
@@ -972,13 +996,22 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   const stallTimeouts = {
     turn: resolveStallTimeoutMs(options),
     tool: resolveToolStallTimeoutMs(options),
+    mcpTool: resolveMcpToolStallTimeoutMs(options),
     toolMaxInFlight: resolveToolMaxInFlightMs(options)
   };
   const rearmActivity = () => bumpActivity(state, client, stallTimeouts);
   const watchdog = {
     rearm: rearmActivity,
     toolStarted: (toolThreadId, item, label) => {
-      trackToolStart(state, client, toolThreadId, item, label, stallTimeouts.toolMaxInFlight);
+      trackToolStart(
+        state,
+        client,
+        toolThreadId,
+        item,
+        label,
+        stallTimeouts.toolMaxInFlight,
+        item.type === "mcpToolCall" ? stallTimeouts.mcpTool : stallTimeouts.tool
+      );
       rearmActivity();
     },
     toolEnded: (toolThreadId, itemId) => {

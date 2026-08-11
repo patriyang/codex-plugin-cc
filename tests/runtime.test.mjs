@@ -3164,7 +3164,10 @@ test("task watchdog interrupts a hung tool turn and fails the job instead of han
   const env = {
     ...buildEnv(binDir),
     CODEX_TURN_STALL_TIMEOUT_MS: "5000",
-    CODEX_TOOL_STALL_TIMEOUT_MS: "500"
+    CODEX_TOOL_STALL_TIMEOUT_MS: "500",
+    // The hung tool is an MCP call, so its own budget is what has to fire here — otherwise the
+    // assertion below passes on the turn backstop wearing the tool-in-flight label.
+    CODEX_MCP_TOOL_STALL_TIMEOUT_MS: "500"
   };
   const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the hung MCP tool"], {
     cwd: repo,

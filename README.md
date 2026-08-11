@@ -338,12 +338,9 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 /codex:rescue --background investigate the flaky test
 ```
 
-Then check in with:
+Both commands return the finished result in the same session; you do not need to poll for it. For reviews, `--background` enqueues a detached tracked job, then the command waits for it and reports the findings. For rescue, `--background` backgrounds the subagent, while its foreground `task` call waits for Codex and its report already contains Codex's full output.
 
-```bash
-/codex:status
-/codex:result
-```
+`/codex:status` and `/codex:result <job-id>` are for inspecting a tracked job from another turn or recovering a run whose turn ended before you read the result, not required steps for either flow above.
 
 ## Codex Integration
 

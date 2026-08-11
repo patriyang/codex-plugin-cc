@@ -271,6 +271,94 @@ test("app-server request resolves when the peer replies before the timeout", asy
   assert.deepEqual(result, { data: [], nextCursor: null });
 });
 
+test("MCP tool approval elicitation is accepted and the tool output reaches the turn", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "mcp-elicitation-approval");
+
+  const previousPath = process.env.PATH;
+  process.env.PATH = buildEnv(binDir).PATH;
+  t.after(() => {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  });
+
+  const result = await runAppServerTurn(repo, {
+    prompt: "run the codegraph status tool",
+    sandbox: "read-only"
+  });
+
+  assert.equal(result.status, 0, result.error?.message);
+  assert.equal(result.finalMessage, "MCP tool output: codegraph_status completed.");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(state.lastElicitationReply, {
+    id: "elicitation_turn_1",
+    result: { action: "accept", content: {}, _meta: null }
+  });
+});
+
+test("MCP data elicitation without an approval kind is declined", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "mcp-elicitation-decline");
+
+  const previousPath = process.env.PATH;
+  process.env.PATH = buildEnv(binDir).PATH;
+  t.after(() => {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  });
+
+  const result = await runAppServerTurn(repo, {
+    prompt: "collect the requested filter",
+    sandbox: "read-only"
+  });
+
+  assert.equal(result.status, 0, result.error?.message);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(state.lastElicitationReply, {
+    id: "elicitation_turn_1",
+    result: { action: "decline", content: null, _meta: null }
+  });
+});
+
+test("unrelated app-server requests still receive the unsupported-method error", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "unknown-server-request");
+
+  const previousPath = process.env.PATH;
+  process.env.PATH = buildEnv(binDir).PATH;
+  t.after(() => {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  });
+
+  const result = await runAppServerTurn(repo, {
+    prompt: "ignore the unrelated request",
+    sandbox: "read-only"
+  });
+
+  assert.equal(result.status, 0, result.error?.message);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(state.lastUnknownServerRequestReply, {
+    id: "unknown_turn_1",
+    error: { code: -32601, message: "Unsupported server request: unknown/server/request" }
+  });
+});
+
 test("app-server connect timeout destroys a client whose initialize never replies", async () => {
   const workspace = makeTempDir();
   const binDir = makeTempDir();

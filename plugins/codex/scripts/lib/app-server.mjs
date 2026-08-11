@@ -173,6 +173,19 @@ class AppServerClientBase {
   }
 
   handleServerRequest(message) {
+    if (message.method === "mcpServer/elicitation/request") {
+      const approvalKind = message.params?._meta?.codex_approval_kind;
+      // These threads use approvalPolicy "never" and have no interactive user to answer an
+      // approval gate; -32601 is interpreted by app-server as a user denial instead.
+      this.sendMessage({
+        id: message.id,
+        result: approvalKind !== undefined
+          ? { action: "accept", content: {}, _meta: null }
+          : { action: "decline", content: null, _meta: null }
+      });
+      return;
+    }
+
     this.sendMessage({
       id: message.id,
       error: buildJsonRpcError(-32601, `Unsupported server request: ${message.method}`)

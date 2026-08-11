@@ -554,6 +554,7 @@ async function executeReviewRun(request) {
       failureClass: result.failureClass,
       modelFallback: result.modelFallback ?? null,
       retryable: result.retryable,
+      retryAfterMs: result.retryAfterMs,
       threadId: result.threadId,
       sourceThreadId: result.sourceThreadId,
       codex: {
@@ -569,7 +570,8 @@ async function executeReviewRun(request) {
         stdout: result.reviewText,
         stderr: result.stderr,
         failureClass: result.failureClass,
-        retryable: result.retryable
+        retryable: result.retryable,
+        retryAfterMs: result.retryAfterMs
       },
       { reviewLabel: reviewName, targetLabel: target.label, model: effectiveModel, reasoningSummary: result.reasoningSummary }
     );
@@ -578,6 +580,7 @@ async function executeReviewRun(request) {
       exitStatus: result.status,
       failureClass: result.failureClass,
       retryable: result.retryable,
+      retryAfterMs: result.retryAfterMs,
       threadId: result.threadId,
       turnId: result.turnId,
       payload,
@@ -615,7 +618,8 @@ async function executeReviewRun(request) {
     status: result.status,
     failureMessage: result.error?.message ?? result.stderr,
     failureClass: result.failureClass,
-    retryable: result.retryable
+    retryable: result.retryable,
+    retryAfterMs: result.retryAfterMs
   });
   const payload = {
     review: reviewName,
@@ -626,6 +630,7 @@ async function executeReviewRun(request) {
     failureClass: result.failureClass,
     modelFallback: result.modelFallback,
     retryable: result.retryable,
+    retryAfterMs: result.retryAfterMs,
     threadId: result.threadId,
     context: {
       repoRoot: context.repoRoot,
@@ -648,6 +653,7 @@ async function executeReviewRun(request) {
     exitStatus: result.status,
     failureClass: result.failureClass,
     retryable: result.retryable,
+    retryAfterMs: result.retryAfterMs,
     threadId: result.threadId,
     turnId: result.turnId,
     payload,
@@ -715,6 +721,7 @@ async function executeTaskRun(request) {
       failureMessage,
       failureClass: result.failureClass,
       retryable: result.retryable,
+      retryAfterMs: result.retryAfterMs,
       touchedFiles: result.touchedFiles,
       reasoningSummary: result.reasoningSummary
     },
@@ -729,6 +736,7 @@ async function executeTaskRun(request) {
     failureClass: result.failureClass,
     modelFallback: result.modelFallback,
     retryable: result.retryable,
+    retryAfterMs: result.retryAfterMs,
     threadId: result.threadId,
     rawOutput,
     partialOutput,
@@ -742,6 +750,7 @@ async function executeTaskRun(request) {
     exitStatus: result.status,
     failureClass: result.failureClass,
     retryable: result.retryable,
+    retryAfterMs: result.retryAfterMs,
     threadId: result.threadId,
     turnId: result.turnId,
     payload,

@@ -320,6 +320,17 @@ The retry only happens when the rejected turn produced nothing at all — no out
 
 Either way the failure is machine-readable: `/codex:status` and `/codex:result` report `failureClass` and `retryable` in their JSON, so a caller never has to pattern-match an error message to tell a transient capacity rejection from a real failure.
 
+`retryable: true` means the turn produced nothing, so repeating it is safe — not that repeating it immediately will help. A retryable failure that only time can clear also carries `retryAfterMs`, and a caller should wait at least that long before re-dispatching. Capacity rejections carry a 60-second floor: backup-model resolution is deterministic, so an immediate retry picks the same models and can fail identically, which is exactly how a fan-out of automated callers spins through a capacity window without making progress. A `retryAfterMs` is only ever present alongside `retryable: true`; `failureClass: "state-drift"` is retryable with no pacing, because re-running it is not waiting on anything.
+
+#### Failure classes
+
+| `failureClass` | Meaning | `retryable` |
+| --- | --- | --- |
+| `capacity` | The model was at capacity and the backup was too, or there was no backup to fall back to. | `true` when the turn produced nothing, with a `retryAfterMs` floor of 60s |
+| `stalled` | The turn's watchdog interrupted it: a tool call or the model itself went silent past its budget. The run produced no verdict — this is what distinguishes an aborted review from one that completed and found nothing. | `true` only when the turn produced nothing at all; no pacing, since waiting is not what fixes it |
+| `state-drift` | A background review's repository moved between enqueue and execution. | `true`, no pacing |
+| `null` | Anything else. Read `failureMessage`. | `false` |
+
 #### Enabling review gate
 
 ```bash
@@ -396,6 +407,19 @@ Your configuration will be picked up based on:
 - project-level overrides only load when the [project is trusted](https://developers.openai.com/codex/config-advanced#project-config-files-codexconfigtoml)
 
 Check out the Codex docs for more [configuration options](https://developers.openai.com/codex/config-reference).
+
+### Stall Budgets
+
+A turn that goes silent is interrupted rather than left to hang. Four budgets decide when that happens, each overridable by environment variable:
+
+| Variable | Default | What it bounds |
+| --- | --- | --- |
+| `CODEX_TURN_STALL_TIMEOUT_MS` | 15m | Silence on the turn as a whole. It is also the outer bound: a tool budget larger than this is clamped to it. |
+| `CODEX_TOOL_STALL_TIMEOUT_MS` | 90s | Silence while a quick tool (web search, custom tool) is in flight. |
+| `CODEX_MCP_TOOL_STALL_TIMEOUT_MS` | 180s | Silence while an MCP tool call is in flight. MCP calls get their own, more patient budget because they can legitimately run longer than a local tool, and interrupting one costs the entire turn — every finding and every file read accumulated so far — not just the call. |
+| `CODEX_TOOL_MAX_INFLIGHT_MS` | 5m | Wall-clock cap on a single quick tool, whether or not it is streaming. Catches a tool that stays chatty but never finishes. |
+
+While several quick tools are in flight, the most patient one sets the window, since the watchdog is asking whether anything at all is happening on the turn. When one fires, the run fails with `failureClass: "stalled"`.
 
 ### Moving The Work Over To Codex
 

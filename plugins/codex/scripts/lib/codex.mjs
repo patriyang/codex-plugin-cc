@@ -31,7 +31,7 @@
  *   itemActivityCount: number,
  *   stallCleanup: Promise<void> | null,
  *   stalled: boolean,
- *   activeTools: Map<string, { threadId: string | null, itemId: string | null, toolClass: string, label: string, deadlineTimer: ReturnType<typeof setTimeout> | null, armedAt: number | null }>,
+ *   activeTools: Map<string, { threadId: string | null, itemId: string | null, toolClass: string, label: string, inactivityTimeoutMs: number, deadlineTimer: ReturnType<typeof setTimeout> | null, armedAt: number | null }>,
  *   lastAgentMessage: string,
  *   reviewText: string,
  *   reasoningSummary: string[],
@@ -50,7 +50,7 @@ import path from "node:path";
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
-import { CAPACITY, classifyFailureMessage } from "./failure-class.mjs";
+import { CAPACITY, STALLED, classifyFailureMessage } from "./failure-class.mjs";
 import { resolveWorktreeWritableRoots } from "./git.mjs";
 import { binaryAvailable } from "./process.mjs";
 import { getConfig } from "./state.mjs";
@@ -63,6 +63,7 @@ const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_TURN_STALL_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_TOOL_STALL_TIMEOUT_MS = 90 * 1000;
+const DEFAULT_MCP_TOOL_STALL_TIMEOUT_MS = 180 * 1000;
 const DEFAULT_TOOL_MAX_INFLIGHT_MS = 5 * 60 * 1000;
 // Quick tools should answer fast and/or stream; a silent one past the tool budget is wedged,
 // and even a chatty one past the max-in-flight cap is looping. Long tools (shell commands,
@@ -169,6 +170,17 @@ function resolveToolStallTimeoutMs(options = {}) {
     return envValue;
   }
   return DEFAULT_TOOL_STALL_TIMEOUT_MS;
+}
+
+function resolveMcpToolStallTimeoutMs(options = {}) {
+  if (options.mcpToolStallTimeoutMs !== undefined) {
+    return Number(options.mcpToolStallTimeoutMs);
+  }
+  const envValue = Number(process.env.CODEX_MCP_TOOL_STALL_TIMEOUT_MS);
+  if (Number.isFinite(envValue) && envValue >= 0) {
+    return envValue;
+  }
+  return DEFAULT_MCP_TOOL_STALL_TIMEOUT_MS;
 }
 
 function resolveToolMaxInFlightMs(options = {}) {
@@ -468,13 +480,14 @@ function activeToolKey(threadId, itemId) {
   return `${threadId ?? "root"}:${itemId ?? "?"}`;
 }
 
-function hasActiveQuickTool(state) {
+function maxActiveQuickToolStallTimeout(state) {
+  let maxTimeoutMs = null;
   for (const tool of state.activeTools.values()) {
     if (tool.toolClass === "quick") {
-      return true;
+      maxTimeoutMs = maxTimeoutMs === null ? tool.inactivityTimeoutMs : Math.max(maxTimeoutMs, tool.inactivityTimeoutMs);
     }
   }
-  return false;
+  return maxTimeoutMs;
 }
 
 function activeToolLabels(state) {
@@ -490,7 +503,7 @@ function activeToolLabels(state) {
 // Wall-clock cap for a single in-flight quick tool. Armed once when the tool starts and NOT rearmed
 // by activity, so a tool that stays alive by streaming forever still gets cut off. Long tools get no
 // cap.
-function trackToolStart(state, client, threadId, item, label, maxInFlightMs) {
+function trackToolStart(state, client, threadId, item, label, maxInFlightMs, inactivityTimeoutMs) {
   const cls = toolClass(item);
   if (!cls) {
     return;
@@ -502,6 +515,7 @@ function trackToolStart(state, client, threadId, item, label, maxInFlightMs) {
     itemId: item?.id ?? null,
     toolClass: cls,
     label,
+    inactivityTimeoutMs,
     deadlineTimer: null,
     armedAt: null
   };
@@ -763,11 +777,21 @@ function bumpActivity(state, client, stallTimeouts) {
   state.lastActivityAt = Date.now();
   state.activityCount += 1;
 
-  // A single global inactivity timer covers the whole turn. Use the short tool budget while any
-  // quick tool is in flight; otherwise (only long tools, or none) fall back to the generous turn
-  // backstop, since long tools (shell commands, subagent collaborations) can run long and silent.
-  const stallMode = hasActiveQuickTool(state) ? "tool" : "idle";
-  const stallTimeoutMs = stallMode === "tool" ? stallTimeouts.tool : stallTimeouts.turn;
+  // A single global inactivity timer covers the whole turn. The most patient quick tool in flight
+  // controls the silence window because the watchdog measures whether anything at all is happening
+  // on the turn. The turn backstop remains the outer bound; long tools use it directly.
+  // A zero or non-finite turn budget means the backstop is switched off, so there is no outer bound
+  // to clamp against and the tool budget stands on its own.
+  const quickToolTimeoutMs = maxActiveQuickToolStallTimeout(state);
+  const turnBackstopMs = stallTimeouts.turn;
+  const clampsToBackstop = Number.isFinite(turnBackstopMs) && turnBackstopMs > 0;
+  const stallMode = quickToolTimeoutMs === null ? "idle" : "tool";
+  const stallTimeoutMs =
+    stallMode === "tool"
+      ? clampsToBackstop
+        ? Math.min(quickToolTimeoutMs, turnBackstopMs)
+        : quickToolTimeoutMs
+      : turnBackstopMs;
 
   clearActivityTimer(state);
   if (stallTimeoutMs > 0 && Number.isFinite(stallTimeoutMs)) {
@@ -972,13 +996,22 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   const stallTimeouts = {
     turn: resolveStallTimeoutMs(options),
     tool: resolveToolStallTimeoutMs(options),
+    mcpTool: resolveMcpToolStallTimeoutMs(options),
     toolMaxInFlight: resolveToolMaxInFlightMs(options)
   };
   const rearmActivity = () => bumpActivity(state, client, stallTimeouts);
   const watchdog = {
     rearm: rearmActivity,
     toolStarted: (toolThreadId, item, label) => {
-      trackToolStart(state, client, toolThreadId, item, label, stallTimeouts.toolMaxInFlight);
+      trackToolStart(
+        state,
+        client,
+        toolThreadId,
+        item,
+        label,
+        stallTimeouts.toolMaxInFlight,
+        item.type === "mcpToolCall" ? stallTimeouts.mcpTool : stallTimeouts.tool
+      );
       rearmActivity();
     },
     toolEnded: (toolThreadId, itemId) => {
@@ -1193,6 +1226,25 @@ async function startThread(client, cwd, options = {}) {
 
 async function resumeThread(client, threadId, cwd, options = {}) {
   return client.request("thread/resume", buildResumeParams(threadId, cwd, options));
+}
+
+function classifyTurnFailure(turnState, status) {
+  if (status === 0) {
+    return { failureClass: null, retryable: false, retryAfterMs: null };
+  }
+  // A watchdog abort is a fact about the turn, not a string in the error, so it is read from the
+  // turn state rather than matched out of the message.
+  const failure = turnState.stalled === true
+    ? { failureClass: STALLED, retryable: true, retryAfterMs: null }
+    : classifyFailureMessage(extractErrorMessage(turnState.error));
+  // Repeating is only safe when the turn left nothing behind, and pacing is guidance for a retry
+  // that is actually on offer.
+  const retryable = failure.retryable && turnProducedNothing(turnState);
+  return {
+    failureClass: failure.failureClass,
+    retryable,
+    retryAfterMs: retryable ? failure.retryAfterMs : null
+  };
 }
 
 function buildResultStatus(turnState) {
@@ -1517,9 +1569,7 @@ export async function runAppServerReview(cwd, options = {}) {
     let reviewAttempt = await captureModelReview(options.model ?? null);
     const failedModel = reviewAttempt.resolvedModel;
     const initialStatus = buildResultStatus(reviewAttempt.turnState);
-    const initialFailure = initialStatus === 0
-      ? { failureClass: null, retryable: false }
-      : classifyFailureMessage(extractErrorMessage(reviewAttempt.turnState.error));
+    const initialFailure = classifyTurnFailure(reviewAttempt.turnState, initialStatus);
     let modelFallback = null;
 
     if (
@@ -1545,14 +1595,13 @@ export async function runAppServerReview(cwd, options = {}) {
 
     const { sourceThreadId, turnState } = reviewAttempt;
     const status = buildResultStatus(turnState);
-    const failure = status === 0
-      ? { failureClass: null, retryable: false }
-      : classifyFailureMessage(extractErrorMessage(turnState.error));
+    const failure = classifyTurnFailure(turnState, status);
 
     return {
       status,
       failureClass: failure.failureClass,
-      retryable: failure.retryable && turnProducedNothing(turnState),
+      retryable: failure.retryable,
+      retryAfterMs: failure.retryAfterMs,
       modelFallback,
       threadId: turnState.threadId,
       sourceThreadId,
@@ -1763,9 +1812,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     const failedModel = resolvedModel ?? options.model ?? null;
     let turnState = await captureModelTurn(options.model ?? null);
     const initialStatus = buildResultStatus(turnState);
-    const initialFailure = initialStatus === 0
-      ? { failureClass: null, retryable: false }
-      : classifyFailureMessage(extractErrorMessage(turnState.error));
+    const initialFailure = classifyTurnFailure(turnState, initialStatus);
     let modelFallback = null;
 
     if (initialStatus !== 0 && initialFailure.failureClass === CAPACITY && turnProducedNothing(turnState)) {
@@ -1786,14 +1833,13 @@ export async function runAppServerTurn(cwd, options = {}) {
     }
 
     const status = buildResultStatus(turnState);
-    const failure = status === 0
-      ? { failureClass: null, retryable: false }
-      : classifyFailureMessage(extractErrorMessage(turnState.error));
+    const failure = classifyTurnFailure(turnState, status);
 
     return {
       status,
       failureClass: failure.failureClass,
-      retryable: failure.retryable && turnProducedNothing(turnState),
+      retryable: failure.retryable,
+      retryAfterMs: failure.retryAfterMs,
       modelFallback,
       threadId,
       turnId: turnState.turnId,

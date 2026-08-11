@@ -268,6 +268,7 @@ export async function runTrackedJob(job, runner, options = {}) {
     const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
     const failureClass = completionStatus === "completed" ? null : execution.failureClass ?? null;
     const retryable = completionStatus === "completed" ? false : execution.retryable === true;
+    const retryAfterMs = retryable ? execution.retryAfterMs ?? null : null;
     const completedAt = nowIso();
     if (isPersistenceBlocked(job.workspaceRoot, job.id)) {
       return execution;
@@ -287,6 +288,7 @@ export async function runTrackedJob(job, runner, options = {}) {
         completedAt,
         failureClass,
         retryable,
+        retryAfterMs,
         result: execution.payload,
         rendered: execution.rendered
       });
@@ -300,7 +302,8 @@ export async function runTrackedJob(job, runner, options = {}) {
         pid: null,
         completedAt,
         failureClass,
-        retryable
+        retryable,
+        retryAfterMs
       });
       return true;
     });
@@ -313,8 +316,12 @@ export async function runTrackedJob(job, runner, options = {}) {
     const classified = classifyFailureMessage(errorMessage);
     const carriesFailureClass = error != null && Object.prototype.hasOwnProperty.call(Object(error), "failureClass");
     const carriesRetryable = error != null && Object.prototype.hasOwnProperty.call(Object(error), "retryable");
+    const carriesRetryAfterMs = error != null && Object.prototype.hasOwnProperty.call(Object(error), "retryAfterMs");
     const failureClass = carriesFailureClass ? error.failureClass : classified.failureClass;
     const retryable = carriesRetryable ? error.retryable : classified.retryable;
+    const retryAfterMs = retryable
+      ? (carriesRetryAfterMs ? error.retryAfterMs : classified.retryAfterMs) ?? null
+      : null;
     const completedAt = nowIso();
     withJobPersistenceLock(job.workspaceRoot, job.id, () => {
       if (isPersistenceBlocked(job.workspaceRoot, job.id)) {
@@ -330,6 +337,7 @@ export async function runTrackedJob(job, runner, options = {}) {
         completedAt,
         failureClass,
         retryable,
+        retryAfterMs,
         logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
       });
       upsertJob(job.workspaceRoot, {
@@ -340,7 +348,8 @@ export async function runTrackedJob(job, runner, options = {}) {
         errorMessage,
         completedAt,
         failureClass,
-        retryable
+        retryable,
+        retryAfterMs
       });
     });
     throw error;

@@ -10,7 +10,7 @@ import {
   resolveReviewTarget,
   resolveWorktreeWritableRoots
 } from "../plugins/codex/scripts/lib/git.mjs";
-import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+import { initGitRepo, makeTempDir, run, writeExecutable } from "./helpers.mjs";
 
 test("resolveWorktreeWritableRoots returns the common git dir for linked worktrees only", () => {
   const mainRepo = makeTempDir();
@@ -252,6 +252,192 @@ test("repo state identity detects trailing-newline-only changes to an untracked 
   fs.writeFileSync(path.join(cwd, "notes.txt"), "draft\n\n");
 
   assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
+});
+
+test("working-tree fingerprint batches hash-object processes", (t) => {
+  if (process.platform === "win32") {
+    t.skip("uses a POSIX sh git shim");
+    return;
+  }
+
+  const cwd = makeTempDir();
+  const binDir = makeTempDir();
+  const logPath = path.join(binDir, "git-args.log");
+  const trackedCount = 300;
+  const untrackedCount = 300;
+  const trackedPaths = Array.from(
+    { length: trackedCount },
+    (_, index) => `tracked-${String(index).padStart(3, "0")}.txt`
+  );
+  const untrackedPaths = Array.from(
+    { length: untrackedCount },
+    (_, index) => `untracked-${String(index).padStart(3, "0")}.txt`
+  );
+
+  initGitRepo(cwd);
+  for (const relativePath of trackedPaths) {
+    fs.writeFileSync(path.join(cwd, relativePath), "initial\n");
+  }
+  run("git", ["add", "--", ...trackedPaths], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  for (const relativePath of trackedPaths) {
+    fs.writeFileSync(path.join(cwd, relativePath), "dirty\n");
+  }
+  for (const relativePath of untrackedPaths) {
+    fs.writeFileSync(path.join(cwd, relativePath), "untracked\n");
+  }
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const realGitResult = run("which", ["git"], { cwd });
+  assert.equal(realGitResult.status, 0, realGitResult.stderr);
+  const realGitPath = fs.realpathSync(realGitResult.stdout.trim());
+  const shimPath = path.join(binDir, "git");
+  writeExecutable(
+    shimPath,
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' \"$1\" >> '${logPath.replaceAll("'", "'\\''")}'`,
+      `exec '${realGitPath.replaceAll("'", "'\\''")}' \"$@\"`,
+      ""
+    ].join("\n")
+  );
+
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = `${binDir}${path.delimiter}${previousPath ?? ""}`;
+    captureRepoStateIdentity(cwd, target);
+
+    const loggedCommands = fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/).filter(Boolean);
+    const hashObjectCalls = loggedCommands.filter((command) => command === "hash-object").length;
+    assert.ok(hashObjectCalls <= 8, `expected at most 8 hash-object calls, got ${hashObjectCalls}`);
+    assert.ok(
+      hashObjectCalls < (trackedCount + untrackedCount) / 10,
+      `expected hash-object calls far below ${trackedCount + untrackedCount} paths, got ${hashObjectCalls}`
+    );
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  }
+});
+
+test("working-tree fingerprint preserves chunk-to-OID alignment", () => {
+  const cwd = makeTempDir();
+  const fileCount = 300;
+  const relativePaths = Array.from(
+    { length: fileCount },
+    (_, index) => `chunk-${String(index).padStart(3, "0")}.txt`
+  );
+
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "tracked.txt"), "tracked\n");
+  run("git", ["add", "tracked.txt"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  for (const relativePath of relativePaths) {
+    fs.writeFileSync(path.join(cwd, relativePath), `${relativePath}\n`);
+  }
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  assert.equal(describeRepoStateDrift(cwd, target, identity), null);
+
+  const secondChunkPath = relativePaths.at(-1);
+  fs.writeFileSync(path.join(cwd, secondChunkPath), "changed\n");
+  assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
+});
+
+test("working-tree fingerprint handles awkward regular-file paths", () => {
+  const cwd = makeTempDir();
+  const trackedPaths = ["tracked space.txt", "tracked-é.txt", "-tracked-file.txt"];
+  const untrackedPaths = ["untracked space.txt", "untracked-é.txt", "-untracked-file.txt"];
+
+  initGitRepo(cwd);
+  for (const relativePath of trackedPaths) {
+    fs.writeFileSync(path.join(cwd, relativePath), "initial\n");
+  }
+  run("git", ["add", "--", ...trackedPaths], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  for (const relativePath of trackedPaths) {
+    fs.writeFileSync(path.join(cwd, relativePath), "dirty\n");
+  }
+  for (const relativePath of untrackedPaths) {
+    fs.writeFileSync(path.join(cwd, relativePath), "untracked\n");
+  }
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  assert.equal(describeRepoStateDrift(cwd, target, identity), null);
+
+  fs.writeFileSync(path.join(cwd, "-untracked-file.txt"), "changed\n");
+  assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
+});
+
+test("working-tree fingerprint preserves mixed-tree non-regular branches", () => {
+  const cwd = makeTempDir();
+  const outside = makeTempDir();
+  const trackedFile = path.join(cwd, "tracked.txt");
+  const trackedLink = path.join(cwd, "tracked-link");
+  const outsideTarget = path.join(outside, "outside.txt");
+  const outsideLink = path.join(cwd, "outside-link");
+  const binaryPath = path.join(cwd, "artifact.bin");
+  const largePath = path.join(cwd, "large.dat");
+  const originalLarge = Buffer.alloc(25 * 1024, 0x61);
+  const originalOutside = "outside v1\n";
+  const originalBinary = Buffer.from([0, 1, 2, 3]);
+
+  initGitRepo(cwd);
+  fs.writeFileSync(trackedFile, "tracked v1\n");
+  fs.symlinkSync("tracked-target.txt", trackedLink);
+  run("git", ["add", "--", "tracked.txt", "tracked-link"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(trackedFile, "tracked v2\n");
+  fs.writeFileSync(outsideTarget, originalOutside);
+  fs.symlinkSync(outsideTarget, outsideLink);
+  fs.writeFileSync(binaryPath, originalBinary);
+  fs.writeFileSync(largePath, originalLarge);
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  assert.equal(describeRepoStateDrift(cwd, target, identity), null);
+
+  const assertMutationDetected = (mutate, restore) => {
+    const before = captureRepoStateIdentity(cwd, target);
+    assert.equal(describeRepoStateDrift(cwd, target, before), null);
+    mutate();
+    assert.match(describeRepoStateDrift(cwd, target, before), /working tree moved/i);
+    restore();
+  };
+
+  assertMutationDetected(
+    () => fs.writeFileSync(trackedFile, "tracked v3\n"),
+    () => fs.writeFileSync(trackedFile, "tracked v2\n")
+  );
+  assertMutationDetected(
+    () => {
+      fs.unlinkSync(trackedLink);
+      fs.symlinkSync("tracked-target-changed.txt", trackedLink);
+    },
+    () => {
+      fs.unlinkSync(trackedLink);
+      fs.symlinkSync("tracked-target.txt", trackedLink);
+    }
+  );
+  assertMutationDetected(
+    () => fs.writeFileSync(outsideTarget, "outside v2\n"),
+    () => fs.writeFileSync(outsideTarget, originalOutside)
+  );
+  assertMutationDetected(
+    () => fs.writeFileSync(binaryPath, Buffer.from([0, 1, 2, 4])),
+    () => fs.writeFileSync(binaryPath, originalBinary)
+  );
+  assertMutationDetected(
+    () => fs.writeFileSync(largePath, Buffer.alloc(25 * 1024, 0x62)),
+    () => fs.writeFileSync(largePath, originalLarge)
+  );
+
+  assert.equal(describeRepoStateDrift(cwd, target, identity), null);
 });
 
 test("repo state identity detects further changes inside a dirty submodule", () => {

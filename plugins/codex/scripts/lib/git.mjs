@@ -8,6 +8,9 @@ import { formatCommandFailure, runCommand, runCommandChecked } from "./process.m
 const MAX_UNTRACKED_BYTES = 24 * 1024;
 const DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 const DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
+const HASH_OBJECT_MAX_BATCH_PATHS = 256;
+// Keep argv well below Windows' command-line limit, including fixed arguments and quoting.
+const HASH_OBJECT_MAX_BATCH_ARG_BYTES = 8 * 1024;
 
 // Git is directly executable on Windows. Repository-derived arguments must never pass through a shell.
 function git(cwd, args, options = {}) {
@@ -58,26 +61,32 @@ function hashNestedGitRepository(absolutePath) {
   return `submodule:${head.stdout.trim()}:${statusDigest}:${stagedDiffDigest}:${unstagedDiffDigest}`;
 }
 
-function hashWorkingTreePath(cwd, relativePath) {
+function classifyPath(cwd, relativePath, missingToken, nonRegularToken) {
   const absolutePath = path.join(cwd, relativePath);
   let stat;
   try {
     stat = fs.lstatSync(absolutePath);
   } catch {
-    return "missing";
+    return { type: "token", token: missingToken };
   }
 
-  if (stat.isSymbolicLink()) {
-    return `symlink:${createHash("sha256").update(fs.readlinkSync(absolutePath)).digest("hex")}`;
+  if (stat.isFile()) {
+    return { type: "regular" };
   }
-  if (stat.isDirectory()) {
-    return hashNestedGitRepository(absolutePath) ?? `other:${stat.mode}:${stat.size}`;
-  }
-  if (!stat.isFile()) {
+
+  return { type: "token", token: nonRegularToken(stat, absolutePath) };
+}
+
+function classifyWorkingTreePath(cwd, relativePath) {
+  return classifyPath(cwd, relativePath, "missing", (stat, absolutePath) => {
+    if (stat.isSymbolicLink()) {
+      return `symlink:${createHash("sha256").update(fs.readlinkSync(absolutePath)).digest("hex")}`;
+    }
+    if (stat.isDirectory()) {
+      return hashNestedGitRepository(absolutePath) ?? `other:${stat.mode}:${stat.size}`;
+    }
     return `other:${stat.mode}:${stat.size}`;
-  }
-
-  return `file:${gitChecked(cwd, ["hash-object", "--no-filters", "--", relativePath]).stdout.trim()}`;
+  });
 }
 
 function inspectUntrackedFile(cwd, relativePath) {
@@ -109,30 +118,64 @@ function inspectUntrackedFile(cwd, relativePath) {
   return { content: buffer.toString("utf8").trimEnd() };
 }
 
-function hashUntrackedPath(cwd, relativePath) {
-  const absolutePath = path.join(cwd, relativePath);
-  let stat;
-  try {
-    stat = fs.lstatSync(absolutePath);
-  } catch {
-    return "skipped:(skipped: broken symlink or unreadable file)";
-  }
-
-  if (stat.isFile()) {
-    const result = git(cwd, ["hash-object", "--no-filters", "--", relativePath]);
-    if (!result.error && result.status === 0) {
-      return `file:${result.stdout.trim()}`;
+function classifyUntrackedPath(cwd, relativePath) {
+  return classifyPath(
+    cwd,
+    relativePath,
+    "skipped:(skipped: broken symlink or unreadable file)",
+    () => {
+      // Preserve the existing handling for symlinks, directories, and other
+      // non-regular paths. Display limits must not affect regular-file identity.
+      const inspected = inspectUntrackedFile(cwd, relativePath);
+      if (inspected.skip) {
+        return `skipped:${inspected.skip}`;
+      }
+      return `file:${createHash("sha256").update(inspected.content).digest("hex")}`;
     }
-    return "skipped:(skipped: broken symlink or unreadable file)";
+  );
+}
+
+function hashRegularFile(cwd, relativePath, failureResults) {
+  const result = git(cwd, ["hash-object", "--no-filters", "--", relativePath]);
+  if (result.error || result.status !== 0) {
+    failureResults.set(relativePath, result);
+    return null;
+  }
+  return result.stdout.trim();
+}
+
+function hashRegularFilesBatched(cwd, relativePaths, failureResults) {
+  const hashes = new Map();
+
+  for (let offset = 0; offset < relativePaths.length;) {
+    const chunk = [];
+    let chunkBytes = 0;
+    while (offset < relativePaths.length && chunk.length < HASH_OBJECT_MAX_BATCH_PATHS) {
+      const relativePath = relativePaths[offset];
+      const pathBytes = Buffer.byteLength(relativePath, "utf8");
+      if (chunk.length > 0 && chunkBytes + pathBytes > HASH_OBJECT_MAX_BATCH_ARG_BYTES) {
+        break;
+      }
+      chunk.push(relativePath);
+      chunkBytes += pathBytes;
+      offset += 1;
+    }
+
+    const result = git(cwd, ["hash-object", "--no-filters", "--", ...chunk]);
+    const oids = !result.error && result.status === 0
+      ? result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+      : [];
+    if (!result.error && result.status === 0 && oids.length === chunk.length) {
+      chunk.forEach((relativePath, index) => hashes.set(relativePath, oids[index]));
+      continue;
+    }
+
+    for (const relativePath of chunk) {
+      hashes.set(relativePath, hashRegularFile(cwd, relativePath, failureResults));
+    }
   }
 
-  // Preserve the existing handling for symlinks, directories, and other
-  // non-regular paths. Display limits must not affect regular-file identity.
-  const inspected = inspectUntrackedFile(cwd, relativePath);
-  if (inspected.skip) {
-    return `skipped:${inspected.skip}`;
-  }
-  return `file:${createHash("sha256").update(inspected.content).digest("hex")}`;
+  return hashes;
 }
 
 function captureWorkingTreeDigest(cwd) {
@@ -144,13 +187,48 @@ function captureWorkingTreeDigest(cwd) {
   // working-tree content. Fold dirty tracked paths in so repeated edits cannot
   // resolve to the same identity.
   const trackedPaths = listUniqueFiles(gitNullTerminatedPaths(cwd, ["diff", "--name-only"]));
-  for (const relativePath of trackedPaths) {
-    digest.update(`\0tracked\0${relativePath}\0${hashWorkingTreePath(cwd, relativePath)}`);
-  }
+  const trackedClassifications = trackedPaths.map((relativePath) => ({
+    relativePath,
+    classification: classifyWorkingTreePath(cwd, relativePath)
+  }));
 
   const untrackedPaths = gitNullTerminatedPaths(cwd, ["ls-files", "--others", "--exclude-standard"]).sort();
-  for (const relativePath of untrackedPaths) {
-    digest.update(`\0untracked\0${relativePath}\0${hashUntrackedPath(cwd, relativePath)}`);
+  const untrackedClassifications = untrackedPaths.map((relativePath) => ({
+    relativePath,
+    classification: classifyUntrackedPath(cwd, relativePath)
+  }));
+
+  const regularPaths = [...trackedClassifications, ...untrackedClassifications]
+    .filter(({ classification }) => classification.type === "regular")
+    .map(({ relativePath }) => relativePath);
+  const hashFailures = new Map();
+  const hashes = hashRegularFilesBatched(cwd, regularPaths, hashFailures);
+
+  for (const { relativePath, classification } of trackedClassifications) {
+    let token = classification.token;
+    if (classification.type === "regular") {
+      const oid = hashes.get(relativePath);
+      if (oid === null) {
+        const failure = hashFailures.get(relativePath);
+        if (failure.error) {
+          throw failure.error;
+        }
+        throw new Error(formatCommandFailure(failure));
+      }
+      token = `file:${oid}`;
+    }
+    digest.update(`\0tracked\0${relativePath}\0${token}`);
+  }
+
+  for (const { relativePath, classification } of untrackedClassifications) {
+    let token = classification.token;
+    if (classification.type === "regular") {
+      const oid = hashes.get(relativePath);
+      token = oid === null
+        ? "skipped:(skipped: broken symlink or unreadable file)"
+        : `file:${oid}`;
+    }
+    digest.update(`\0untracked\0${relativePath}\0${token}`);
   }
 
   return digest.digest("hex");

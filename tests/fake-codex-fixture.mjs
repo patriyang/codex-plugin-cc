@@ -68,6 +68,10 @@ const MODEL_CATALOG = [
   { model: "gpt-5.3-codex-spark", efforts: ["low", "medium", "high", "xhigh"], isDefault: false }
 ];
 
+// The model the "model-at-capacity" behavior refuses. Matches the companion's
+// own default so a plain run hits it without passing --model.
+const CAPACITY_BOUND_MODEL = "gpt-5.5";
+
 function buildModelListResult() {
   return {
     data: MODEL_CATALOG.map((entry) => ({
@@ -582,6 +586,25 @@ rl.on("line", (line) => {
 	          break;
 	        }
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
+
+	        // Capacity rejections are transient and content-independent: the server
+	        // refuses one model outright, before any item is produced, and the same
+	        // prompt succeeds on another model.
+	        if (BEHAVIOR === "model-at-capacity" && (message.params.model ?? null) === CAPACITY_BOUND_MODEL) {
+	          state.capacityRejections = (state.capacityRejections || 0) + 1;
+	          saveState(state);
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "error",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              error: { message: "Selected model is at capacity. Please try a different model." }
+	            }
+	          });
+	          send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "failed") } });
+	          break;
+	        }
 
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
           ? structuredReviewPayload(prompt)

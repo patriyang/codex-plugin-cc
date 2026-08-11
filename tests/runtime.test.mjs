@@ -918,6 +918,53 @@ test("task reports the actual Codex auth error when the run is rejected", () => 
   assert.match(result.stderr, /authentication expired; run codex login/);
 });
 
+test("a capacity rejection retries on the designated backup model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "model-at-capacity");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "summarize the repo", "--json"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_FALLBACK_MODEL: "gpt-5.6-terra" }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.modelFallback.from, "gpt-5.5");
+  assert.equal(payload.modelFallback.to, "gpt-5.6-terra");
+  assert.equal(payload.modelFallback.reason, "capacity");
+
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(state.capacityRejections, 1);
+  assert.equal(state.lastTurnStart.model, "gpt-5.6-terra");
+});
+
+test("a capacity rejection with no designated backup model reports a retryable failure class", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "model-at-capacity");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  // No backup model designated and model discovery disabled, so the run has
+  // nowhere to fall back to and must say why in a machine-readable way.
+  const result = run("node", [SCRIPT, "task", "summarize the repo", "--json"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_FALLBACK_MODEL: "none" }
+  });
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.failureClass, "capacity");
+  assert.equal(payload.retryable, true);
+});
+
 test("review accepts the quoted raw argument style for built-in base-branch review", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -3573,6 +3620,108 @@ test("a background review reviews the target it was validated and named for", as
   const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
   assert.match(state.lastTurnStart.prompt, /export const value = 2;/);
   assert.doesNotMatch(state.lastTurnStart.prompt, /export const value = 3;/);
+});
+
+test("a background review refuses to review a repository that moved under its pinned target", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("uses the POSIX process-start-time probe to hold the worker");
+    return;
+  }
+
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const probeDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 1;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  run("git", ["checkout", "-b", "feature"], { cwd: repo });
+  // Dirty tree, so `--scope auto` resolves and pins the working tree.
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 2;\n");
+
+  const parentProbeLock = path.join(probeDir, "parent-lock");
+  const parentProbeStarted = path.join(probeDir, "parent-started");
+  const parentProbeRelease = path.join(probeDir, "parent-release");
+  const lockOwnerProbeLock = path.join(probeDir, "lock-owner-lock");
+  const workerProbeLock = path.join(probeDir, "worker-lock");
+  const workerProbeStarted = path.join(probeDir, "worker-started");
+  const workerProbeRelease = path.join(probeDir, "worker-release");
+  writeExecutable(
+    path.join(probeDir, "ps"),
+    [
+      "#!/bin/sh",
+      'if mkdir "$CODEX_TEST_PARENT_PROBE_LOCK" 2>/dev/null; then',
+      '  printf \'started\\n\' > "$CODEX_TEST_PARENT_PROBE_STARTED"',
+      '  while [ ! -e "$CODEX_TEST_PARENT_PROBE_RELEASE" ]; do sleep 0.01; done',
+      'elif mkdir "$CODEX_TEST_LOCK_OWNER_PROBE_LOCK" 2>/dev/null; then',
+      "  :",
+      'elif mkdir "$CODEX_TEST_WORKER_PROBE_LOCK" 2>/dev/null; then',
+      '  printf \'started\\n\' > "$CODEX_TEST_WORKER_PROBE_STARTED"',
+      '  while [ ! -e "$CODEX_TEST_WORKER_PROBE_RELEASE" ]; do sleep 0.01; done',
+      "fi",
+      "printf 'Mon Jul 27 12:34:56 2026\\n'"
+    ].join("\n") + "\n"
+  );
+  fs.writeFileSync(parentProbeRelease, "");
+
+  const baseEnv = buildEnv(binDir);
+  const env = {
+    ...baseEnv,
+    PATH: `${probeDir}:${baseEnv.PATH}`,
+    CODEX_TEST_PARENT_PROBE_LOCK: parentProbeLock,
+    CODEX_TEST_PARENT_PROBE_STARTED: parentProbeStarted,
+    CODEX_TEST_PARENT_PROBE_RELEASE: parentProbeRelease,
+    CODEX_TEST_LOCK_OWNER_PROBE_LOCK: lockOwnerProbeLock,
+    CODEX_TEST_WORKER_PROBE_LOCK: workerProbeLock,
+    CODEX_TEST_WORKER_PROBE_STARTED: workerProbeStarted,
+    CODEX_TEST_WORKER_PROBE_RELEASE: workerProbeRelease
+  };
+  t.after(() => {
+    if (!fs.existsSync(workerProbeRelease)) {
+      fs.writeFileSync(workerProbeRelease, "");
+    }
+  });
+
+  const launched = run("node", [SCRIPT, "adversarial-review", "--background", "--json"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  assert.equal(launchPayload.summary, "Adversarial Review working tree diff");
+
+  // Commit while the worker is held. The pinned working-tree target is still
+  // honored, but the content it names has moved into the branch diff.
+  await waitFor(() => fs.existsSync(workerProbeStarted), { timeoutMs: 10000, intervalMs: 10 });
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "feature work"], { cwd: repo });
+  fs.writeFileSync(workerProbeRelease, "");
+
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    { cwd: repo, env }
+  );
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+
+  // The whole point: Codex must never have been asked to review the empty
+  // post-commit working tree. Without this the review reports a clean result
+  // for a change it never saw.
+  const stateFile = path.join(binDir, "fake-codex-state.json");
+  const codexState = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, "utf8")) : {};
+  assert.equal(codexState.lastTurnStart ?? null, null, codexState.lastTurnStart?.prompt);
+
+  const job = JSON.parse(waitedStatus.stdout).job;
+  assert.equal(job.status, "failed", waitedStatus.stdout);
+  assert.match(job.errorMessage, /moved between enqueue and execution/);
+
+  // A controller must be able to tell a moved-repository failure from a real
+  // review failure without reading the message.
+  assert.equal(job.failureClass, "state-drift");
+  assert.equal(job.retryable, true);
 });
 
 test("review rejects --wait and --background together", () => {

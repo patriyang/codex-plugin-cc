@@ -32,6 +32,13 @@ function appendModelAttribution(lines, meta) {
   return lines.length > before;
 }
 
+function appendFailureClassification(lines, source, prefix = "") {
+  if (typeof source?.failureClass !== "string" || !source.failureClass.trim()) {
+    return;
+  }
+  lines.push(`${prefix}Failure class: ${source.failureClass}${source.retryable ? " (retryable)" : ""}`);
+}
+
 function validateReviewResultShape(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return "Expected a top-level JSON object.";
@@ -143,6 +150,7 @@ function pushJobDetails(lines, job, options = {}) {
   if (job.status === "failed" && job.errorMessage) {
     lines.push(`  Error: ${job.errorMessage}`);
   }
+  appendFailureClassification(lines, job, "  ");
   if (options.showElapsed && job.elapsed) {
     lines.push(`  Elapsed: ${job.elapsed}`);
   }
@@ -231,6 +239,7 @@ export function renderReviewResult(parsedResult, meta) {
     if (appendModelAttribution(lines, meta)) {
       lines.push("");
     }
+    appendFailureClassification(lines, parsedResult);
     lines.push("Codex did not return valid structured JSON.", "", `- Parse error: ${parsedResult.parseError}`);
 
     if (parsedResult.rawOutput) {
@@ -250,6 +259,7 @@ export function renderReviewResult(parsedResult, meta) {
       `Target: ${meta.targetLabel}`
     ];
     appendModelAttribution(lines, meta);
+    appendFailureClassification(lines, parsedResult);
     lines.push("Codex returned JSON with an unexpected review shape.", "", `- Validation error: ${validationError}`);
 
     if (parsedResult.rawOutput) {
@@ -269,6 +279,7 @@ export function renderReviewResult(parsedResult, meta) {
     `Target: ${meta.targetLabel}`
   ];
   appendModelAttribution(lines, meta);
+  appendFailureClassification(lines, parsedResult);
   lines.push(`Verdict: ${data.verdict}`, "", data.summary, "");
 
   if (findings.length === 0) {
@@ -306,6 +317,7 @@ export function renderNativeReviewResult(result, meta) {
     `Target: ${meta.targetLabel}`
   ];
   appendModelAttribution(lines, meta);
+  appendFailureClassification(lines, result);
   lines.push("");
 
   if (stdout) {
@@ -337,6 +349,7 @@ export function renderTaskResult(parsedResult, meta) {
     : [];
   const partialOutput = typeof parsedResult?.partialOutput === "string" ? parsedResult.partialOutput : "";
   const lines = [message];
+  appendFailureClassification(lines, parsedResult);
 
   if (touchedFiles.length > 0) {
     lines.push("", "Files already modified by this run:", "", ...touchedFiles.map((file) => `- ${file}`));
@@ -460,6 +473,8 @@ export function renderStoredJobResult(job, storedJob) {
   if (job.summary) {
     lines.push(`Summary: ${job.summary}`);
   }
+
+  appendFailureClassification(lines, storedJob?.failureClass ? storedJob : job);
 
   if (job.errorMessage) {
     lines.push("", job.errorMessage);

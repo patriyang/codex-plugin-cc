@@ -510,6 +510,8 @@ async function executeReviewRun(request) {
       target,
       model: request.model ?? null,
       effort: request.effort ?? null,
+      failureClass: result.failureClass,
+      retryable: result.retryable,
       threadId: result.threadId,
       sourceThreadId: result.sourceThreadId,
       codex: {
@@ -523,13 +525,17 @@ async function executeReviewRun(request) {
       {
         status: result.status,
         stdout: result.reviewText,
-        stderr: result.stderr
+        stderr: result.stderr,
+        failureClass: result.failureClass,
+        retryable: result.retryable
       },
       { reviewLabel: reviewName, targetLabel: target.label, model: request.model, reasoningSummary: result.reasoningSummary }
     );
 
     return {
       exitStatus: result.status,
+      failureClass: result.failureClass,
+      retryable: result.retryable,
       threadId: result.threadId,
       turnId: result.turnId,
       payload,
@@ -557,7 +563,9 @@ async function executeReviewRun(request) {
   });
   const parsed = parseStructuredOutput(result.status === 0 ? result.finalMessage : "", {
     status: result.status,
-    failureMessage: result.error?.message ?? result.stderr
+    failureMessage: result.error?.message ?? result.stderr,
+    failureClass: result.failureClass,
+    retryable: result.retryable
   });
   const payload = {
     review: reviewName,
@@ -565,6 +573,8 @@ async function executeReviewRun(request) {
     model: request.model ?? null,
     effort: request.effort ?? null,
     effortWarning: result.effortWarning,
+    failureClass: result.failureClass,
+    retryable: result.retryable,
     threadId: result.threadId,
     context: {
       repoRoot: context.repoRoot,
@@ -585,6 +595,8 @@ async function executeReviewRun(request) {
 
   return {
     exitStatus: result.status,
+    failureClass: result.failureClass,
+    retryable: result.retryable,
     threadId: result.threadId,
     turnId: result.turnId,
     payload,
@@ -650,6 +662,8 @@ async function executeTaskRun(request) {
       rawOutput,
       partialOutput,
       failureMessage,
+      failureClass: result.failureClass,
+      retryable: result.retryable,
       touchedFiles: result.touchedFiles,
       reasoningSummary: result.reasoningSummary
     },
@@ -661,6 +675,8 @@ async function executeTaskRun(request) {
   );
   const payload = {
     status: result.status,
+    failureClass: result.failureClass,
+    retryable: result.retryable,
     threadId: result.threadId,
     rawOutput,
     partialOutput,
@@ -672,6 +688,8 @@ async function executeTaskRun(request) {
 
   return {
     exitStatus: result.status,
+    failureClass: result.failureClass,
+    retryable: result.retryable,
     threadId: result.threadId,
     turnId: result.turnId,
     payload,

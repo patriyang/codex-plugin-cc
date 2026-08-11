@@ -49,6 +49,7 @@ import path from "node:path";
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
+import { classifyFailureMessage } from "./failure-class.mjs";
 import { resolveWorktreeWritableRoots } from "./git.mjs";
 import { binaryAvailable } from "./process.mjs";
 
@@ -1491,8 +1492,15 @@ export async function runAppServerReview(cwd, options = {}) {
       }
     );
 
+    const status = buildResultStatus(turnState);
+    const failure = status === 0
+      ? { failureClass: null, retryable: false }
+      : classifyFailureMessage(turnState.error?.message);
+
     return {
-      status: buildResultStatus(turnState),
+      status,
+      failureClass: failure.failureClass,
+      retryable: failure.retryable,
       threadId: turnState.threadId,
       sourceThreadId,
       turnId: turnState.turnId,
@@ -1658,8 +1666,15 @@ export async function runAppServerTurn(cwd, options = {}) {
       { onProgress: options.onProgress }
     );
 
+    const status = buildResultStatus(turnState);
+    const failure = status === 0
+      ? { failureClass: null, retryable: false }
+      : classifyFailureMessage(turnState.error?.message);
+
     return {
-      status: buildResultStatus(turnState),
+      status,
+      failureClass: failure.failureClass,
+      retryable: failure.retryable,
       threadId,
       turnId: turnState.turnId,
       finalMessage: turnState.lastAgentMessage,

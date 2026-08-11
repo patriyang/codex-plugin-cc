@@ -19,6 +19,7 @@ import {
 import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
 import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import { runAppServerTurn } from "../plugins/codex/scripts/lib/codex.mjs";
+import { classifyFailureMessage } from "../plugins/codex/scripts/lib/failure-class.mjs";
 import { getProcessStartTime } from "../plugins/codex/scripts/lib/process.mjs";
 import { splitRawArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
 import {
@@ -916,6 +917,21 @@ test("task reports the actual Codex auth error when the run is rejected", () => 
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /authentication expired; run codex login/);
+});
+
+test("classifyFailureMessage recognizes capacity failures conservatively", () => {
+  assert.deepEqual(classifyFailureMessage("The selected model is currently overloaded. Try a different model."), {
+    failureClass: "capacity",
+    retryable: true
+  });
+  assert.deepEqual(classifyFailureMessage("Authentication expired."), {
+    failureClass: null,
+    retryable: false
+  });
+  assert.deepEqual(classifyFailureMessage(null), {
+    failureClass: null,
+    retryable: false
+  });
 });
 
 test("a capacity rejection retries on the designated backup model", () => {

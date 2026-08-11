@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import process from "node:process";
 
+import { classifyFailureMessage } from "./failure-class.mjs";
 import { getProcessStartTime } from "./process.mjs";
 import {
   listJobs,
@@ -265,6 +266,8 @@ export async function runTrackedJob(job, runner, options = {}) {
   try {
     const execution = await runner();
     const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
+    const failureClass = completionStatus === "completed" ? null : execution.failureClass ?? null;
+    const retryable = completionStatus === "completed" ? false : execution.retryable === true;
     const completedAt = nowIso();
     if (isPersistenceBlocked(job.workspaceRoot, job.id)) {
       return execution;
@@ -282,6 +285,8 @@ export async function runTrackedJob(job, runner, options = {}) {
         pid: null,
         phase: completionStatus === "completed" ? "done" : "failed",
         completedAt,
+        failureClass,
+        retryable,
         result: execution.payload,
         rendered: execution.rendered
       });
@@ -293,7 +298,9 @@ export async function runTrackedJob(job, runner, options = {}) {
         summary: execution.summary,
         phase: completionStatus === "completed" ? "done" : "failed",
         pid: null,
-        completedAt
+        completedAt,
+        failureClass,
+        retryable
       });
       return true;
     });
@@ -303,6 +310,11 @@ export async function runTrackedJob(job, runner, options = {}) {
     return execution;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    const classified = classifyFailureMessage(errorMessage);
+    const carriesFailureClass = error != null && Object.prototype.hasOwnProperty.call(Object(error), "failureClass");
+    const carriesRetryable = error != null && Object.prototype.hasOwnProperty.call(Object(error), "retryable");
+    const failureClass = carriesFailureClass ? error.failureClass : classified.failureClass;
+    const retryable = carriesRetryable ? error.retryable : classified.retryable;
     const completedAt = nowIso();
     withJobPersistenceLock(job.workspaceRoot, job.id, () => {
       if (isPersistenceBlocked(job.workspaceRoot, job.id)) {
@@ -316,6 +328,8 @@ export async function runTrackedJob(job, runner, options = {}) {
         errorMessage,
         pid: null,
         completedAt,
+        failureClass,
+        retryable,
         logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
       });
       upsertJob(job.workspaceRoot, {
@@ -324,7 +338,9 @@ export async function runTrackedJob(job, runner, options = {}) {
         phase: "failed",
         pid: null,
         errorMessage,
-        completedAt
+        completedAt,
+        failureClass,
+        retryable
       });
     });
     throw error;

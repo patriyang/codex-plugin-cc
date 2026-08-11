@@ -428,6 +428,7 @@ rl.on("line", (line) => {
           throw new Error("thread/start.persistFullHistory requires experimentalApi capability");
         }
         const thread = nextThread(state, message.params.cwd, message.params.ephemeral);
+        thread.model = message.params.model || "gpt-5.4";
         state.lastThreadStart = { model: message.params.model ?? null, sandbox: message.params.sandbox ?? null, approvalPolicy: message.params.approvalPolicy ?? null, config: message.params.config };
         saveState(state);
         send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false }, reasoningEffort: null } });
@@ -533,7 +534,28 @@ rl.on("line", (line) => {
           send({ method: "thread/started", params: { thread: { id: reviewThread.id } } });
         }
         const turnId = nextTurnId(state);
+        state.reviewStarts = (state.reviewStarts || 0) + 1;
+        state.lastReviewStart = { threadId: thread.id, turnId, model: thread.model ?? null };
+        saveState(state);
         send({ id: message.id, result: { turn: buildTurn(turnId), reviewThreadId: reviewThread.id } });
+        if (
+          BEHAVIOR === "all-models-at-capacity" ||
+          (BEHAVIOR === "model-at-capacity" && thread.model === CAPACITY_BOUND_MODEL)
+        ) {
+          state.capacityRejections = (state.capacityRejections || 0) + 1;
+          saveState(state);
+          send({ method: "turn/started", params: { threadId: reviewThread.id, turn: buildTurn(turnId) } });
+          send({
+            method: "error",
+            params: {
+              threadId: reviewThread.id,
+              turnId,
+              error: { message: "Selected model is at capacity. Please try a different model." }
+            }
+          });
+          send({ method: "turn/completed", params: { threadId: reviewThread.id, turn: buildTurn(turnId, "failed") } });
+          break;
+        }
         emitTurnCompleted(reviewThread.id, turnId, [
           {
             started: { type: "enteredReviewMode", id: turnId, review: "current changes" }
@@ -594,13 +616,18 @@ rl.on("line", (line) => {
 	        // "-after-output" and "-after-command-start" variants below emit it
 	        // once work is already under way, which is what the retry guard has to
 	        // recognize as unsafe.
+	        const fallbackCapacityAfterCommand =
+	          BEHAVIOR === "fallback-at-capacity-after-command-start" &&
+	          (message.params.model ?? null) !== CAPACITY_BOUND_MODEL;
 	        if (
 	          BEHAVIOR === "all-models-at-capacity" ||
 	          ((BEHAVIOR === "model-at-capacity" ||
 	            BEHAVIOR === "model-at-capacity-after-output" ||
 	            BEHAVIOR === "model-at-capacity-after-command-start" ||
-	            BEHAVIOR === "capacity-then-auth-failure") &&
-	            (message.params.model ?? null) === CAPACITY_BOUND_MODEL)
+	            BEHAVIOR === "capacity-then-auth-failure" ||
+	            BEHAVIOR === "fallback-at-capacity-after-command-start") &&
+	            (message.params.model ?? null) === CAPACITY_BOUND_MODEL) ||
+	          fallbackCapacityAfterCommand
 	        ) {
 	          state.capacityRejections = (state.capacityRejections || 0) + 1;
 	          saveState(state);
@@ -632,7 +659,7 @@ rl.on("line", (line) => {
 	              }
 	            });
 	          }
-	          if (BEHAVIOR === "model-at-capacity-after-command-start") {
+	          if (BEHAVIOR === "model-at-capacity-after-command-start" || fallbackCapacityAfterCommand) {
 	            send({
 	              method: "item/started",
 	              params: {

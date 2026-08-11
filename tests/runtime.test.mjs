@@ -570,6 +570,57 @@ test("native review reports the default model without effort attribution", () =>
   assert.doesNotMatch(result.stdout, /^Effort:/m);
 });
 
+test("native review falls back after an empty capacity rejection and attributes the effective model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "model-at-capacity");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+  const env = { ...buildEnv(binDir), CODEX_COMPANION_FALLBACK_MODEL: "gpt-5.6-terra" };
+
+  const jsonResult = run("node", [SCRIPT, "review", "--json"], { cwd: repo, env });
+
+  assert.equal(jsonResult.status, 0, jsonResult.stderr);
+  const payload = JSON.parse(jsonResult.stdout);
+  assert.equal(payload.model, "gpt-5.6-terra");
+  assert.deepEqual(payload.modelFallback, {
+    from: "gpt-5.5",
+    to: "gpt-5.6-terra",
+    reason: "capacity"
+  });
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(state.reviewStarts, 2);
+  assert.equal(state.lastReviewStart.model, "gpt-5.6-terra");
+
+  const renderedResult = run("node", [SCRIPT, "review"], { cwd: repo, env });
+  assert.equal(renderedResult.status, 0, renderedResult.stderr);
+  assert.match(renderedResult.stdout, /^Model: gpt-5\.6-terra$/m);
+  assert.doesNotMatch(renderedResult.stdout, /^Model: gpt-5\.5$/m);
+});
+
+test("structured review attributes a successful fallback to the effective model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "model-at-capacity");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const result = run("node", [SCRIPT, "adversarial-review"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_FALLBACK_MODEL: "gpt-5.6-terra" }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Model: gpt-5\.6-terra$/m);
+  assert.doesNotMatch(result.stdout, /^Model: gpt-5\.5$/m);
+});
+
 test("deep-review JSON reports the resolved model and effort", () => {
   const { repo, binDir } = setupDeepReviewRepo();
 
@@ -1226,13 +1277,43 @@ test("a capacity failure after a command starts does not retry", () => {
   assert.notEqual(result.status, 0);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.failureClass, "capacity");
-  assert.equal(payload.retryable, true);
+  assert.equal(payload.retryable, false);
   assert.equal(payload.modelFallback, null);
 
   const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
   assert.equal(state.capacityRejections, 1);
   assert.equal(state.turnStarts, 1);
   assert.equal(state.lastTurnStart.model, "gpt-5.5");
+});
+
+test("a fallback capacity failure after a command starts is not retryable", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "fallback-at-capacity-after-command-start");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "--write", "apply the change", "--json"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_FALLBACK_MODEL: "gpt-5.6-terra" }
+  });
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.failureClass, "capacity");
+  assert.equal(payload.retryable, false);
+  assert.deepEqual(payload.modelFallback, {
+    from: "gpt-5.5",
+    to: "gpt-5.6-terra",
+    reason: "capacity"
+  });
+
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(state.capacityRejections, 2);
+  assert.equal(state.turnStarts, 2);
+  assert.equal(state.lastTurnStart.model, "gpt-5.6-terra");
 });
 
 test("a capacity failure after producing output does not retry", () => {
@@ -1252,7 +1333,7 @@ test("a capacity failure after producing output does not retry", () => {
   assert.notEqual(result.status, 0);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.failureClass, "capacity");
-  assert.equal(payload.retryable, true);
+  assert.equal(payload.retryable, false);
   assert.equal(payload.modelFallback, null);
 
   const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));

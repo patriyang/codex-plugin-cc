@@ -538,10 +538,11 @@ async function executeReviewRun(request) {
       model: request.model,
       onProgress: request.onProgress
     });
+    const effectiveModel = result.modelFallback?.to ?? request.model;
     const payload = {
       review: reviewName,
       target,
-      model: request.model ?? null,
+      model: effectiveModel ?? null,
       effort: request.effort ?? null,
       failureClass: result.failureClass,
       modelFallback: result.modelFallback ?? null,
@@ -563,7 +564,7 @@ async function executeReviewRun(request) {
         failureClass: result.failureClass,
         retryable: result.retryable
       },
-      { reviewLabel: reviewName, targetLabel: target.label, model: request.model, reasoningSummary: result.reasoningSummary }
+      { reviewLabel: reviewName, targetLabel: target.label, model: effectiveModel, reasoningSummary: result.reasoningSummary }
     );
 
     return {
@@ -595,6 +596,7 @@ async function executeReviewRun(request) {
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
   });
+  const effectiveModel = result.modelFallback?.to ?? request.model;
   const parsed = parseStructuredOutput(result.status === 0 ? result.finalMessage : "", {
     status: result.status,
     failureMessage: result.error?.message ?? result.stderr,
@@ -604,7 +606,7 @@ async function executeReviewRun(request) {
   const payload = {
     review: reviewName,
     target,
-    model: request.model ?? null,
+    model: effectiveModel ?? null,
     effort: request.effort ?? null,
     effortWarning: result.effortWarning,
     failureClass: result.failureClass,
@@ -638,7 +640,7 @@ async function executeReviewRun(request) {
     rendered: renderReviewResult(parsed, {
       reviewLabel: reviewName,
       targetLabel: context.target.label,
-      model: request.model,
+      model: effectiveModel,
       effort: request.effort ?? "codex default",
       reasoningSummary: result.reasoningSummary
     }),

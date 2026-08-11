@@ -231,6 +231,34 @@ test("repo state identity detects further changes inside a dirty submodule", () 
   assert.match(describeRepoStateDrift(cwd, target, identity), /working tree moved/i);
 });
 
+test("repo state identity hashes staged and unstaged diff content inside a dirty submodule", () => {
+  const cwd = makeTempDir();
+  const nestedRepo = path.join(cwd, "vendor", "dependency");
+  initGitRepo(cwd);
+  fs.mkdirSync(nestedRepo, { recursive: true });
+  initGitRepo(nestedRepo);
+  fs.writeFileSync(path.join(nestedRepo, "version.txt"), "v1\n");
+  run("git", ["add", "version.txt"], { cwd: nestedRepo });
+  run("git", ["commit", "-m", "dependency v1"], { cwd: nestedRepo });
+  run("git", ["add", "vendor/dependency"], { cwd });
+  run("git", ["commit", "-m", "track dependency"], { cwd });
+
+  fs.writeFileSync(path.join(nestedRepo, "version.txt"), "v2 unstaged\n");
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const unstagedIdentity = captureRepoStateIdentity(cwd, target);
+  fs.writeFileSync(path.join(nestedRepo, "version.txt"), "v3 unstaged\n");
+  assert.match(describeRepoStateDrift(cwd, target, unstagedIdentity), /working tree moved/i);
+
+  run("git", ["add", "version.txt"], { cwd: nestedRepo });
+  run("git", ["commit", "-m", "dependency v3"], { cwd: nestedRepo });
+  fs.writeFileSync(path.join(nestedRepo, "version.txt"), "v4 staged\n");
+  run("git", ["add", "version.txt"], { cwd: nestedRepo });
+  const stagedIdentity = captureRepoStateIdentity(cwd, target);
+  fs.writeFileSync(path.join(nestedRepo, "version.txt"), "v5 staged\n");
+  run("git", ["add", "version.txt"], { cwd: nestedRepo });
+  assert.match(describeRepoStateDrift(cwd, target, stagedIdentity), /working tree moved/i);
+});
+
 test("repo state identity detects changes through an untracked symlink", () => {
   const cwd = makeTempDir();
   const outside = makeTempDir();

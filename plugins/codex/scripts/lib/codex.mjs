@@ -230,6 +230,16 @@ function collectTouchedFiles(fileChanges) {
   return [...paths];
 }
 
+function turnProducedNothing(turnState) {
+  return (
+    turnState.itemActivityCount === 0 &&
+    turnState.messages.length === 0 &&
+    turnState.fileChanges.length === 0 &&
+    turnState.commandExecutions.length === 0 &&
+    !turnState.lastAgentMessage
+  );
+}
+
 function normalizeReasoningText(text) {
   return String(text ?? "").replace(/\s+/g, " ").trim();
 }
@@ -1462,41 +1472,78 @@ export async function runAppServerReview(cwd, options = {}) {
   }
 
   return withAppServer(cwd, async (client) => {
-    emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
-    const thread = await startThread(client, cwd, {
-      model: options.model,
-      sandbox: "read-only",
-      ephemeral: true,
-      threadName: options.threadName
-    });
-    const sourceThreadId = thread.thread.id;
-    emitProgress(options.onProgress, `Thread ready (${sourceThreadId}).`, "starting", {
-      threadId: sourceThreadId
-    });
     const delivery = options.delivery ?? "inline";
+    const captureModelReview = async (model) => {
+      emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
+      const thread = await startThread(client, cwd, {
+        model,
+        sandbox: "read-only",
+        ephemeral: true,
+        threadName: options.threadName
+      });
+      const sourceThreadId = thread.thread.id;
+      emitProgress(options.onProgress, `Thread ready (${sourceThreadId}).`, "starting", {
+        threadId: sourceThreadId
+      });
 
-    const turnState = await captureTurn(
-      client,
-      sourceThreadId,
-      () =>
-        client.request("review/start", {
-          threadId: sourceThreadId,
-          delivery,
-          target: options.target
-        }),
-      {
-        onProgress: options.onProgress,
-        onResponse(response, state) {
-          if (response.reviewThreadId) {
-            state.threadIds.add(response.reviewThreadId);
-            if (delivery === "detached") {
-              state.threadId = response.reviewThreadId;
+      const turnState = await captureTurn(
+        client,
+        sourceThreadId,
+        () =>
+          client.request("review/start", {
+            threadId: sourceThreadId,
+            delivery,
+            target: options.target
+          }),
+        {
+          onProgress: options.onProgress,
+          onResponse(response, state) {
+            if (response.reviewThreadId) {
+              state.threadIds.add(response.reviewThreadId);
+              if (delivery === "detached") {
+                state.threadId = response.reviewThreadId;
+              }
             }
           }
         }
-      }
-    );
+      );
+      return {
+        resolvedModel: thread.model ?? model ?? null,
+        sourceThreadId,
+        turnState
+      };
+    };
 
+    let reviewAttempt = await captureModelReview(options.model ?? null);
+    const failedModel = reviewAttempt.resolvedModel;
+    const initialStatus = buildResultStatus(reviewAttempt.turnState);
+    const initialFailure = initialStatus === 0
+      ? { failureClass: null, retryable: false }
+      : classifyFailureMessage(extractErrorMessage(reviewAttempt.turnState.error));
+    let modelFallback = null;
+
+    if (
+      initialStatus !== 0 &&
+      initialFailure.failureClass === CAPACITY &&
+      turnProducedNothing(reviewAttempt.turnState)
+    ) {
+      const fallbackModel = await resolveFallbackModel(client, {
+        failedModel,
+        workspaceRoot: cwd,
+        env: process.env
+      });
+      if (fallbackModel && fallbackModel !== failedModel) {
+        emitProgress(
+          options.onProgress,
+          `Model ${failedModel} is at capacity; retrying on ${fallbackModel}.`,
+          "starting"
+        );
+        reviewAttempt = await captureModelReview(fallbackModel);
+        modelFallback = { from: failedModel, to: fallbackModel, reason: "capacity" };
+      }
+    }
+
+    const { sourceThreadId, turnState } = reviewAttempt;
     const status = buildResultStatus(turnState);
     const failure = status === 0
       ? { failureClass: null, retryable: false }
@@ -1505,7 +1552,8 @@ export async function runAppServerReview(cwd, options = {}) {
     return {
       status,
       failureClass: failure.failureClass,
-      retryable: failure.retryable,
+      retryable: failure.retryable && turnProducedNothing(turnState),
+      modelFallback,
       threadId: turnState.threadId,
       sourceThreadId,
       turnId: turnState.turnId,
@@ -1720,13 +1768,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       : classifyFailureMessage(extractErrorMessage(turnState.error));
     let modelFallback = null;
 
-    const turnProducedNothing =
-      turnState.itemActivityCount === 0 &&
-      turnState.messages.length === 0 &&
-      turnState.fileChanges.length === 0 &&
-      turnState.commandExecutions.length === 0 &&
-      !turnState.lastAgentMessage;
-    if (initialStatus !== 0 && initialFailure.failureClass === CAPACITY && turnProducedNothing) {
+    if (initialStatus !== 0 && initialFailure.failureClass === CAPACITY && turnProducedNothing(turnState)) {
       const fallbackModel = await resolveFallbackModel(client, {
         failedModel,
         workspaceRoot: cwd,
@@ -1751,7 +1793,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     return {
       status,
       failureClass: failure.failureClass,
-      retryable: failure.retryable,
+      retryable: failure.retryable && turnProducedNothing(turnState),
       modelFallback,
       threadId,
       turnId: turnState.turnId,

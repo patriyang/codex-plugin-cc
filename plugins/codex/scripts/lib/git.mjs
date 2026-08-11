@@ -41,12 +41,21 @@ function hashNestedGitRepository(absolutePath) {
 
   const head = git(absolutePath, ["rev-parse", "HEAD"]);
   const status = git(absolutePath, ["status", "--porcelain", "--untracked-files=all"]);
-  if (head.error || head.status !== 0 || status.error || status.status !== 0) {
+  const stagedDiff = git(absolutePath, ["diff", "--cached", "--binary", "--no-ext-diff"]);
+  const unstagedDiff = git(absolutePath, ["diff", "--binary", "--no-ext-diff"]);
+  if (
+    head.error || head.status !== 0 ||
+    status.error || status.status !== 0 ||
+    stagedDiff.error || stagedDiff.status !== 0 ||
+    unstagedDiff.error || unstagedDiff.status !== 0
+  ) {
     return null;
   }
 
   const statusDigest = createHash("sha256").update(status.stdout).digest("hex");
-  return `submodule:${head.stdout.trim()}:${statusDigest}`;
+  const stagedDiffDigest = createHash("sha256").update(stagedDiff.stdout).digest("hex");
+  const unstagedDiffDigest = createHash("sha256").update(unstagedDiff.stdout).digest("hex");
+  return `submodule:${head.stdout.trim()}:${statusDigest}:${stagedDiffDigest}:${unstagedDiffDigest}`;
 }
 
 function hashWorkingTreePath(cwd, relativePath) {

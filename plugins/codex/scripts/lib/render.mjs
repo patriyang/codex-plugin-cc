@@ -39,19 +39,46 @@ function failureClassificationLine(source) {
   return `Failure class: ${source.failureClass}${source.retryable ? " (retryable)" : ""}`;
 }
 
+function failureRetryAfterLine(source) {
+  if (typeof source?.retryAfterMs !== "number" || !Number.isFinite(source.retryAfterMs) || source.retryAfterMs <= 0) {
+    return null;
+  }
+  return `Retry after: ${source.retryAfterMs / 1000}s`;
+}
+
 function appendFailureClassification(lines, source, prefix = "") {
   const line = failureClassificationLine(source);
   if (line) {
     lines.push(`${prefix}${line}`);
+    const retryAfterLine = failureRetryAfterLine(source);
+    if (retryAfterLine) {
+      lines.push(`${prefix}${retryAfterLine}`);
+    }
   }
 }
 
 function appendFailureClassificationToOutput(output, source) {
   const line = failureClassificationLine(source);
-  if (!line || output.split(/\r?\n/).includes(line)) {
+  const retryAfterLine = failureRetryAfterLine(source);
+  const existingLines = output.split(/\r?\n/);
+  const hasLine = line && existingLines.includes(line);
+  const hasRetryAfterLine = retryAfterLine && existingLines.includes(retryAfterLine);
+  if ((!line || hasLine) && (!retryAfterLine || hasRetryAfterLine)) {
     return output;
   }
-  return `${output.trimEnd()}\n\n${line}\n`;
+  if (line && retryAfterLine && hasLine && !hasRetryAfterLine) {
+    const lineIndex = existingLines.indexOf(line);
+    existingLines.splice(lineIndex + 1, 0, retryAfterLine);
+    return existingLines.join("\n");
+  }
+  const additions = [];
+  if (line && !hasLine) {
+    additions.push(line);
+  }
+  if (retryAfterLine && !hasRetryAfterLine) {
+    additions.push(retryAfterLine);
+  }
+  return `${output.trimEnd()}\n\n${additions.join("\n")}\n`;
 }
 
 function validateReviewResultShape(data) {

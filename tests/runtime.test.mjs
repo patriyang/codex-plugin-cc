@@ -19,7 +19,7 @@ import {
 import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
 import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import { resolveFallbackModel, runAppServerTurn } from "../plugins/codex/scripts/lib/codex.mjs";
-import { classifyFailureMessage } from "../plugins/codex/scripts/lib/failure-class.mjs";
+import { CAPACITY_RETRY_AFTER_MS, classifyFailureMessage } from "../plugins/codex/scripts/lib/failure-class.mjs";
 import { captureRepoStateIdentity } from "../plugins/codex/scripts/lib/git.mjs";
 import { getProcessStartTime } from "../plugins/codex/scripts/lib/process.mjs";
 import { splitRawArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
@@ -1089,7 +1089,8 @@ test("classifyFailureMessage recognizes capacity failures conservatively", () =>
   for (const message of capacityMessages) {
     assert.deepEqual(classifyFailureMessage(message), {
       failureClass: "capacity",
-      retryable: true
+      retryable: true,
+      retryAfterMs: CAPACITY_RETRY_AFTER_MS
     }, message);
   }
 
@@ -1106,14 +1107,16 @@ test("classifyFailureMessage recognizes capacity failures conservatively", () =>
   for (const message of ordinaryMessages) {
     assert.deepEqual(classifyFailureMessage(message), {
       failureClass: null,
-      retryable: false
+      retryable: false,
+      retryAfterMs: null
     }, message);
   }
 
   for (const value of [null, undefined, 42, { message: "The selected model is at capacity." }]) {
     assert.deepEqual(classifyFailureMessage(value), {
       failureClass: null,
-      retryable: false
+      retryable: false,
+      retryAfterMs: null
     });
   }
 });

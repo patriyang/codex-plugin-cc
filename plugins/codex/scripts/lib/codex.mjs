@@ -50,7 +50,7 @@ import path from "node:path";
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
-import { CAPACITY, classifyFailureMessage } from "./failure-class.mjs";
+import { CAPACITY, STALLED, classifyFailureMessage } from "./failure-class.mjs";
 import { resolveWorktreeWritableRoots } from "./git.mjs";
 import { binaryAvailable } from "./process.mjs";
 import { getConfig } from "./state.mjs";
@@ -1518,8 +1518,10 @@ export async function runAppServerReview(cwd, options = {}) {
     const failedModel = reviewAttempt.resolvedModel;
     const initialStatus = buildResultStatus(reviewAttempt.turnState);
     const initialFailure = initialStatus === 0
-      ? { failureClass: null, retryable: false }
-      : classifyFailureMessage(extractErrorMessage(reviewAttempt.turnState.error));
+      ? { failureClass: null, retryable: false, retryAfterMs: null }
+      : reviewAttempt.turnState.stalled === true
+        ? { failureClass: STALLED, retryable: turnProducedNothing(reviewAttempt.turnState), retryAfterMs: null }
+        : classifyFailureMessage(extractErrorMessage(reviewAttempt.turnState.error));
     let modelFallback = null;
 
     if (
@@ -1546,13 +1548,17 @@ export async function runAppServerReview(cwd, options = {}) {
     const { sourceThreadId, turnState } = reviewAttempt;
     const status = buildResultStatus(turnState);
     const failure = status === 0
-      ? { failureClass: null, retryable: false }
-      : classifyFailureMessage(extractErrorMessage(turnState.error));
+      ? { failureClass: null, retryable: false, retryAfterMs: null }
+      : turnState.stalled === true
+        ? { failureClass: STALLED, retryable: turnProducedNothing(turnState), retryAfterMs: null }
+        : classifyFailureMessage(extractErrorMessage(turnState.error));
+    const retryable = failure.retryable && turnProducedNothing(turnState);
 
     return {
       status,
       failureClass: failure.failureClass,
-      retryable: failure.retryable && turnProducedNothing(turnState),
+      retryable,
+      retryAfterMs: retryable ? failure.retryAfterMs : null,
       modelFallback,
       threadId: turnState.threadId,
       sourceThreadId,
@@ -1764,8 +1770,10 @@ export async function runAppServerTurn(cwd, options = {}) {
     let turnState = await captureModelTurn(options.model ?? null);
     const initialStatus = buildResultStatus(turnState);
     const initialFailure = initialStatus === 0
-      ? { failureClass: null, retryable: false }
-      : classifyFailureMessage(extractErrorMessage(turnState.error));
+      ? { failureClass: null, retryable: false, retryAfterMs: null }
+      : turnState.stalled === true
+        ? { failureClass: STALLED, retryable: turnProducedNothing(turnState), retryAfterMs: null }
+        : classifyFailureMessage(extractErrorMessage(turnState.error));
     let modelFallback = null;
 
     if (initialStatus !== 0 && initialFailure.failureClass === CAPACITY && turnProducedNothing(turnState)) {
@@ -1787,13 +1795,17 @@ export async function runAppServerTurn(cwd, options = {}) {
 
     const status = buildResultStatus(turnState);
     const failure = status === 0
-      ? { failureClass: null, retryable: false }
-      : classifyFailureMessage(extractErrorMessage(turnState.error));
+      ? { failureClass: null, retryable: false, retryAfterMs: null }
+      : turnState.stalled === true
+        ? { failureClass: STALLED, retryable: turnProducedNothing(turnState), retryAfterMs: null }
+        : classifyFailureMessage(extractErrorMessage(turnState.error));
+    const retryable = failure.retryable && turnProducedNothing(turnState);
 
     return {
       status,
       failureClass: failure.failureClass,
-      retryable: failure.retryable && turnProducedNothing(turnState),
+      retryable,
+      retryAfterMs: retryable ? failure.retryAfterMs : null,
       modelFallback,
       threadId,
       turnId: turnState.turnId,

@@ -250,6 +250,24 @@ test("renderStoredJobResult shows one failure classification line only for faile
   assert.doesNotMatch(completedOutput, /^Failure class:/m);
 });
 
+test("renderStoredJobResult includes the log path when an error has no captured payload", () => {
+  const output = renderStoredJobResult(
+    {
+      id: "review-empty-error",
+      status: "failed",
+      title: "Codex Review",
+      errorMessage: "Review target moved before execution."
+    },
+    {
+      status: "failed",
+      logFile: "/tmp/review-empty-error.log"
+    }
+  );
+
+  assert.match(output, /Review target moved before execution\./);
+  assert.equal(output.match(/^Log: \/tmp\/review-empty-error\.log$/gm)?.length, 1);
+});
+
 test("renderStoredJobResult states the retry pace alongside a retryable failure class", () => {
   const output = renderStoredJobResult(
     {

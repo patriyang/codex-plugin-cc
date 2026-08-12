@@ -354,8 +354,25 @@ function emitTurnCompletedLater(threadId, turnId, item, delayMs) {
   }, delayMs);
 }
 
+function emitTurnFailed(threadId, turnId) {
+  send({ method: "turn/started", params: { threadId, turn: buildTurn(turnId) } });
+  send({
+    method: "error",
+    params: {
+      threadId,
+      turnId,
+      error: { message: "Selected model is at capacity. Please try a different model." }
+    }
+  });
+  send({ method: "turn/completed", params: { threadId, turn: buildTurn(turnId, "failed") } });
+}
+
+function waitsForReviewRelease() {
+  return BEHAVIOR === "wait-for-review-release" || BEHAVIOR === "fail-after-review-release";
+}
+
 function emitReviewCompleted(threadId, turnId, item) {
-  if (BEHAVIOR !== "wait-for-review-release") {
+  if (!waitsForReviewRelease()) {
     emitTurnCompleted(threadId, turnId, item);
     return;
   }
@@ -363,7 +380,7 @@ function emitReviewCompleted(threadId, turnId, item) {
   const startedPath = process.env.CODEX_TEST_REVIEW_STARTED;
   const releasePath = process.env.CODEX_TEST_REVIEW_RELEASE;
   if (!startedPath || !releasePath) {
-    throw new Error("wait-for-review-release requires review marker paths");
+    throw new Error(BEHAVIOR + " requires review marker paths");
   }
   fs.writeFileSync(startedPath, "started\\n");
   const interval = setInterval(() => {
@@ -371,6 +388,10 @@ function emitReviewCompleted(threadId, turnId, item) {
       return;
     }
     clearInterval(interval);
+    if (BEHAVIOR === "fail-after-review-release") {
+      emitTurnFailed(threadId, turnId);
+      return;
+    }
     emitTurnCompleted(threadId, turnId, item);
   }, 10);
 }
@@ -1462,7 +1483,7 @@ rl.on("line", (line) => {
 	            }
 	          });
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
-	        } else if (BEHAVIOR === "wait-for-review-release") {
+	        } else if (waitsForReviewRelease()) {
 	          emitReviewCompleted(thread.id, turnId, items);
 	        } else if (BEHAVIOR === "slow-task") {
 	          emitTurnCompletedLater(thread.id, turnId, items, 400);

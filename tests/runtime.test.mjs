@@ -4447,7 +4447,7 @@ test("a background review refuses to review a repository that moved under its pi
   assert.equal(job.retryable, true);
 });
 
-test("a native review discards results when the working tree changes during the run", async () => {
+test("a native review retains its output when the working tree changes during the run", async () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir, "wait-for-review-release");
@@ -4482,12 +4482,18 @@ test("a native review discards results when the working tree changes during the 
   assert.equal(processResult.code, 1);
   assert.equal(storedJob.status, "failed");
   assert.match(storedJob.errorMessage, /review completed.*state that has since moved/i);
-  assert.match(storedJob.errorMessage, /discarding the result/i);
   assert.equal(storedJob.failureClass, "state-drift");
   assert.equal(storedJob.retryable, true);
+
+  // The turn completed, so its review text must survive the drift classification:
+  // a caller reading `rendered` must still see what Codex actually said, plus a
+  // banner telling it the state moved.
+  assert.match(storedJob.rendered, /Reviewed uncommitted changes/);
+  assert.match(storedJob.rendered, /state that has since moved/i);
+  assert.equal(storedJob.result.codex.stdout.includes("Reviewed uncommitted changes"), true);
 });
 
-test("a self-collect review discards results when the working tree changes during the run", async () => {
+test("a self-collect review retains its findings when the working tree changes during the run", async () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir, "wait-for-review-release");
@@ -4526,11 +4532,70 @@ test("a self-collect review discards results when the working tree changes durin
   assert.equal(processResult.code, 1);
   assert.equal(storedJob.status, "failed");
   assert.match(storedJob.errorMessage, /review completed.*state that has since moved/i);
-  assert.match(storedJob.errorMessage, /discarding the result/i);
   assert.equal(storedJob.failureClass, "state-drift");
   assert.equal(storedJob.retryable, true);
   const codexState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
   assert.match(codexState.lastTurnStart.prompt, /lightweight summary/i);
+
+  // Findings produced before the repository moved are the expensive part of the run;
+  // the drift classification must not throw them away.
+  assert.match(storedJob.rendered, /Missing empty-state guard/);
+  assert.match(storedJob.rendered, /state that has since moved/i);
+  assert.equal(storedJob.result.result.findings[0].title, "Missing empty-state guard");
+
+  // The same text a caller would get from `result`.
+  const resultOutput = run("node", [SCRIPT, "result", storedJob.id], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(resultOutput.status, 0, resultOutput.stderr);
+  assert.match(resultOutput.stdout, /Missing empty-state guard/);
+  assert.match(resultOutput.stdout, /state that has since moved/i);
+});
+
+test("a review that failed on its own keeps that failure class even when the working tree changes", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "fail-after-review-release");
+  initGitRepo(repo);
+  for (const name of ["a.js", "b.js", "c.js"]) {
+    fs.writeFileSync(path.join(repo, name), `export const value = "${name}-v1";\n`);
+  }
+  run("git", ["add", "a.js", "b.js", "c.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  for (const name of ["a.js", "b.js", "c.js"]) {
+    fs.writeFileSync(path.join(repo, name), `export const value = "${name}-v2";\n`);
+  }
+
+  const target = {
+    mode: "working-tree",
+    label: "working tree diff",
+    explicit: false
+  };
+  const { storedJob } = await runStoredReviewJobWithMidRunChange(
+    repo,
+    binDir,
+    `review-failed-drift-${Date.now().toString(36)}`,
+    {
+      cwd: repo,
+      target,
+      stateIdentity: captureRepoStateIdentity(repo, target),
+      model: "gpt-5.5",
+      effort: null,
+      effortOverride: false,
+      focusText: "",
+      reviewName: "Adversarial Review"
+    },
+    () => fs.writeFileSync(path.join(repo, "a.js"), 'export const value = "a.js-v3";\n')
+  );
+
+  // A moved repository says nothing about why the turn died. Relabelling this as
+  // state-drift would cost the caller the capacity retry pacing it needs.
+  assert.equal(storedJob.status, "failed");
+  assert.equal(storedJob.failureClass, "capacity");
+  assert.equal(storedJob.retryable, true);
+  assert.equal(storedJob.retryAfterMs, 60000);
+  assert.doesNotMatch(storedJob.rendered, /STALE REVIEW/);
 });
 
 test("an inline-diff review returns its findings when the working tree changes during the run", async () => {

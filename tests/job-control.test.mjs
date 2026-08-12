@@ -278,6 +278,60 @@ test("runTrackedJob persists the worker start time in its running record", async
   assert.equal(storedJob.pidStartTime, "worker-start");
 });
 
+test("runTrackedJob persists a failed completion error in the job file and index", async () => {
+  const workspace = makeTempDir();
+  const errorMessage = "Review completed against repository state that has since moved.";
+
+  await runTrackedJob(
+    {
+      id: "task-completion-error",
+      workspaceRoot: workspace,
+      title: "Codex Review",
+      status: "queued"
+    },
+    async () => ({
+      exitStatus: 1,
+      failureClass: "state-drift",
+      retryable: true,
+      errorMessage,
+      payload: { result: "retained" },
+      rendered: "stale review",
+      summary: "Review completed against moved state."
+    }),
+    { getProcessStartTime: () => null }
+  );
+
+  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(workspace, "task-completion-error"), "utf8"));
+  const indexedJob = listJobs(workspace).find((job) => job.id === "task-completion-error");
+  assert.equal(storedJob.errorMessage, errorMessage);
+  assert.equal(indexedJob.errorMessage, errorMessage);
+});
+
+test("runTrackedJob leaves completion errorMessage unset for successful jobs", async () => {
+  const workspace = makeTempDir();
+
+  await runTrackedJob(
+    {
+      id: "task-completion-success",
+      workspaceRoot: workspace,
+      title: "Codex Task",
+      status: "queued"
+    },
+    async () => ({
+      exitStatus: 0,
+      payload: { result: "done" },
+      rendered: "done",
+      summary: "Task completed."
+    }),
+    { getProcessStartTime: () => null }
+  );
+
+  const storedJob = JSON.parse(fs.readFileSync(resolveJobFile(workspace, "task-completion-success"), "utf8"));
+  const indexedJob = listJobs(workspace).find((job) => job.id === "task-completion-success");
+  assert.equal(Object.hasOwn(storedJob, "errorMessage"), false);
+  assert.equal(Object.hasOwn(indexedJob, "errorMessage"), false);
+});
+
 test("runTrackedJob catch persistence prefers explicit failure metadata and otherwise classifies the message", async () => {
   const workspace = makeTempDir();
 

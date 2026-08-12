@@ -520,18 +520,51 @@ async function executeReviewRun(request) {
       base: request.base,
       scope: request.scope
     });
-  const assertPinnedState = (completed = false) => {
+  const getPinnedStateDrift = () => {
     if (!request.stateIdentity) {
-      return;
+      return null;
     }
-    const drift = describeRepoStateDrift(request.cwd, target, request.stateIdentity);
+    return describeRepoStateDrift(request.cwd, target, request.stateIdentity);
+  };
+  const assertPinnedState = () => {
+    const drift = getPinnedStateDrift();
     if (!drift) {
       return;
     }
-    const message = completed
-      ? `Review completed against repository state that has since moved: ${drift}. Discarding the result; re-run the review.`
-      : `Review target moved between enqueue and execution: ${drift}. Re-run the review.`;
+    const message = `Review target moved between enqueue and execution: ${drift}. Re-run the review.`;
     throw Object.assign(new Error(message), { failureClass: STATE_DRIFT, retryable: true });
+  };
+  // Drift only reclassifies a run that actually produced a review. A turn that failed on its own
+  // (capacity, a stall) keeps its real failure class and retry pacing — a moved repository says
+  // nothing about why that turn died, and overwriting it would cost the caller its retry policy.
+  const describeCompletedRunDrift = (result) => (result.status === 0 ? getPinnedStateDrift() : null);
+  const buildCompletion = (result, drift) => {
+    if (!drift) {
+      return {
+        exitStatus: result.status,
+        failureClass: result.failureClass,
+        retryable: result.retryable,
+        retryAfterMs: result.retryAfterMs
+      };
+    }
+    return {
+      exitStatus: 1,
+      failureClass: STATE_DRIFT,
+      retryable: true,
+      retryAfterMs: null,
+      errorMessage: `Review completed against repository state that has since moved: ${drift}. The findings were produced against the older state; the review should be re-run before acting on them.`
+    };
+  };
+  const renderDriftedReview = (rendered, drift) => {
+    if (!drift) {
+      return rendered;
+    }
+    return [
+      "⚠️ STALE REVIEW: This review ran against repository state that has since moved.",
+      `The findings were produced against the older state (${drift}); re-run the review before acting on them.`,
+      "",
+      rendered.trimEnd()
+    ].join("\n") + "\n";
   };
 
   assertPinnedState();
@@ -544,7 +577,8 @@ async function executeReviewRun(request) {
       model: request.model,
       onProgress: request.onProgress
     });
-    assertPinnedState(true);
+    const postCompletionDrift = describeCompletedRunDrift(result);
+    const completion = buildCompletion(result, postCompletionDrift);
     const effectiveModel = result.modelFallback?.to ?? request.model;
     const payload = {
       review: reviewName,
@@ -577,14 +611,11 @@ async function executeReviewRun(request) {
     );
 
     return {
-      exitStatus: result.status,
-      failureClass: result.failureClass,
-      retryable: result.retryable,
-      retryAfterMs: result.retryAfterMs,
+      ...completion,
       threadId: result.threadId,
       turnId: result.turnId,
       payload,
-      rendered,
+      rendered: renderDriftedReview(rendered, postCompletionDrift),
       summary: firstMeaningfulLine(result.reviewText, `${reviewName} completed.`),
       jobTitle: `Codex ${reviewName}`,
       jobClass: "review",
@@ -610,9 +641,8 @@ async function executeReviewRun(request) {
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
   });
-  if (context.inputMode === "self-collect") {
-    assertPinnedState(true);
-  }
+  const postCompletionDrift = context.inputMode === "self-collect" ? describeCompletedRunDrift(result) : null;
+  const completion = buildCompletion(result, postCompletionDrift);
   const effectiveModel = result.modelFallback?.to ?? request.model;
   const parsed = parseStructuredOutput(result.status === 0 ? result.finalMessage : "", {
     status: result.status,
@@ -650,20 +680,20 @@ async function executeReviewRun(request) {
   };
 
   return {
-    exitStatus: result.status,
-    failureClass: result.failureClass,
-    retryable: result.retryable,
-    retryAfterMs: result.retryAfterMs,
+    ...completion,
     threadId: result.threadId,
     turnId: result.turnId,
     payload,
-    rendered: renderReviewResult(parsed, {
-      reviewLabel: reviewName,
-      targetLabel: context.target.label,
-      model: effectiveModel,
-      effort: request.effort ?? "codex default",
-      reasoningSummary: result.reasoningSummary
-    }),
+    rendered: renderDriftedReview(
+      renderReviewResult(parsed, {
+        reviewLabel: reviewName,
+        targetLabel: context.target.label,
+        model: effectiveModel,
+        effort: request.effort ?? "codex default",
+        reasoningSummary: result.reasoningSummary
+      }),
+      postCompletionDrift
+    ),
     summary: parsed.parsed?.summary ?? parsed.parseError ?? firstMeaningfulLine(result.finalMessage, `${reviewName} finished.`),
     jobTitle: `Codex ${reviewName}`,
     jobClass: "review",
@@ -1241,7 +1271,7 @@ async function handleJobWorker(argv) {
       logFile: storedJob.logFile ?? null
     }
   );
-  await runTrackedJob(
+  const execution = await runTrackedJob(
     {
       ...storedJob,
       workspaceRoot,
@@ -1254,6 +1284,9 @@ async function handleJobWorker(argv) {
       }),
     { logFile }
   );
+  if (execution && execution.exitStatus !== 0) {
+    process.exitCode = execution.exitStatus;
+  }
 }
 
 async function handleStatus(argv) {

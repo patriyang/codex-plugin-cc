@@ -473,12 +473,13 @@ export function renderJobStatusReport(job) {
 export function renderStoredJobResult(job, storedJob) {
   const threadId = storedJob?.threadId ?? job.threadId ?? null;
   const resumeCommand = threadId ? `codex resume ${threadId}` : null;
+  const logFile = storedJob?.logFile ?? job.logFile ?? null;
   const failureSource = storedJob?.failureClass
     ? storedJob
     : storedJob?.result?.failureClass
       ? storedJob.result
       : job;
-  if (isStructuredReviewStoredResult(storedJob) && storedJob?.rendered) {
+  if (storedJob?.rendered && (isStructuredReviewStoredResult(storedJob) || storedJob.failureClass === "state-drift")) {
     const rendered = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
     const output = appendFailureClassificationToOutput(rendered, failureSource);
     if (!threadId) {
@@ -533,6 +534,9 @@ export function renderStoredJobResult(job, storedJob) {
     lines.push("", storedJob.errorMessage);
   } else {
     lines.push("", "No captured result payload was stored for this job.");
+    if (logFile) {
+      lines.push(`Log: ${logFile}`);
+    }
   }
 
   return `${lines.join("\n").trimEnd()}\n`;

@@ -290,7 +290,10 @@ export async function runTrackedJob(job, runner, options = {}) {
         retryable,
         retryAfterMs,
         result: execution.payload,
-        rendered: execution.rendered
+        rendered: execution.rendered,
+        ...(completionStatus === "failed" && execution.errorMessage
+          ? { errorMessage: execution.errorMessage }
+          : {})
       });
       upsertJob(job.workspaceRoot, {
         id: job.id,
@@ -303,7 +306,10 @@ export async function runTrackedJob(job, runner, options = {}) {
         completedAt,
         failureClass,
         retryable,
-        retryAfterMs
+        retryAfterMs,
+        ...(completionStatus === "failed" && execution.errorMessage
+          ? { errorMessage: execution.errorMessage }
+          : {})
       });
       return true;
     });

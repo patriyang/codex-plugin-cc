@@ -534,6 +534,10 @@ async function executeReviewRun(request) {
     const message = `Review target moved between enqueue and execution: ${drift}. Re-run the review.`;
     throw Object.assign(new Error(message), { failureClass: STATE_DRIFT, retryable: true });
   };
+  // Drift only reclassifies a run that actually produced a review. A turn that failed on its own
+  // (capacity, a stall) keeps its real failure class and retry pacing — a moved repository says
+  // nothing about why that turn died, and overwriting it would cost the caller its retry policy.
+  const describeCompletedRunDrift = (result) => (result.status === 0 ? getPinnedStateDrift() : null);
   const buildCompletion = (result, drift) => {
     if (!drift) {
       return {
@@ -573,7 +577,7 @@ async function executeReviewRun(request) {
       model: request.model,
       onProgress: request.onProgress
     });
-    const postCompletionDrift = getPinnedStateDrift();
+    const postCompletionDrift = describeCompletedRunDrift(result);
     const completion = buildCompletion(result, postCompletionDrift);
     const effectiveModel = result.modelFallback?.to ?? request.model;
     const payload = {
@@ -637,7 +641,7 @@ async function executeReviewRun(request) {
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
   });
-  const postCompletionDrift = context.inputMode === "self-collect" ? getPinnedStateDrift() : null;
+  const postCompletionDrift = context.inputMode === "self-collect" ? describeCompletedRunDrift(result) : null;
   const completion = buildCompletion(result, postCompletionDrift);
   const effectiveModel = result.modelFallback?.to ?? request.model;
   const parsed = parseStructuredOutput(result.status === 0 ? result.finalMessage : "", {

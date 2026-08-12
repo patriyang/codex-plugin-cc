@@ -4553,6 +4553,51 @@ test("a self-collect review retains its findings when the working tree changes d
   assert.match(resultOutput.stdout, /state that has since moved/i);
 });
 
+test("a review that failed on its own keeps that failure class even when the working tree changes", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "fail-after-review-release");
+  initGitRepo(repo);
+  for (const name of ["a.js", "b.js", "c.js"]) {
+    fs.writeFileSync(path.join(repo, name), `export const value = "${name}-v1";\n`);
+  }
+  run("git", ["add", "a.js", "b.js", "c.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  for (const name of ["a.js", "b.js", "c.js"]) {
+    fs.writeFileSync(path.join(repo, name), `export const value = "${name}-v2";\n`);
+  }
+
+  const target = {
+    mode: "working-tree",
+    label: "working tree diff",
+    explicit: false
+  };
+  const { storedJob } = await runStoredReviewJobWithMidRunChange(
+    repo,
+    binDir,
+    `review-failed-drift-${Date.now().toString(36)}`,
+    {
+      cwd: repo,
+      target,
+      stateIdentity: captureRepoStateIdentity(repo, target),
+      model: "gpt-5.5",
+      effort: null,
+      effortOverride: false,
+      focusText: "",
+      reviewName: "Adversarial Review"
+    },
+    () => fs.writeFileSync(path.join(repo, "a.js"), 'export const value = "a.js-v3";\n')
+  );
+
+  // A moved repository says nothing about why the turn died. Relabelling this as
+  // state-drift would cost the caller the capacity retry pacing it needs.
+  assert.equal(storedJob.status, "failed");
+  assert.equal(storedJob.failureClass, "capacity");
+  assert.equal(storedJob.retryable, true);
+  assert.equal(storedJob.retryAfterMs, 60000);
+  assert.doesNotMatch(storedJob.rendered, /STALE REVIEW/);
+});
+
 test("an inline-diff review returns its findings when the working tree changes during the run", async () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

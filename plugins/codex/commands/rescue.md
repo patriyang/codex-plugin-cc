@@ -1,6 +1,6 @@
 ---
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the Codex rescue subagent
-argument-hint: "[--background|--wait] [--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [what Codex should investigate, solve, or continue]"
+argument-hint: "[--background|--wait] [--resume|--fresh] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [what Codex should investigate, solve, or continue]"
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 
@@ -47,7 +47,7 @@ Operating rules:
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
 - Do not ask the subagent to inspect files, monitor progress, poll `/codex:status`, fetch `/codex:result`, call `/codex:cancel`, summarize output, or do follow-up work of its own. Do not route the controller's wait through `/codex:status`; `disable-model-invocation: true` means that slash command cannot be invoked by the model, so use the direct companion `status` Bash call below.
 - Leave `--effort` unset unless the user explicitly asks for a specific reasoning effort; the runtime defaults to `high`.
-- Leave the model unset unless the user explicitly asks for one; the runtime defaults to `gpt-5.5`. If they ask for `spark`, map it to `gpt-5.3-codex-spark`.
+- Leave the model unset unless the user explicitly asks for one; the runtime defaults to `gpt-6-astra`. If they ask for `spark`, map it to `gpt-5.3-codex-spark`; if they ask for `astra`, map it to `gpt-6-astra`.
 - Leave `--resume` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.
 - If the helper reports that Codex is missing or unauthenticated, stop and tell the user to run `/codex:setup`.
 - If the user did not supply a request, ask what Codex should investigate or fix.

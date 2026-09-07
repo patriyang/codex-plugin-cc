@@ -88,17 +88,20 @@ const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const JOB_WORKER_STARTUP_TIMEOUT_MS = 10000;
 const JOB_WORKER_STARTUP_POLL_INTERVAL_MS = 25;
-const DEFAULT_CODEX_MODEL = "gpt-5.5";
+const DEFAULT_CODEX_MODEL = "gpt-6-astra";
 const DEFAULT_CODEX_REASONING_EFFORT = "high";
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
-const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
+const MODEL_ALIASES = new Map([
+  ["spark", "gpt-5.3-codex-spark"],
+  ["astra", "gpt-6-astra"]
+]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const SUBCOMMAND_USAGE = new Map([
   ["setup", "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--fallback-model <model>|--clear-fallback-model] [--json]"],
   ["review", "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]"],
-  ["adversarial-review", "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
-  ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
-  ["task", "  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]"],
+  ["adversarial-review", "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
+  ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
+  ["task", "  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]"],
   ["transfer", "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]"],
   ["status", "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]"],
   ["result", "  node scripts/codex-companion.mjs result [job-id] [--json]"],
@@ -646,7 +649,7 @@ async function executeReviewRun(request) {
   const effectiveModel = result.modelFallback?.to ?? request.model;
   const parsed = parseStructuredOutput(result.status === 0 ? result.finalMessage : "", {
     status: result.status,
-    failureMessage: result.error?.message ?? result.stderr,
+    failureMessage: result.failureMessage ?? result.error?.message ?? result.stderr,
     failureClass: result.failureClass,
     retryable: result.retryable,
     retryAfterMs: result.retryAfterMs
@@ -743,7 +746,7 @@ async function executeTaskRun(request) {
 
   const rawOutput = result.status === 0 && typeof result.finalMessage === "string" ? result.finalMessage : "";
   const partialOutput = result.status !== 0 && typeof result.finalMessage === "string" ? result.finalMessage : "";
-  const failureMessage = result.error?.message ?? result.stderr ?? "";
+  const failureMessage = result.failureMessage ?? result.error?.message ?? result.stderr ?? "";
   const rendered = renderTaskResult(
     {
       rawOutput,
@@ -1481,7 +1484,7 @@ async function main() {
     case "deep-review":
       await handleReviewCommand(argv, {
         reviewName: "Deep Review",
-        defaultModel: "gpt-5.6-sol",
+        defaultModel: "gpt-6-astra",
         defaultEffort: "high"
       });
       break;

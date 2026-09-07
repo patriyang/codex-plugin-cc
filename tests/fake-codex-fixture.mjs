@@ -58,10 +58,11 @@ function saveState(state) {
 }
 
 // Mirrors the per-model reasoning levels the real app-server advertises via
-// model/list (codex-cli 0.146.0). Deliberately narrower than the flat
+// model/list (codex-cli 0.153.4). Deliberately narrower than the flat
 // VALID_REASONING_EFFORTS set so tests can exercise an unadvertised pair.
 const MODEL_CATALOG = [
-  { model: "gpt-5.6-sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], isDefault: true },
+  { model: "gpt-6-astra", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], isDefault: true },
+  { model: "gpt-5.6-sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], isDefault: false },
   { model: "gpt-5.6-terra", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], isDefault: false },
   { model: "gpt-5.6-luna", efforts: ["low", "medium", "high", "xhigh", "max"], isDefault: false },
   { model: "gpt-5.5", efforts: ["low", "medium", "high", "xhigh"], isDefault: false },
@@ -71,7 +72,8 @@ const MODEL_CATALOG = [
 
 // The model the "model-at-capacity" behavior refuses. Matches the companion's
 // own default so a plain run hits it without passing --model.
-const CAPACITY_BOUND_MODEL = "gpt-5.5";
+const CAPACITY_BOUND_MODEL = "gpt-6-astra";
+const OUTDATED_CODEX_MESSAGE = "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.";
 
 function buildModelListResult() {
   return {
@@ -664,6 +666,19 @@ rl.on("line", (line) => {
         state.lastReviewStart = { threadId: thread.id, turnId, model: thread.model ?? null };
         saveState(state);
         send({ id: message.id, result: { turn: buildTurn(turnId), reviewThreadId: reviewThread.id } });
+        if (BEHAVIOR === "model-requires-newer-codex") {
+          send({ method: "turn/started", params: { threadId: reviewThread.id, turn: buildTurn(turnId) } });
+          send({
+            method: "error",
+            params: {
+              threadId: reviewThread.id,
+              turnId,
+              error: { message: OUTDATED_CODEX_MESSAGE }
+            }
+          });
+          send({ method: "turn/completed", params: { threadId: reviewThread.id, turn: buildTurn(turnId, "failed") } });
+          break;
+        }
         if (
           BEHAVIOR === "all-models-at-capacity" ||
           (BEHAVIOR === "model-at-capacity" && thread.model === CAPACITY_BOUND_MODEL)
@@ -735,6 +750,20 @@ rl.on("line", (line) => {
 	          break;
 	        }
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
+
+	        if (BEHAVIOR === "model-requires-newer-codex") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "error",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              error: { message: OUTDATED_CODEX_MESSAGE }
+	            }
+	          });
+	          send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "failed") } });
+	          break;
+	        }
 
 	        // Capacity rejections are transient and content-independent: the server
 	        // refuses one model outright and the same prompt succeeds on another.

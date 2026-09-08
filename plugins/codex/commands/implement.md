@@ -173,7 +173,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C ${rootArg} --wr
 - Use `--fresh` so the implementer gets a clean Codex thread.
 - After the enqueue-and-wait contract returns the result JSON, read `.storedJob.result.rawOutput` for the report body (the `## Status` section step 3 inspects), record `.storedJob.threadId` as `IMPLEMENTER_THREAD_ID` for this task, and set `const threadIdArg = shellEscape(IMPLEMENTER_THREAD_ID)` for subsequent resume instructions — it stays fixed for the whole task's fix loop.
 - For `--model`, use the user's value if they passed one; otherwise pass `--model gpt-5.6-luna` explicitly. `/codex:implement` defaults to `gpt-5.6-luna` rather than the runtime default of `gpt-6-astra`.
-- For `--effort`, use the user's value if they passed one; otherwise pass `--effort max` explicitly. `/codex:implement` defaults to `max` rather than the runtime default of `high`.
+- For `--effort`, use the user's value if they passed one; otherwise pass `--effort max` explicitly. `/codex:implement` defaults to `max` rather than the runtime default of `low`.
 - The prompt is the substituted template text. Pass it as a single positional argument (heredoc/quoting as needed).
 
 ### 3. Parse implementer report
@@ -360,7 +360,7 @@ Show the report. Propose next steps.
 - `--single-shot` → legacy one-Codex-agent mode.
 - `--sequential` → explicit SDD mode (also the default).
 - User-supplied `--background` / `--wait` → Claude-side execution control only. Do not forward either raw flag to `task`; independently add `task --background --json` to every Codex step so SDD can use the tracked enqueue-and-wait contract. `task --wait` remains an explicit no-op and is never needed here.
-- `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run. If omitted, `--model` defaults to `gpt-5.6-luna` and `--effort` defaults to `max` (both passed explicitly by this command, overriding the runtime defaults of `gpt-6-astra` / `high`).
+- `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run. If omitted, `--model` defaults to `gpt-5.6-luna` and `--effort` defaults to `max` (both passed explicitly by this command, overriding the runtime defaults of `gpt-6-astra` / `low`).
 - `-C ${rootArg}` → applied to every Codex invocation in this run (established in Pre-flight Checks). Pins the implementer/reviewer workspace to the task's worktree instead of `codex-companion.mjs`'s default of the controller's own process cwd.
 - `--resume` / `--fresh` → ignored in SDD mode (the orchestrator picks per-step). SDD resumes the implementer by explicit thread id via `--resume-id ${threadIdArg}` (not `--resume-last`, which would resolve to whichever `task`-class thread was dispatched most recently — often a reviewer, not the implementer).
 

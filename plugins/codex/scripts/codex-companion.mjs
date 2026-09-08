@@ -754,6 +754,7 @@ async function executeTaskRun(request) {
   const rawOutput = result.status === 0 && typeof result.finalMessage === "string" ? result.finalMessage : "";
   const partialOutput = result.status !== 0 && typeof result.finalMessage === "string" ? result.finalMessage : "";
   const failureMessage = result.failureMessage ?? result.error?.message ?? result.stderr ?? "";
+  const commandCount = Array.isArray(result.commandExecutions) ? result.commandExecutions.length : 0;
   const rendered = renderTaskResult(
     {
       rawOutput,
@@ -763,6 +764,7 @@ async function executeTaskRun(request) {
       retryable: result.retryable,
       retryAfterMs: result.retryAfterMs,
       touchedFiles: result.touchedFiles,
+      commandCount,
       reasoningSummary: result.reasoningSummary
     },
     {
@@ -782,6 +784,7 @@ async function executeTaskRun(request) {
     partialOutput,
     failureMessage,
     touchedFiles: result.touchedFiles,
+    commandCount,
     reasoningSummary: result.reasoningSummary,
     effortWarning: result.effortWarning
   };

@@ -1434,6 +1434,7 @@ test("a terminal usage-limit error outranks a failed command diagnostic in a bac
   assert.equal(storedPayload.storedJob.result.failureClass, "usage-limit");
   assert.equal(storedPayload.storedJob.result.failureMessage, usageLimitMessage);
   assert.equal(storedPayload.storedJob.result.retryable, false);
+  assert.deepEqual(storedPayload.storedJob.result.touchedFiles, []);
   assert.match(fs.readFileSync(storedPayload.storedJob.logFile, "utf8"), /gh pr view/);
 });
 

@@ -297,7 +297,8 @@ test("renderTaskResult leads with the failure reason instead of the partial mess
       rawOutput: "",
       partialOutput: "I'm applying only the requested edits now, then I'll report back.",
       failureMessage: "Codex turn stalled (idle): no activity for 900s. Interrupting and aborting the turn.",
-      touchedFiles: ["/repo/a.py", "/repo/b.py"]
+      touchedFiles: ["/repo/a.py", "/repo/b.py"],
+      commandCount: 1
     },
     { title: "Codex Task", write: true }
   );
@@ -308,6 +309,36 @@ test("renderTaskResult leads with the failure reason instead of the partial mess
   assert.match(output, /partial/i);
   assert.match(output, /a\.py/);
   assert.match(output, /b\.py/);
+  assert.match(output, /shell commands other than apply_patch are not listed/);
+  assert.match(output, /git status in the workspace is authoritative/);
+});
+
+test("renderTaskResult warns about unattributed shell edits without touched files", () => {
+  const output = renderTaskResult(
+    {
+      rawOutput: "",
+      failureMessage: "Codex task failed.",
+      touchedFiles: [],
+      commandCount: 1
+    },
+    { title: "Codex Task", write: true }
+  );
+
+  assert.match(output, /shell commands other than apply_patch are not listed/);
+});
+
+test("renderTaskResult omits the shell-edit caution when no commands ran", () => {
+  const output = renderTaskResult(
+    {
+      rawOutput: "",
+      failureMessage: "Codex task failed.",
+      touchedFiles: ["/repo/a.py"],
+      commandCount: 0
+    },
+    { title: "Codex Task", write: true }
+  );
+
+  assert.doesNotMatch(output, /shell commands other than apply_patch are not listed/);
 });
 
 test("renderTaskResult returns the final message unchanged on a completed turn", () => {

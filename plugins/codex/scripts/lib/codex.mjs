@@ -260,15 +260,49 @@ function extractTurnId(message) {
   return null;
 }
 
-function collectTouchedFiles(fileChanges) {
+function extractApplyPatchPaths(commandExecution, workspaceRoot) {
+  const command = commandExecution?.command;
+  if (typeof command !== "string" || !command.includes("*** Begin Patch")) {
+    return [];
+  }
+
+  const commandCwd = typeof commandExecution?.cwd === "string" ? commandExecution.cwd.trim() : "";
+  const workspaceCwd = typeof workspaceRoot === "string" ? workspaceRoot.trim() : "";
+  const baseDirectory = commandCwd || workspaceCwd;
+  const paths = [];
+
+  for (const line of command.split(/\r?\n/)) {
+    const match = line.match(/^\*\*\* (?:Add File|Update File|Delete File|Move to):\s*(.*?)\s*$/);
+    if (!match) {
+      continue;
+    }
+
+    const filePath = match[1].trim();
+    if (!filePath) {
+      continue;
+    }
+    paths.push(path.isAbsolute(filePath) || !baseDirectory ? filePath : path.resolve(baseDirectory, filePath));
+  }
+
+  return paths;
+}
+
+function collectTouchedFiles(fileChanges, commandExecutions, workspaceRoot) {
   const paths = new Set();
-  for (const fileChange of fileChanges) {
-    for (const change of fileChange.changes ?? []) {
-      if (change.path) {
+  for (const fileChange of Array.isArray(fileChanges) ? fileChanges : []) {
+    for (const change of Array.isArray(fileChange?.changes) ? fileChange.changes : []) {
+      if (change?.path) {
         paths.add(change.path);
       }
     }
   }
+
+  for (const commandExecution of Array.isArray(commandExecutions) ? commandExecutions : []) {
+    for (const filePath of extractApplyPatchPaths(commandExecution, workspaceRoot)) {
+      paths.add(filePath);
+    }
+  }
+
   return [...paths];
 }
 
@@ -1907,7 +1941,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       stderr: cleanCodexStderr(client.stderr),
       effortWarning,
       fileChanges: turnState.fileChanges,
-      touchedFiles: collectTouchedFiles(turnState.fileChanges),
+      touchedFiles: collectTouchedFiles(turnState.fileChanges, turnState.commandExecutions, cwd),
       commandExecutions: turnState.commandExecutions
     };
   });

@@ -4639,6 +4639,54 @@ test("an inline-diff review returns its findings when the working tree changes d
   assert.doesNotMatch(codexState.lastTurnStart.prompt, /export const value = 3;/);
 });
 
+test("a background branch review tolerates unrelated base-branch commits during the run", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "wait-for-review-release");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 1;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  run("git", ["checkout", "-b", "feature"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 2;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "feature work"], { cwd: repo });
+
+  const target = {
+    mode: "branch",
+    label: "branch diff against main",
+    baseRef: "main",
+    explicit: false
+  };
+  const { processResult, storedJob } = await runStoredReviewJobWithMidRunChange(
+    repo,
+    binDir,
+    `review-branch-unrelated-base-${Date.now().toString(36)}`,
+    {
+      cwd: repo,
+      target,
+      stateIdentity: captureRepoStateIdentity(repo, target),
+      model: "gpt-5.5",
+      effort: null,
+      effortOverride: false,
+      focusText: "",
+      reviewName: "Review"
+    },
+    () => {
+      run("git", ["checkout", "main"], { cwd: repo });
+      fs.writeFileSync(path.join(repo, "unrelated.txt"), "unrelated base work\n");
+      run("git", ["add", "unrelated.txt"], { cwd: repo });
+      run("git", ["commit", "-m", "unrelated base work"], { cwd: repo });
+      run("git", ["checkout", "feature"], { cwd: repo });
+    }
+  );
+
+  assert.equal(processResult.code, 0, processResult.stderr);
+  assert.equal(storedJob.status, "completed");
+  assert.equal(storedJob.failureClass ?? null, null);
+  assert.doesNotMatch(storedJob.rendered, /STALE REVIEW/);
+});
+
 test("a background branch review reports a deleted base ref as state drift", async () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

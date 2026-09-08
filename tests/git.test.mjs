@@ -143,6 +143,35 @@ test("repo state identity reports no drift when a branch target is unchanged", (
 
   assert.match(identity.headOid, /^[0-9a-f]{40}$/);
   assert.match(identity.baseOid, /^[0-9a-f]{40}$/);
+  assert.match(identity.mergeBaseOid, /^[0-9a-f]{40}$/);
+  assert.equal(describeRepoStateDrift(cwd, target, identity), null);
+});
+
+test("repo state identity ignores unrelated commits on a branch target's base ref", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('base');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "base"], { cwd });
+  run("git", ["checkout", "-b", "feature/test"], { cwd });
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('feature');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "feature"], { cwd });
+
+  const target = resolveReviewTarget(cwd, { base: "main" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  const before = run("git", ["diff", "--stat", `${identity.mergeBaseOid}..HEAD`], { cwd }).stdout;
+
+  run("git", ["checkout", "main"], { cwd });
+  fs.writeFileSync(path.join(cwd, "unrelated.txt"), "unrelated base work\n");
+  run("git", ["add", "unrelated.txt"], { cwd });
+  run("git", ["commit", "-m", "unrelated base work"], { cwd });
+  run("git", ["checkout", "feature/test"], { cwd });
+
+  const after = run("git", ["diff", "--stat", `${identity.mergeBaseOid}..HEAD`], { cwd }).stdout;
+
+  assert.equal(after, before);
+  assert.equal(run("git", ["merge-base", "HEAD", "main"], { cwd }).stdout.trim(), identity.mergeBaseOid);
   assert.equal(describeRepoStateDrift(cwd, target, identity), null);
 });
 
@@ -161,7 +190,26 @@ test("repo state identity detects when a branch target's base ref moves", () => 
   const identity = captureRepoStateIdentity(cwd, target);
   run("git", ["branch", "-f", "main", "HEAD"], { cwd });
 
-  assert.match(describeRepoStateDrift(cwd, target, identity), /base ref main moved/i);
+  assert.match(describeRepoStateDrift(cwd, target, identity), /review range against main moved/i);
+});
+
+test("legacy repo state identity still detects when a branch target's base ref moves", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('base');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "base"], { cwd });
+  run("git", ["checkout", "-b", "feature/test"], { cwd });
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('feature');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "feature"], { cwd });
+
+  const target = resolveReviewTarget(cwd, { base: "main" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  const legacyIdentity = { headOid: identity.headOid, baseOid: identity.baseOid };
+  run("git", ["branch", "-f", "main", "HEAD"], { cwd });
+
+  assert.match(describeRepoStateDrift(cwd, target, legacyIdentity), /base ref main moved/i);
 });
 
 test("repo state identity reports when a branch target's base ref disappears", () => {

@@ -29,6 +29,7 @@
  *   lastActivityAt: number | null,
  *   activityCount: number,
  *   itemActivityCount: number,
+ *   observedCommandIds: Set<string>,
  *   stallCleanup: Promise<void> | null,
  *   stalled: boolean,
  *   activeTools: Map<string, { threadId: string | null, itemId: string | null, toolClass: string, label: string, inactivityTimeoutMs: number, deadlineTimer: ReturnType<typeof setTimeout> | null, armedAt: number | null }>,

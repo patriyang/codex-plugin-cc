@@ -1306,6 +1306,13 @@ test("classifyFailureMessage recognizes usage limits and parses retry pacing", (
     retryable: false,
     retryAfterMs: null
   });
+
+  // Some CodexErrorInfo variants are objects rather than bare strings; those name the failure too.
+  assert.deepEqual(classifyFailureMessage(message, now, { httpConnectionFailed: { httpStatusCode: 503 } }), {
+    failureClass: null,
+    retryable: false,
+    retryAfterMs: null
+  });
 });
 
 test("fallback model resolution honors env, config, discovery, and none precedence", async () => {

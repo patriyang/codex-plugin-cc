@@ -1008,12 +1008,8 @@ function applyTurnNotification(state, message, watchdog = null) {
       state.error ??= message.params.error;
       // Only the root thread can fail the turn, so only its errors are candidates for the terminal
       // one — a subagent's error stays diagnostic, exactly as its turn/completed is ignored below.
-      // An error that names no thread cannot be attributed, so it is read as the root's.
-      {
-        const errorThreadId = message.params.threadId ?? null;
-        if (message.params.willRetry !== true && (errorThreadId === null || errorThreadId === state.threadId)) {
-          state.turnError = message.params.error;
-        }
+      if (message.params.willRetry !== true && (message.params.threadId ?? null) === state.threadId) {
+        state.turnError = message.params.error;
       }
       emitProgress(state.onProgress, `Codex error: ${message.params.error.message}`, "failed");
       scheduleInferredCompletion(state);
@@ -1286,10 +1282,13 @@ function classifyTurnFailure(turnState, status) {
   const terminalError = turnFailureError(turnState);
   const failure = turnState.stalled === true
     ? { failureClass: STALLED, retryable: true, retryAfterMs: null }
+    // codexErrorInfo has object-shaped variants as well as bare strings, and both mean Codex named
+    // the failure. Pass whatever it sent through untouched: flattening the object ones to null
+    // would read as "no code" and hand the answer back to the wording.
     : classifyFailureMessage(
         extractErrorMessage(terminalError),
         Date.now(),
-        typeof terminalError?.codexErrorInfo === "string" ? terminalError.codexErrorInfo : null
+        terminalError?.codexErrorInfo ?? null
       );
   // Repeating is only safe when the turn left nothing behind, and pacing is guidance for a retry
   // that is actually on offer.

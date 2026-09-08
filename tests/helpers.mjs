@@ -6,6 +6,15 @@ import { spawnSync } from "node:child_process";
 
 const createdTempDirs = [];
 
+process.on("exit", () => {
+  if (process.env.CODEX_PLUGIN_TEST_KEEP_TMPDIR === "1") return;
+  for (const dir of createdTempDirs) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
+});
+
 export function makeTempDir(prefix = "codex-plugin-test-") {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   createdTempDirs.push(dir);

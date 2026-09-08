@@ -1246,6 +1246,40 @@ test("classifyFailureMessage recognizes capacity failures conservatively", () =>
   }
 });
 
+test("classifyFailureMessage recognizes usage limits and parses retry pacing", () => {
+  const message = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 9:01 PM.";
+  const now = new Date(2026, 8, 8, 20, 0, 0, 0).getTime();
+  const nextReset = new Date(now);
+  nextReset.setHours(21, 1, 0, 0);
+  if (nextReset.getTime() <= now) {
+    nextReset.setDate(nextReset.getDate() + 1);
+  }
+
+  assert.deepEqual(classifyFailureMessage(message, now), {
+    failureClass: "usage-limit",
+    retryable: true,
+    retryAfterMs: nextReset.getTime() - now
+  });
+
+  assert.deepEqual(classifyFailureMessage("You've hit your usage limit; try again in 45 minutes.", now), {
+    failureClass: "usage-limit",
+    retryable: true,
+    retryAfterMs: 45 * 60_000
+  });
+
+  assert.deepEqual(classifyFailureMessage("You've hit your usage limit.", now), {
+    failureClass: "usage-limit",
+    retryable: true,
+    retryAfterMs: null
+  });
+
+  assert.deepEqual(classifyFailureMessage("The selected model is at capacity. You've hit your usage limit."), {
+    failureClass: "capacity",
+    retryable: true,
+    retryAfterMs: CAPACITY_RETRY_AFTER_MS
+  });
+});
+
 test("fallback model resolution honors env, config, discovery, and none precedence", async () => {
   const repo = makeTempDir();
   initGitRepo(repo);
@@ -1330,6 +1364,42 @@ test("a capacity rejection retries on the designated backup model", () => {
   const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
   assert.equal(state.capacityRejections, 1);
   assert.equal(state.lastTurnStart.model, "gpt-5.6-terra");
+});
+
+test("a terminal usage-limit error outranks a failed command diagnostic in a background task", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const usageLimitMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 9:01 PM.";
+  installFakeCodex(binDir, "usage-limit-after-failed-command");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the usage limit"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.equal(JSON.parse(waitedStatus.stdout).job.status, "failed");
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.storedJob.failureClass, "usage-limit");
+  assert.equal(storedPayload.storedJob.result.failureClass, "usage-limit");
+  assert.equal(storedPayload.storedJob.result.failureMessage, usageLimitMessage);
+  assert.equal(storedPayload.storedJob.result.retryable, false);
+  assert.match(fs.readFileSync(storedPayload.storedJob.logFile, "utf8"), /gh pr view/);
 });
 
 test("a capacity rejection with no designated backup model reports a retryable failure class", () => {

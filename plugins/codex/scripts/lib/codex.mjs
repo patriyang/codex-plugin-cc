@@ -36,6 +36,7 @@
  *   reviewText: string,
  *   reasoningSummary: string[],
  *   error: unknown,
+ *   turnError: unknown,
  *   messages: Array<{ lifecycle: string, phase: string | null, text: string }>,
  *   fileChanges: ThreadItem[],
  *   commandExecutions: ThreadItem[],
@@ -482,6 +483,7 @@ function createTurnCaptureState(threadId, options = {}) {
     reviewText: "",
     reasoningSummary: [],
     error: null,
+    turnError: null,
     messages: [],
     fileChanges: [],
     commandExecutions: [],
@@ -665,6 +667,12 @@ function extractErrorMessage(value) {
     }
   }
   return null;
+}
+
+// A failed tool can claim state.error before the terminal turn error arrives; keep that diagnostic,
+// but derive failure classification and messaging from the terminal error when one exists.
+function turnFailureError(state) {
+  return state.turnError ?? state.error;
 }
 
 function labelForToolItem(item) {
@@ -998,6 +1006,7 @@ function applyTurnNotification(state, message, watchdog = null) {
         watchdog?.clearActiveTools();
       }
       state.error ??= message.params.error;
+      state.turnError ??= message.params.error;
       emitProgress(state.onProgress, `Codex error: ${message.params.error.message}`, "failed");
       scheduleInferredCompletion(state);
       break;
@@ -1265,7 +1274,7 @@ function classifyTurnFailure(turnState, status) {
   // turn state rather than matched out of the message.
   const failure = turnState.stalled === true
     ? { failureClass: STALLED, retryable: true, retryAfterMs: null }
-    : classifyFailureMessage(extractErrorMessage(turnState.error));
+    : classifyFailureMessage(extractErrorMessage(turnFailureError(turnState)));
   // Repeating is only safe when the turn left nothing behind, and pacing is guidance for a retry
   // that is actually on offer.
   const retryable = failure.retryable && turnProducedNothing(turnState);
@@ -1625,7 +1634,7 @@ export async function runAppServerReview(cwd, options = {}) {
     const { sourceThreadId, turnState } = reviewAttempt;
     const status = buildResultStatus(turnState);
     const failure = classifyTurnFailure(turnState, status);
-    const failureMessage = formatFailureMessage(extractErrorMessage(turnState.error), failure.failureClass);
+    const failureMessage = formatFailureMessage(extractErrorMessage(turnFailureError(turnState)), failure.failureClass);
 
     return {
       status,
@@ -1865,7 +1874,7 @@ export async function runAppServerTurn(cwd, options = {}) {
 
     const status = buildResultStatus(turnState);
     const failure = classifyTurnFailure(turnState, status);
-    const failureMessage = formatFailureMessage(extractErrorMessage(turnState.error), failure.failureClass);
+    const failureMessage = formatFailureMessage(extractErrorMessage(turnFailureError(turnState)), failure.failureClass);
 
     return {
       status,

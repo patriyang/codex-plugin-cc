@@ -76,7 +76,9 @@ export function classifyFailureMessage(message, now = Date.now(), codexErrorInfo
     return { failureClass: CAPACITY, retryable: true, retryAfterMs: CAPACITY_RETRY_AFTER_MS };
   }
 
-  if (/\busage limit\b/i.test(message)) {
+  // Prose only speaks for a usage limit when Codex named no code at all. If it named a different
+  // one, that code has already decided this is not a usage limit, whatever the wording says.
+  if (codexErrorInfo == null && /\busage limit\b/i.test(message)) {
     return {
       failureClass: USAGE_LIMIT,
       retryable: true,

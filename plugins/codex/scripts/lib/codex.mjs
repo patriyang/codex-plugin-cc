@@ -1006,8 +1006,14 @@ function applyTurnNotification(state, message, watchdog = null) {
         watchdog?.clearActiveTools();
       }
       state.error ??= message.params.error;
-      if (message.params.willRetry !== true) {
-        state.turnError = message.params.error;
+      // Only the root thread can fail the turn, so only its errors are candidates for the terminal
+      // one — a subagent's error stays diagnostic, exactly as its turn/completed is ignored below.
+      // An error that names no thread cannot be attributed, so it is read as the root's.
+      {
+        const errorThreadId = message.params.threadId ?? null;
+        if (message.params.willRetry !== true && (errorThreadId === null || errorThreadId === state.threadId)) {
+          state.turnError = message.params.error;
+        }
       }
       emitProgress(state.onProgress, `Codex error: ${message.params.error.message}`, "failed");
       scheduleInferredCompletion(state);

@@ -1298,6 +1298,14 @@ test("classifyFailureMessage recognizes usage limits and parses retry pacing", (
     retryable: true,
     retryAfterMs: nextReset.getTime() - now
   });
+
+  // The converse of the rule: a code that is not a usage limit has already answered the question,
+  // so wording that happens to mention one must not override it.
+  assert.deepEqual(classifyFailureMessage(message, now, "badRequest"), {
+    failureClass: null,
+    retryable: false,
+    retryAfterMs: null
+  });
 });
 
 test("fallback model resolution honors env, config, discovery, and none precedence", async () => {

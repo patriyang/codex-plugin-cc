@@ -212,6 +212,35 @@ test("legacy repo state identity still detects when a branch target's base ref m
   assert.match(describeRepoStateDrift(cwd, target, legacyIdentity), /base ref main moved/i);
 });
 
+test("a branch target with no common ancestor still detects when its base ref moves", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('base');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "base"], { cwd });
+
+  // An orphan branch shares no history with main, so there is no merge base to pin. The drift
+  // check must fall back to the base tip rather than pass for want of anything to compare.
+  run("git", ["checkout", "--orphan", "unrelated"], { cwd });
+  fs.writeFileSync(path.join(cwd, "other.js"), "console.log('other');\n");
+  run("git", ["add", "other.js"], { cwd });
+  run("git", ["commit", "-m", "unrelated root"], { cwd });
+
+  const target = resolveReviewTarget(cwd, { base: "main" });
+  const identity = captureRepoStateIdentity(cwd, target);
+  assert.equal(identity.mergeBaseOid, null);
+  assert.equal(describeRepoStateDrift(cwd, target, identity), null);
+
+  run("git", ["checkout", "main"], { cwd });
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('moved');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "advance main"], { cwd });
+  run("git", ["checkout", "unrelated"], { cwd });
+
+  assert.equal(describeRepoStateDrift(cwd, target, identity).startsWith("HEAD"), false);
+  assert.match(describeRepoStateDrift(cwd, target, identity), /base ref main moved/i);
+});
+
 test("repo state identity reports when a branch target's base ref disappears", () => {
   const cwd = makeTempDir();
   initGitRepo(cwd);

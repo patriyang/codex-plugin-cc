@@ -407,7 +407,10 @@ export function describeRepoStateDrift(cwd, target, expected) {
     if (!baseOid) {
       return `base ref ${target.baseRef} no longer resolves`;
     }
-    if (expected.mergeBaseOid === undefined) {
+    // A pinned identity with no mergeBaseOid predates merge-base pinning; a null one means the
+    // repository had no common ancestor to pin. Neither leaves any merge-base evidence to compare,
+    // so both fall back to the base tip rather than passing the check for want of a comparison.
+    if (expected.mergeBaseOid === undefined || expected.mergeBaseOid === null) {
       if (baseOid !== expected.baseOid) {
         return `base ref ${target.baseRef} moved`;
       }

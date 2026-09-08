@@ -267,6 +267,7 @@ export async function runTrackedJob(job, runner, options = {}) {
     const execution = await runner();
     const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
     const failureClass = completionStatus === "completed" ? null : execution.failureClass ?? null;
+    const driftPhase = typeof execution.driftPhase === "string" ? execution.driftPhase : null;
     const retryable = completionStatus === "completed" ? false : execution.retryable === true;
     const retryAfterMs = retryable ? execution.retryAfterMs ?? null : null;
     const completedAt = nowIso();
@@ -287,6 +288,7 @@ export async function runTrackedJob(job, runner, options = {}) {
         phase: completionStatus === "completed" ? "done" : "failed",
         completedAt,
         failureClass,
+        ...(driftPhase !== null ? { driftPhase } : {}),
         retryable,
         retryAfterMs,
         result: execution.payload,
@@ -305,6 +307,7 @@ export async function runTrackedJob(job, runner, options = {}) {
         pid: null,
         completedAt,
         failureClass,
+        ...(driftPhase !== null ? { driftPhase } : {}),
         retryable,
         retryAfterMs,
         ...(completionStatus === "failed" && execution.errorMessage
@@ -323,7 +326,9 @@ export async function runTrackedJob(job, runner, options = {}) {
     const carriesFailureClass = error != null && Object.prototype.hasOwnProperty.call(Object(error), "failureClass");
     const carriesRetryable = error != null && Object.prototype.hasOwnProperty.call(Object(error), "retryable");
     const carriesRetryAfterMs = error != null && Object.prototype.hasOwnProperty.call(Object(error), "retryAfterMs");
+    const carriesDriftPhase = error != null && Object.prototype.hasOwnProperty.call(Object(error), "driftPhase");
     const failureClass = carriesFailureClass ? error.failureClass : classified.failureClass;
+    const driftPhase = carriesDriftPhase && typeof error.driftPhase === "string" ? error.driftPhase : null;
     const retryable = carriesRetryable ? error.retryable : classified.retryable;
     const retryAfterMs = retryable
       ? (carriesRetryAfterMs ? error.retryAfterMs : classified.retryAfterMs) ?? null
@@ -342,6 +347,7 @@ export async function runTrackedJob(job, runner, options = {}) {
         pid: null,
         completedAt,
         failureClass,
+        ...(driftPhase !== null ? { driftPhase } : {}),
         retryable,
         retryAfterMs,
         logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
@@ -354,6 +360,7 @@ export async function runTrackedJob(job, runner, options = {}) {
         errorMessage,
         completedAt,
         failureClass,
+        ...(driftPhase !== null ? { driftPhase } : {}),
         retryable,
         retryAfterMs
       });

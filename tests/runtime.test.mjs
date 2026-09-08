@@ -4444,6 +4444,7 @@ test("a background review refuses to review a repository that moved under its pi
   // A controller must be able to tell a moved-repository failure from a real
   // review failure without reading the message.
   assert.equal(job.failureClass, "state-drift");
+  assert.equal(job.driftPhase, "pre-execution");
   assert.equal(job.retryable, true);
 });
 
@@ -4483,6 +4484,7 @@ test("a native review retains its output when the working tree changes during th
   assert.equal(storedJob.status, "failed");
   assert.match(storedJob.errorMessage, /review completed.*state that has since moved/i);
   assert.equal(storedJob.failureClass, "state-drift");
+  assert.equal(storedJob.driftPhase, "post-completion");
   assert.equal(storedJob.retryable, true);
 
   // The turn completed, so its review text must survive the drift classification:

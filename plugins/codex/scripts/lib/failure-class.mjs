@@ -4,6 +4,8 @@ export const STALLED = "stalled";
 export const STATE_DRIFT = "state-drift";
 export const OUTDATED_CLIENT = "outdated-client";
 export const CAPACITY_RETRY_AFTER_MS = 60_000;
+// The CodexErrorInfo variant Codex sends for a usage-limit rejection.
+const USAGE_LIMIT_ERROR_INFO = "usageLimitExceeded";
 const OUTDATED_CLIENT_GUIDANCE =
   "Update Codex with `npm install -g @openai/codex@latest`, or pass --model to pick a model this Codex version supports.";
 
@@ -14,6 +16,10 @@ export function formatFailureMessage(message, failureClass) {
   return `${message}\n\n${OUTDATED_CLIENT_GUIDANCE}`;
 }
 
+// Codex states the reset as a bare wall clock ("try again at 9:01 PM") with no date and no zone,
+// and exposes no structured reset timestamp to read instead, so it is read in the host's local
+// time — the clock the user saw. A form this does not recognize leaves the class set and the
+// pacing null: no pacing is safe, and a confidently wrong wait is not.
 function parseUsageLimitRetryAfterMs(message, now) {
   const clockMatch = /\btry again at\s+(\d{1,2}):(\d{2})\s*(AM|PM)\b/i.exec(message);
   if (clockMatch) {
@@ -47,7 +53,17 @@ function parseUsageLimitRetryAfterMs(message, now) {
   return null;
 }
 
-export function classifyFailureMessage(message, now = Date.now()) {
+export function classifyFailureMessage(message, now = Date.now(), codexErrorInfo = null) {
+  // Codex names this failure in TurnError.codexErrorInfo. Prose is the fallback for servers that
+  // send no code, so where the code exists it decides — matching on wording can only be wrong.
+  if (codexErrorInfo === USAGE_LIMIT_ERROR_INFO) {
+    return {
+      failureClass: USAGE_LIMIT,
+      retryable: true,
+      retryAfterMs: typeof message === "string" ? parseUsageLimitRetryAfterMs(message, now) : null
+    };
+  }
+
   if (typeof message !== "string") {
     return { failureClass: null, retryable: false, retryAfterMs: null };
   }

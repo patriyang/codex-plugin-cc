@@ -328,7 +328,7 @@ Either way the failure is machine-readable: `/codex:status` and `/codex:result` 
 | --- | --- | --- |
 | `capacity` | The model was at capacity and the backup was too, or there was no backup to fall back to. | `true` when the turn produced nothing, with a `retryAfterMs` floor of 60s |
 | `stalled` | The turn's watchdog interrupted it: a tool call or the model itself went silent past its budget. The run produced no verdict — this is what distinguishes an aborted review from one that completed and found nothing. | `true` only when the turn produced nothing at all; no pacing, since waiting is not what fixes it |
-| `usage-limit` | Codex refused the turn because the account hit its ChatGPT usage limit. | `true` when the turn produced nothing, with a `retryAfterMs` taken from the reset time in the message when Codex states one |
+| `usage-limit` | Codex refused the turn because the account hit its ChatGPT usage limit. Read from Codex's own error code where it sends one, and from the message otherwise. | `true` when the turn produced nothing, with a `retryAfterMs` taken from the reset time in the message when Codex states one, and absent when it does not |
 | `state-drift` | A background review's repository moved between enqueue and execution. The companion `driftPhase` field says which side of execution it moved on. | `true`, no pacing |
 | `outdated-client` | The installed Codex CLI is too old for the selected model (for example `gpt-6-astra` on a CLI older than 0.153). Update Codex or pass `--model`. | `false` |
 | `null` | Anything else. Read `failureMessage`. | `false` |

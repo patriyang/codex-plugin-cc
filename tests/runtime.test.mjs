@@ -1278,6 +1278,26 @@ test("classifyFailureMessage recognizes usage limits and parses retry pacing", (
     retryable: true,
     retryAfterMs: CAPACITY_RETRY_AFTER_MS
   });
+
+  // Codex names the failure in TurnError.codexErrorInfo, so the code decides even when the prose
+  // it came with says nothing recognizable -- and even when the prose points somewhere else.
+  assert.deepEqual(classifyFailureMessage("Rejected.", now, "usageLimitExceeded"), {
+    failureClass: "usage-limit",
+    retryable: true,
+    retryAfterMs: null
+  });
+
+  assert.deepEqual(classifyFailureMessage("The selected model is at capacity.", now, "usageLimitExceeded"), {
+    failureClass: "usage-limit",
+    retryable: true,
+    retryAfterMs: null
+  });
+
+  assert.deepEqual(classifyFailureMessage(message, now, "usageLimitExceeded"), {
+    failureClass: "usage-limit",
+    retryable: true,
+    retryAfterMs: nextReset.getTime() - now
+  });
 });
 
 test("fallback model resolution honors env, config, discovery, and none precedence", async () => {

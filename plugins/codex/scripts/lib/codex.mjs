@@ -1277,9 +1277,14 @@ function classifyTurnFailure(turnState, status) {
   }
   // A watchdog abort is a fact about the turn, not a string in the error, so it is read from the
   // turn state rather than matched out of the message.
+  const terminalError = turnFailureError(turnState);
   const failure = turnState.stalled === true
     ? { failureClass: STALLED, retryable: true, retryAfterMs: null }
-    : classifyFailureMessage(extractErrorMessage(turnFailureError(turnState)));
+    : classifyFailureMessage(
+        extractErrorMessage(terminalError),
+        Date.now(),
+        typeof terminalError?.codexErrorInfo === "string" ? terminalError.codexErrorInfo : null
+      );
   // Repeating is only safe when the turn left nothing behind, and pacing is guidance for a retry
   // that is actually on offer.
   const retryable = failure.retryable && turnProducedNothing(turnState);

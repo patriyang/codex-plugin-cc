@@ -96,7 +96,7 @@ All `git` commands in this loop, and all `codex-companion.mjs` invocations, run 
 
 ## Dispatch and Follow-Through
 
-This loop is sequential: the controller cannot take the next step until the current job finishes. Implementer and reviewer runs at `xhigh` routinely outlast a single foreground `Bash` window, so enqueue the Codex work detached and use bounded foreground waits against its persisted job record.
+This loop is sequential: the controller cannot take the next step until the current job finishes. Implementer and reviewer runs at `max` routinely outlast a single foreground `Bash` window, so enqueue the Codex work detached and use bounded foreground waits against its persisted job record.
 
 - Enqueue every implementer, spec-reviewer, and code-quality-reviewer step with `task --background --json`. The enqueue call returns immediately; read its `jobId` from the single JSON blob. The Final Review uses `review --background --json` under the same contract.
 - Block on that ID in a foreground `Bash` call, setting the tool timeout comfortably above the companion wait timeout. `jobId` and `WORKTREE_ROOT` are dynamic values: shell-escape each exactly once before building the command. Keep `--` before the job ID, and keep `"${CLAUDE_PLUGIN_ROOT}"` double quoted because the shell expands it:
@@ -172,8 +172,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C ${rootArg} --wr
 - The controller must have the implementer's report before it can act, so this step blocks the loop. Run it per Dispatch and Follow-Through above rather than as a plain foreground call.
 - Use `--fresh` so the implementer gets a clean Codex thread.
 - After the enqueue-and-wait contract returns the result JSON, read `.storedJob.result.rawOutput` for the report body (the `## Status` section step 3 inspects), record `.storedJob.threadId` as `IMPLEMENTER_THREAD_ID` for this task, and set `const threadIdArg = shellEscape(IMPLEMENTER_THREAD_ID)` for subsequent resume instructions — it stays fixed for the whole task's fix loop.
-- For `--model`, use the user's value if they passed one; otherwise pass `--model gpt-6-astra` explicitly. `/codex:implement` defaults to `gpt-6-astra`, passed explicitly rather than left to the runtime default.
-- For `--effort`, use the user's value if they passed one; otherwise pass `--effort xhigh` explicitly. `/codex:implement` defaults to `xhigh` rather than the runtime default of `high`.
+- For `--model`, use the user's value if they passed one; otherwise pass `--model gpt-5.6-luna` explicitly. `/codex:implement` defaults to `gpt-5.6-luna` rather than the runtime default of `gpt-6-astra`.
+- For `--effort`, use the user's value if they passed one; otherwise pass `--effort max` explicitly. `/codex:implement` defaults to `max` rather than the runtime default of `high`.
 - The prompt is the substituted template text. Pass it as a single positional argument (heredoc/quoting as needed).
 
 ### 3. Parse implementer report
@@ -182,7 +182,7 @@ The report body is the `.storedJob.result.rawOutput` field of the result JSON fr
 
 - **NEEDS_CONTEXT** → The operator can unblock with a reply. If Codex listed discrete options, present them via `AskUserQuestion`; otherwise show the questions inline and collect answers. Re-dispatch step 2 with `{{TASK_CONTEXT}}` augmented (or with the operator's decision appended) and `--resume-id ${threadIdArg}` so the implementer keeps its working context.
 - **BLOCKED** → The operator alone cannot unblock. Diagnose the specific reason Codex gave:
-  - Model/capacity issue → re-dispatch one effort step above the run's current effort when the run's model supports the next level; otherwise escalate to a stronger model. The `gpt-6-astra` default supports two steps above `xhigh` (`max`, then `ultra`). The run now warns when the model does not advertise the requested level; treat that warning as the escalation not taking effect rather than assuming it did.
+  - Model/capacity issue → re-dispatch one effort step above the run's current effort when the run's model supports the next level; otherwise escalate to a stronger model. The `gpt-5.6-luna` default already runs at its top level, `max` (it does not advertise `ultra`), so a capacity block on the default escalates to a stronger model directly. The run now warns when the model does not advertise the requested level; treat that warning as the escalation not taking effect rather than assuming it did.
   - Codex sandbox or permission denial → check the error, decide whether to grant access or re-scope. Surface to user if unsure.
   - Plan internally inconsistent or wrong → stop and surface to user.
   - Repeated failed attempts → break the task into smaller pieces or escalate.
@@ -232,7 +232,7 @@ Load `${CLAUDE_PLUGIN_ROOT}/prompts/sdd-spec-reviewer.md`. Substitute:
 - `{{IMPLEMENTER_REPORT}}` — the full report from step 3
 - `{{COMMITS_RANGE}}` — from step 4
 
-Invoke Codex read-only (same `--model`/`--effort` resolution as step 2 — default `--model gpt-6-astra`, `--effort xhigh`):
+Invoke Codex read-only (same `--model`/`--effort` resolution as step 2 — default `--model gpt-5.6-luna`, `--effort max`):
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C ${rootArg} --fresh --background --json [--model <m>] [--effort <e>] "<filled prompt>"
@@ -253,7 +253,7 @@ Load `${CLAUDE_PLUGIN_ROOT}/prompts/sdd-code-quality-reviewer.md`. Substitute:
 - `{{IMPLEMENTER_SUMMARY}}` — the implementer's summary section
 - `{{COMMITS_RANGE}}` — from step 4 (or updated after fix iterations)
 
-Invoke read-only (same `--model`/`--effort` resolution as step 2 — default `--model gpt-6-astra`, `--effort xhigh`):
+Invoke read-only (same `--model`/`--effort` resolution as step 2 — default `--model gpt-5.6-luna`, `--effort max`):
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C ${rootArg} --fresh --background --json [--model <m>] [--effort <e>] "<filled prompt>"
@@ -331,7 +331,7 @@ Use the enqueue-and-bounded-wait contract in **Dispatch and Follow-Through** for
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task -C ${rootArg} --write --fresh --background --json [--model <m>] [--effort <e>] "<wrapped plan>"
 ```
 
-(Same `--model`/`--effort` resolution as sequential mode — default `--model gpt-6-astra`, `--effort xhigh` unless the user passed one.)
+(Same `--model`/`--effort` resolution as sequential mode — default `--model gpt-5.6-luna`, `--effort max` unless the user passed one.)
 
 The single-shot Codex agent leaves its changes unstaged and uncommitted too (same sandbox limitation). After it returns, stage and commit the working-tree changes yourself as two separate controller requests:
 
@@ -360,7 +360,7 @@ Show the report. Propose next steps.
 - `--single-shot` → legacy one-Codex-agent mode.
 - `--sequential` → explicit SDD mode (also the default).
 - User-supplied `--background` / `--wait` → Claude-side execution control only. Do not forward either raw flag to `task`; independently add `task --background --json` to every Codex step so SDD can use the tracked enqueue-and-wait contract. `task --wait` remains an explicit no-op and is never needed here.
-- `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run. If omitted, `--model` defaults to `gpt-6-astra` and `--effort` defaults to `xhigh` (both passed explicitly by this command; the runtime defaults are `gpt-6-astra` / `high`).
+- `--model <m>` / `--effort <e>` → applied to every Codex invocation in this run. If omitted, `--model` defaults to `gpt-5.6-luna` and `--effort` defaults to `max` (both passed explicitly by this command, overriding the runtime defaults of `gpt-6-astra` / `high`).
 - `-C ${rootArg}` → applied to every Codex invocation in this run (established in Pre-flight Checks). Pins the implementer/reviewer workspace to the task's worktree instead of `codex-companion.mjs`'s default of the controller's own process cwd.
 - `--resume` / `--fresh` → ignored in SDD mode (the orchestrator picks per-step). SDD resumes the implementer by explicit thread id via `--resume-id ${threadIdArg}` (not `--resume-last`, which would resolve to whichever `task`-class thread was dispatched most recently — often a reviewer, not the implementer).
 

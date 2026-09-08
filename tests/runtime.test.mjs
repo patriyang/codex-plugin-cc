@@ -661,7 +661,7 @@ function setupDeepReviewRepo(behavior = "review-ok") {
   return { repo, binDir, statePath: path.join(binDir, "fake-codex-state.json") };
 }
 
-test("deep-review defaults to gpt-6-astra at high effort", () => {
+test("deep-review defaults to gpt-5.6-sol at high effort", () => {
   const { repo, binDir, statePath } = setupDeepReviewRepo();
 
   const result = run("node", [SCRIPT, "deep-review"], {
@@ -670,10 +670,10 @@ test("deep-review defaults to gpt-6-astra at high effort", () => {
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^Model: gpt-6-astra$/m);
+  assert.match(result.stdout, /^Model: gpt-5\.6-sol$/m);
   assert.match(result.stdout, /^Effort: high$/m);
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
+  assert.equal(state.lastTurnStart.model, "gpt-5.6-sol");
   assert.equal(state.lastTurnStart.effort, "high");
 });
 
@@ -783,7 +783,7 @@ test("deep-review JSON reports the resolved model and effort", () => {
 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.model, "gpt-6-astra");
+  assert.equal(payload.model, "gpt-5.6-sol");
   assert.equal(payload.effort, "high");
 });
 

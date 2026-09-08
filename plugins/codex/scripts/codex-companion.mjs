@@ -1486,7 +1486,7 @@ async function main() {
     case "deep-review":
       await handleReviewCommand(argv, {
         reviewName: "Deep Review",
-        defaultModel: "gpt-6-astra",
+        defaultModel: "gpt-5.6-sol",
         defaultEffort: "high"
       });
       break;

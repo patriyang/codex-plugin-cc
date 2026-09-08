@@ -122,29 +122,29 @@ test("deep review command auto-decides execution mode and uses a tracked backgro
   assert.match(source, /\[--model <model\|spark\|astra>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh\|max\|ultra>\]/);
   // README documents the deep-review defaults so command + docs cannot drift.
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
-  assert.match(readme, /`\/codex:deep-review` uses `gpt-6-astra` with `high` reasoning effort/);
+  assert.match(readme, /`\/codex:deep-review` uses `gpt-5\.6-sol` with `high` reasoning effort/);
 });
 
-test("implement command defaults to gpt-6-astra at xhigh effort", () => {
+test("implement command defaults to gpt-5.6-luna at max effort", () => {
   const source = read("commands/implement.md");
   // Step 2 default-resolution instructions.
-  assert.match(source, /otherwise pass `--model gpt-6-astra` explicitly/);
-  assert.match(source, /`\/codex:implement` defaults to `gpt-6-astra`, passed explicitly rather than left to the runtime default/);
-  assert.match(source, /otherwise pass `--effort xhigh` explicitly/);
-  assert.match(source, /`\/codex:implement` defaults to `xhigh` rather than the runtime default of `high`/);
+  assert.match(source, /otherwise pass `--model gpt-5\.6-luna` explicitly/);
+  assert.match(source, /`\/codex:implement` defaults to `gpt-5\.6-luna` rather than the runtime default of `gpt-6-astra`/);
+  assert.match(source, /otherwise pass `--effort max` explicitly/);
+  assert.match(source, /`\/codex:implement` defaults to `max` rather than the runtime default of `high`/);
   // Reviewer + single-shot steps reuse the same defaults.
-  assert.match(source, /default `--model gpt-6-astra`, `--effort xhigh`/);
+  assert.match(source, /default `--model gpt-5\.6-luna`, `--effort max`/);
   // Flag reference states both defaults.
   assert.match(
     source,
-    /`--model` defaults to `gpt-6-astra` and `--effort` defaults to `xhigh`/
+    /`--model` defaults to `gpt-5\.6-luna` and `--effort` defaults to `max`/
   );
   // Old defaults must not linger anywhere in the command prose.
   assert.doesNotMatch(source, /default `--effort medium`/);
 
   // README must document the same defaults so command + docs cannot drift.
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
-  assert.match(readme, /`\/codex:implement` uses `gpt-6-astra` with `xhigh` reasoning effort/);
+  assert.match(readme, /`\/codex:implement` uses `gpt-5\.6-luna` with `max` reasoning effort/);
 });
 
 test("implement routes Git metadata writes through scoped controller escalation", () => {
@@ -382,7 +382,7 @@ test("README documents per-command model/effort defaults, not one global default
   // The runtime default only applies to commands that pin nothing of their own.
   assert.match(runtime, /const DEFAULT_CODEX_MODEL = "gpt-6-astra";/);
   assert.match(runtime, /const DEFAULT_CODEX_REASONING_EFFORT = "high";/);
-  assert.match(runtime, /defaultModel: "gpt-6-astra"/);
+  assert.match(runtime, /defaultModel: "gpt-5\.6-sol"/);
   assert.match(runtime, /defaultEffort: "high"/);
 
   // Every command row in the defaults table.
@@ -397,8 +397,8 @@ test("README documents per-command model/effort defaults, not one global default
     readme,
     /\| `\/codex:adversarial-review` \| `gpt-6-astra` \| \*\(none sent — Codex's own default\)\* \|/
   );
-  assert.match(readme, /\| `\/codex:deep-review` \| `gpt-6-astra` \| `high` \|/);
-  assert.match(readme, /\| `\/codex:implement` \| `gpt-6-astra` \| `xhigh` \|/);
+  assert.match(readme, /\| `\/codex:deep-review` \| `gpt-5\.6-sol` \| `high` \|/);
+  assert.match(readme, /\| `\/codex:implement` \| `gpt-5\.6-luna` \| `max` \|/);
 
   // The alias mapping and the minimum-CLI note live next to the table.
   assert.match(readme, /Passing `spark` to `--model` maps to `gpt-5\.3-codex-spark`, and `astra` maps to `gpt-6-astra`/);

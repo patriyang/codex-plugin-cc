@@ -1616,6 +1616,50 @@ rl.on("line", (line) => {
 	            }
 	          });
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+	        } else if (BEHAVIOR === "idle-hung-turn-after-shell-edit") {
+	          // Same abort shape as above, except the edits are applied through the shell
+	          // (apply_patch in a heredoc) instead of a native fileChange item. Codex reports
+	          // that as a commandExecution, so nothing reaches fileChanges (#121).
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "agentMessage",
+	                id: "msg_preamble_" + turnId,
+	                text: "I am applying only the requested edits now, then I will report back."
+	              }
+	            }
+	          });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "commandExecution",
+	                id: "cmd_" + turnId,
+	                command: [
+	                  "bash -lc 'apply_patch <<PATCH",
+	                  "*** Begin Patch",
+	                  "*** Update File: README.md",
+	                  "@@",
+	                  "-hello",
+	                  "+hello there",
+	                  "*** Add File: docs/NOTES.md",
+	                  "+notes",
+	                  "*** End Patch",
+	                  "PATCH'"
+	                ].join("\\n"),
+	                cwd: process.cwd(),
+	                status: "completed",
+	                exitCode: 0
+	              }
+	            }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
 	        } else if (BEHAVIOR === "idle-hung-turn" || BEHAVIOR === "idle-hung-slow-interrupt") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          send({

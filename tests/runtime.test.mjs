@@ -7562,6 +7562,49 @@ test("a task aborted by the idle watchdog does not report its preamble as the fi
   assert.doesNotMatch(storedPayload.job.summary ?? "", /applying only the requested edits/);
 });
 
+test("a dead run's touchedFiles covers edits applied through apply_patch in the shell (#121)", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "idle-hung-turn-after-shell-edit");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "1500",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "300"
+  };
+  const launched = run("node", [SCRIPT, "task", "--write", "--background", "--json", "apply the edits"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const result = JSON.parse(stored.stdout).storedJob.result;
+
+  // The recovery hint has to name what the dead run left behind, whichever edit path applied it.
+  assert.ok(
+    result.touchedFiles.some((file) => file.endsWith("README.md")),
+    JSON.stringify(result.touchedFiles)
+  );
+  assert.ok(
+    result.touchedFiles.some((file) => file.endsWith(path.join("docs", "NOTES.md"))),
+    JSON.stringify(result.touchedFiles)
+  );
+});
+
 // --- gpt-6-astra support (#115) ---------------------------------------------
 
 const OUTDATED_CODEX_MESSAGE =

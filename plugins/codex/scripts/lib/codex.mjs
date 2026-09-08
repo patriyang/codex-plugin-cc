@@ -518,6 +518,7 @@ function createTurnCaptureState(threadId, options = {}) {
     lastActivityAt: null,
     activityCount: 0,
     itemActivityCount: 0,
+    observedCommandIds: new Set(),
     stallCleanup: null,
     stalled: false,
     activeTools: new Map(),
@@ -974,8 +975,17 @@ function recordItem(state, item, lifecycle, threadId = null) {
     return;
   }
 
-  if (item.type === "commandExecution" && lifecycle === "completed") {
-    state.commandExecutions.push(item);
+  if (item.type === "commandExecution") {
+    // A command that starts, writes, and then hangs never emits item/completed -- the
+    // watchdog finalizes the turn first. Track it from the start so the caution still
+    // fires; paths stay sourced from completed patches only, since an unfinished one
+    // has an unknown outcome and a false "already modified" is worse than silence.
+    if (item.id) {
+      state.observedCommandIds.add(item.id);
+    }
+    if (lifecycle === "completed") {
+      state.commandExecutions.push(item);
+    }
   }
 }
 
@@ -1950,7 +1960,8 @@ export async function runAppServerTurn(cwd, options = {}) {
       effortWarning,
       fileChanges: turnState.fileChanges,
       touchedFiles: collectTouchedFiles(turnState.fileChanges, turnState.commandExecutions, cwd),
-      commandExecutions: turnState.commandExecutions
+      commandExecutions: turnState.commandExecutions,
+      commandCount: Math.max(turnState.observedCommandIds.size, turnState.commandExecutions.length)
     };
   });
 }

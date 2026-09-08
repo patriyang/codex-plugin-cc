@@ -1687,6 +1687,25 @@ rl.on("line", (line) => {
 	            }
 	          });
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+	        } else if (BEHAVIOR === "idle-hung-turn-during-shell-edit") {
+	          // The command starts, writes, and then hangs -- item/completed never arrives,
+	          // so the watchdog finalizes the turn with nothing in commandExecutions (#121).
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "commandExecution",
+	                id: "cmd_" + turnId,
+	                command: "bash -lc 'sed -i.bak s/hello/goodbye/ README.md'",
+	                cwd: process.cwd(),
+	                status: "inProgress"
+	              }
+	            }
+	          });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
 	        } else if (BEHAVIOR === "idle-hung-turn" || BEHAVIOR === "idle-hung-slow-interrupt") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          send({

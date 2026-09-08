@@ -754,7 +754,7 @@ async function executeTaskRun(request) {
   const rawOutput = result.status === 0 && typeof result.finalMessage === "string" ? result.finalMessage : "";
   const partialOutput = result.status !== 0 && typeof result.finalMessage === "string" ? result.finalMessage : "";
   const failureMessage = result.failureMessage ?? result.error?.message ?? result.stderr ?? "";
-  const commandCount = Array.isArray(result.commandExecutions) ? result.commandExecutions.length : 0;
+  const commandCount = typeof result.commandCount === "number" ? result.commandCount : 0;
   const rendered = renderTaskResult(
     {
       rawOutput,

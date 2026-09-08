@@ -122,29 +122,29 @@ test("deep review command auto-decides execution mode and uses a tracked backgro
   assert.match(source, /\[--model <model\|spark\|astra>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh\|max\|ultra>\]/);
   // README documents the deep-review defaults so command + docs cannot drift.
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
-  assert.match(readme, /`\/codex:deep-review` uses `gpt-6-astra` with `high` reasoning effort/);
+  assert.match(readme, /`\/codex:deep-review` uses `gpt-5\.6-sol` with `high` reasoning effort/);
 });
 
-test("implement command defaults to gpt-6-astra at xhigh effort", () => {
+test("implement command defaults to gpt-5.6-luna at max effort", () => {
   const source = read("commands/implement.md");
   // Step 2 default-resolution instructions.
-  assert.match(source, /otherwise pass `--model gpt-6-astra` explicitly/);
-  assert.match(source, /`\/codex:implement` defaults to `gpt-6-astra`, passed explicitly rather than left to the runtime default/);
-  assert.match(source, /otherwise pass `--effort xhigh` explicitly/);
-  assert.match(source, /`\/codex:implement` defaults to `xhigh` rather than the runtime default of `high`/);
+  assert.match(source, /otherwise pass `--model gpt-5\.6-luna` explicitly/);
+  assert.match(source, /`\/codex:implement` defaults to `gpt-5\.6-luna` rather than the runtime default of `gpt-6-astra`/);
+  assert.match(source, /otherwise pass `--effort max` explicitly/);
+  assert.match(source, /`\/codex:implement` defaults to `max` rather than the runtime default of `low`/);
   // Reviewer + single-shot steps reuse the same defaults.
-  assert.match(source, /default `--model gpt-6-astra`, `--effort xhigh`/);
+  assert.match(source, /default `--model gpt-5\.6-luna`, `--effort max`/);
   // Flag reference states both defaults.
   assert.match(
     source,
-    /`--model` defaults to `gpt-6-astra` and `--effort` defaults to `xhigh`/
+    /`--model` defaults to `gpt-5\.6-luna` and `--effort` defaults to `max`/
   );
   // Old defaults must not linger anywhere in the command prose.
   assert.doesNotMatch(source, /default `--effort medium`/);
 
   // README must document the same defaults so command + docs cannot drift.
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
-  assert.match(readme, /`\/codex:implement` uses `gpt-6-astra` with `xhigh` reasoning effort/);
+  assert.match(readme, /`\/codex:implement` uses `gpt-5\.6-luna` with `max` reasoning effort/);
 });
 
 test("implement routes Git metadata writes through scoped controller escalation", () => {
@@ -381,12 +381,12 @@ test("README documents per-command model/effort defaults, not one global default
 
   // The runtime default only applies to commands that pin nothing of their own.
   assert.match(runtime, /const DEFAULT_CODEX_MODEL = "gpt-6-astra";/);
-  assert.match(runtime, /const DEFAULT_CODEX_REASONING_EFFORT = "high";/);
-  assert.match(runtime, /defaultModel: "gpt-6-astra"/);
+  assert.match(runtime, /const DEFAULT_CODEX_REASONING_EFFORT = "low";/);
+  assert.match(runtime, /defaultModel: "gpt-5\.6-sol"/);
   assert.match(runtime, /defaultEffort: "high"/);
 
   // Every command row in the defaults table.
-  assert.match(readme, /\| `\/codex:rescue` \(and delegated tasks\) \| `gpt-6-astra` \| `high` \|/);
+  assert.match(readme, /\| `\/codex:rescue` \(and delegated tasks\) \| `gpt-6-astra` \| `low` \|/);
   // The two "no effort sent" rows are the subtlest cells in the table, so pin
   // the effort column too rather than stopping after the model.
   assert.match(
@@ -397,8 +397,8 @@ test("README documents per-command model/effort defaults, not one global default
     readme,
     /\| `\/codex:adversarial-review` \| `gpt-6-astra` \| \*\(none sent — Codex's own default\)\* \|/
   );
-  assert.match(readme, /\| `\/codex:deep-review` \| `gpt-6-astra` \| `high` \|/);
-  assert.match(readme, /\| `\/codex:implement` \| `gpt-6-astra` \| `xhigh` \|/);
+  assert.match(readme, /\| `\/codex:deep-review` \| `gpt-5\.6-sol` \| `high` \|/);
+  assert.match(readme, /\| `\/codex:implement` \| `gpt-5\.6-luna` \| `max` \|/);
 
   // The alias mapping and the minimum-CLI note live next to the table.
   assert.match(readme, /Passing `spark` to `--model` maps to `gpt-5\.3-codex-spark`, and `astra` maps to `gpt-6-astra`/);
@@ -462,7 +462,7 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(rescue, /`--background` is forwarded to `task` as `--background --json`/i);
   assert.match(rescue, /neither execution flag belongs in the natural-language task text/i);
   assert.match(rescue, /`--model` and `--effort` are runtime-selection flags/i);
-  assert.match(rescue, /runtime defaults to `high`/i);
+  assert.match(rescue, /runtime defaults to `low`/i);
   assert.match(rescue, /If they ask for `spark`, map it to `gpt-5\.3-codex-spark`; if they ask for `astra`, map it to `gpt-6-astra`/i);
   assert.match(rescue, /If the request includes `--resume`, do not ask whether to continue/i);
   assert.match(rescue, /If the request includes `--fresh`, do not ask whether to continue/i);
@@ -497,7 +497,7 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(agent, /Use exactly one `Bash` call/i);
   assert.match(agent, /Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own/i);
   assert.match(agent, /Do not call `review`, `adversarial-review`, `deep-review`, `status`, `result`, or `cancel`/i);
-  assert.match(agent, /runtime defaults to `high`/i);
+  assert.match(agent, /runtime defaults to `low`/i);
   assert.match(agent, /runtime defaults to `gpt-6-astra`/i);
   assert.match(agent, /If the user asks for `spark`, map that to `--model gpt-5\.3-codex-spark`; if the user asks for `astra`, map that to `--model gpt-6-astra`/i);
   assert.match(agent, /If the user asks for a concrete model name such as `gpt-5\.4-mini`, pass it through with `--model`/i);
@@ -510,7 +510,7 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(runtimeSkill, /Do not call `setup`, `review`, `adversarial-review`, `deep-review`, `status`, `result`, or `cancel`/i);
   assert.match(runtimeSkill, /use the `gpt-5-4-prompting` skill to rewrite the user's request into a tighter Codex prompt/i);
   assert.match(runtimeSkill, /That prompt drafting is the only Claude-side work allowed/i);
-  assert.match(runtimeSkill, /runtime defaults to `high`/i);
+  assert.match(runtimeSkill, /runtime defaults to `low`/i);
   assert.match(runtimeSkill, /runtime defaults to `gpt-6-astra`/i);
   assert.match(runtimeSkill, /Map `spark` to `--model gpt-5\.3-codex-spark` and `astra` to `--model gpt-6-astra`/i);
   assert.match(runtimeSkill, /If the forwarded request includes `--wait`, remove it before invoking `task`/i);
@@ -523,7 +523,7 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(runtimeSkill, /Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own/i);
   assert.match(runtimeSkill, /If the Bash call fails or Codex cannot be invoked, return nothing/i);
   assert.match(readme, /`codex:codex-rescue` subagent/i);
-  assert.match(readme, /if you do not pass `--model` or `--effort`, `\/codex:rescue` uses `gpt-6-astra` with `high` reasoning effort/i);
+  assert.match(readme, /if you do not pass `--model` or `--effort`, `\/codex:rescue` uses `gpt-6-astra` with `low` reasoning effort/i);
   assert.match(readme, /--model gpt-5\.4-mini --effort medium/i);
   assert.match(readme, /`spark`, the plugin maps that to `gpt-5\.3-codex-spark`/i);
   assert.match(readme, /continue a previous Codex task/i);

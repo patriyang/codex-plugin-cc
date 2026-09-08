@@ -661,7 +661,7 @@ function setupDeepReviewRepo(behavior = "review-ok") {
   return { repo, binDir, statePath: path.join(binDir, "fake-codex-state.json") };
 }
 
-test("deep-review defaults to gpt-6-astra at high effort", () => {
+test("deep-review defaults to gpt-5.6-sol at high effort", () => {
   const { repo, binDir, statePath } = setupDeepReviewRepo();
 
   const result = run("node", [SCRIPT, "deep-review"], {
@@ -670,10 +670,10 @@ test("deep-review defaults to gpt-6-astra at high effort", () => {
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^Model: gpt-6-astra$/m);
+  assert.match(result.stdout, /^Model: gpt-5\.6-sol$/m);
   assert.match(result.stdout, /^Effort: high$/m);
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
+  assert.equal(state.lastTurnStart.model, "gpt-5.6-sol");
   assert.equal(state.lastTurnStart.effort, "high");
 });
 
@@ -783,7 +783,7 @@ test("deep-review JSON reports the resolved model and effort", () => {
 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.model, "gpt-6-astra");
+  assert.equal(payload.model, "gpt-5.6-sol");
   assert.equal(payload.effort, "high");
 });
 
@@ -2675,7 +2675,7 @@ test("task --fresh is treated as routing control and does not leak into the prom
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(fakeState.lastTurnStart.prompt, "diagnose the flaky test");
   assert.equal(fakeState.lastTurnStart.model, "gpt-6-astra");
-  assert.equal(fakeState.lastTurnStart.effort, "high");
+  assert.equal(fakeState.lastTurnStart.effort, "low");
 });
 
 test("task forwards model selection and reasoning effort to app-server turn/start", () => {
@@ -7344,7 +7344,7 @@ test("a task aborted by the idle watchdog does not report its preamble as the fi
 const OUTDATED_CODEX_MESSAGE =
   "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.";
 
-test("task defaults to gpt-6-astra at high effort", () => {
+test("task defaults to gpt-6-astra at low effort", () => {
   const { repo, binDir, statePath } = setupEffortRepo();
 
   const result = run("node", [SCRIPT, "task", "reply ok"], {
@@ -7355,7 +7355,7 @@ test("task defaults to gpt-6-astra at high effort", () => {
   assert.equal(result.status, 0, result.stderr);
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(state.lastTurnStart.model, "gpt-6-astra");
-  assert.equal(state.lastTurnStart.effort, "high");
+  assert.equal(state.lastTurnStart.effort, "low");
 });
 
 test("task maps the astra alias to gpt-6-astra", () => {

@@ -89,7 +89,7 @@ const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const JOB_WORKER_STARTUP_TIMEOUT_MS = 10000;
 const JOB_WORKER_STARTUP_POLL_INTERVAL_MS = 25;
 const DEFAULT_CODEX_MODEL = "gpt-6-astra";
-const DEFAULT_CODEX_REASONING_EFFORT = "high";
+const DEFAULT_CODEX_REASONING_EFFORT = "low";
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 const MODEL_ALIASES = new Map([
   ["spark", "gpt-5.3-codex-spark"],
@@ -1486,7 +1486,7 @@ async function main() {
     case "deep-review":
       await handleReviewCommand(argv, {
         reviewName: "Deep Review",
-        defaultModel: "gpt-6-astra",
+        defaultModel: "gpt-5.6-sol",
         defaultEffort: "high"
       });
       break;

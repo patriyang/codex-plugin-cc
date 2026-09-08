@@ -7609,6 +7609,11 @@ test("a dead run's touchedFiles covers edits applied through apply_patch in the 
     !result.touchedFiles.some((file) => file.includes("NEVER-APPLIED.md")),
     JSON.stringify(result.touchedFiles)
   );
+  // A compound command's single exit status cannot attribute the patch either way.
+  assert.ok(
+    !result.touchedFiles.some((file) => file.includes("COMPOUND-UNKNOWN.md")),
+    JSON.stringify(result.touchedFiles)
+  );
 });
 
 test("a shell edit that hangs before completing still warns the recovering caller (#121)", async () => {

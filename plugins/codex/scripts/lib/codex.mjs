@@ -275,6 +275,21 @@ function extractApplyPatchPaths(commandExecution, workspaceRoot) {
     return [];
   }
 
+  // One exit status cannot describe a compound command. `apply_patch ... && npm test`
+  // would report untouched files when the patch failed but the check passed, and hide
+  // real ones when the patch applied but the check failed. Only attribute paths when
+  // apply_patch is the sole operation; anything else falls back to the caution. The
+  // operator scan deliberately looks only outside the patch body, since diff content
+  // legitimately contains `&&`, `;` and `|`.
+  const bodyStart = command.indexOf("*** Begin Patch");
+  const endMarker = "*** End Patch";
+  const bodyEnd = command.indexOf(endMarker);
+  const prefix = command.slice(0, bodyStart);
+  const suffix = bodyEnd === -1 ? "" : command.slice(bodyEnd + endMarker.length);
+  if (!prefix.includes("apply_patch") || /(?:&&|\|\||[;|])/.test(prefix) || /(?:&&|\|\||[;|])/.test(suffix)) {
+    return [];
+  }
+
   const commandCwd = typeof commandExecution?.cwd === "string" ? commandExecution.cwd.trim() : "";
   const workspaceCwd = typeof workspaceRoot === "string" ? workspaceRoot.trim() : "";
   const baseDirectory = commandCwd || workspaceCwd;

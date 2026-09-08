@@ -327,6 +327,21 @@ test("renderTaskResult warns about unattributed shell edits without touched file
   assert.match(output, /shell commands other than apply_patch are not listed/);
 });
 
+test("renderTaskResult omits the shell-edit caution for a read-only task", () => {
+  const output = renderTaskResult(
+    {
+      rawOutput: "",
+      failureMessage: "Codex task failed.",
+      touchedFiles: [],
+      commandCount: 3
+    },
+    { title: "Codex Task", write: false }
+  );
+
+  // A read-only run is sandboxed against writes, so its commands edited nothing.
+  assert.doesNotMatch(output, /shell commands other than apply_patch are not listed/);
+});
+
 test("renderTaskResult omits the shell-edit caution when no commands ran", () => {
   const output = renderTaskResult(
     {

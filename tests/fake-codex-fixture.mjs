@@ -1686,6 +1686,32 @@ rl.on("line", (line) => {
 	              }
 	            }
 	          });
+	          // apply_patch chained with another operation: the single exit status cannot
+	          // say whether the patch itself applied, so the path is not attributable.
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "commandExecution",
+	                id: "cmd_compound_" + turnId,
+	                command: [
+	                  "bash -lc 'apply_patch <<PATCH",
+	                  "*** Begin Patch",
+	                  "*** Update File: COMPOUND-UNKNOWN.md",
+	                  "@@",
+	                  "-a",
+	                  "+b",
+	                  "*** End Patch",
+	                  "PATCH' && npm test"
+	                ].join("\\n"),
+	                cwd: process.cwd(),
+	                status: "completed",
+	                exitCode: 0
+	              }
+	            }
+	          });
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
 	        } else if (BEHAVIOR === "idle-hung-turn-during-shell-edit") {
 	          // The command starts, writes, and then hangs -- item/completed never arrives,

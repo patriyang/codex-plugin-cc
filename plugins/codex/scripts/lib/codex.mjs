@@ -266,6 +266,14 @@ function extractApplyPatchPaths(commandExecution, workspaceRoot) {
     return [];
   }
 
+  // A patch that did not apply leaves the file untouched, but its headers still name
+  // the targets -- harvesting those would tell a recovering caller that work landed
+  // when none did, which is worse for the hint than omitting them.
+  const exitCode = commandExecution?.exitCode;
+  if (isFailedItemStatus(commandExecution?.status) || (typeof exitCode === "number" && exitCode !== 0)) {
+    return [];
+  }
+
   const commandCwd = typeof commandExecution?.cwd === "string" ? commandExecution.cwd.trim() : "";
   const workspaceCwd = typeof workspaceRoot === "string" ? workspaceRoot.trim() : "";
   const baseDirectory = commandCwd || workspaceCwd;

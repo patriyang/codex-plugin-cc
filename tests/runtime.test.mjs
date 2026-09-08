@@ -7604,6 +7604,11 @@ test("a dead run's touchedFiles covers edits applied through apply_patch in the 
     result.touchedFiles.some((file) => file.endsWith(path.join("docs", "NOTES.md"))),
     JSON.stringify(result.touchedFiles)
   );
+  // A patch that failed to apply names its target too, but nothing was written.
+  assert.ok(
+    !result.touchedFiles.some((file) => file.includes("NEVER-APPLIED.md")),
+    JSON.stringify(result.touchedFiles)
+  );
 });
 
 // --- gpt-6-astra support (#115) ---------------------------------------------

@@ -1659,6 +1659,33 @@ rl.on("line", (line) => {
 	              }
 	            }
 	          });
+	          // A patch that did not apply names its target in the same headers, but nothing
+	          // was written -- the recovery hint must not claim this file was modified.
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: {
+	                type: "commandExecution",
+	                id: "cmd_failed_" + turnId,
+	                command: [
+	                  "bash -lc 'apply_patch <<PATCH",
+	                  "*** Begin Patch",
+	                  "*** Update File: NEVER-APPLIED.md",
+	                  "@@",
+	                  "-nope",
+	                  "+nope",
+	                  "*** End Patch",
+	                  "PATCH'"
+	                ].join("\\n"),
+	                cwd: process.cwd(),
+	                status: "failed",
+	                exitCode: 1,
+	                aggregatedOutput: "apply_patch: invalid context\\n"
+	              }
+	            }
+	          });
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
 	        } else if (BEHAVIOR === "idle-hung-turn" || BEHAVIOR === "idle-hung-slow-interrupt") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });

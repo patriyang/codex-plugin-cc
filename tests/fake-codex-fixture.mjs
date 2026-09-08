@@ -74,6 +74,7 @@ const MODEL_CATALOG = [
 // own default so a plain run hits it without passing --model.
 const CAPACITY_BOUND_MODEL = "gpt-6-astra";
 const OUTDATED_CODEX_MESSAGE = "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.";
+const USAGE_LIMIT_MESSAGE = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 9:01 PM.";
 
 function buildModelListResult() {
   return {
@@ -367,6 +368,110 @@ function emitTurnFailed(threadId, turnId) {
     }
   });
   send({ method: "turn/completed", params: { threadId, turn: buildTurn(turnId, "failed") } });
+}
+
+function emitUsageLimitAfterFailedCommand(threadId, turnId) {
+  const failedOutput = "error connecting to api.github.com\\ncheck your internet connection or https://githubstatus.com";
+  send({ method: "turn/started", params: { threadId, turn: buildTurn(turnId) } });
+  send({
+    method: "item/started",
+    params: {
+      threadId,
+      turnId,
+      item: {
+        type: "commandExecution",
+        id: "cmd_" + turnId,
+        command: "gh pr view",
+        status: "inProgress"
+      }
+    }
+  });
+  send({
+    method: "item/completed",
+    params: {
+      threadId,
+      turnId,
+      item: {
+        type: "commandExecution",
+        id: "cmd_" + turnId,
+        command: "gh pr view",
+        status: "failed",
+        exitCode: 1,
+        aggregatedOutput: failedOutput
+      }
+    }
+  });
+  send({
+    method: "error",
+    params: {
+      threadId,
+      turnId,
+      error: { message: USAGE_LIMIT_MESSAGE }
+    }
+  });
+  send({ method: "turn/completed", params: { threadId, turn: buildTurn(turnId, "failed") } });
+}
+
+function emitTransientThenTerminalUsageLimit(threadId, turnId) {
+  send({ method: "turn/started", params: { threadId, turn: buildTurn(turnId) } });
+  send({
+    method: "error",
+    params: {
+      threadId,
+      turnId,
+      willRetry: true,
+      error: { message: "Transient upstream failure before retrying." }
+    }
+  });
+  send({
+    method: "error",
+    params: {
+      threadId,
+      turnId,
+      error: { message: USAGE_LIMIT_MESSAGE }
+    }
+  });
+  send({ method: "turn/completed", params: { threadId, turn: buildTurn(turnId, "failed") } });
+}
+
+function emitFailedCommandWithAuthoritativeTurnError(threadId, turnId) {
+  const failedOutput = "error connecting to api.github.com\\ncheck your internet connection or https://githubstatus.com";
+  send({ method: "turn/started", params: { threadId, turn: buildTurn(turnId) } });
+  send({
+    method: "item/started",
+    params: {
+      threadId,
+      turnId,
+      item: {
+        type: "commandExecution",
+        id: "cmd_" + turnId,
+        command: "gh pr view",
+        status: "inProgress"
+      }
+    }
+  });
+  send({
+    method: "item/completed",
+    params: {
+      threadId,
+      turnId,
+      item: {
+        type: "commandExecution",
+        id: "cmd_" + turnId,
+        command: "gh pr view",
+        status: "failed",
+        exitCode: 1,
+        aggregatedOutput: failedOutput
+      }
+    }
+  });
+  send({
+    method: "turn/completed",
+    params: {
+      threadId,
+      turn: buildTurn(turnId, "failed", { message: USAGE_LIMIT_MESSAGE })
+    }
+  });
 }
 
 function waitsForReviewRelease() {
@@ -750,6 +855,21 @@ rl.on("line", (line) => {
 	          break;
 	        }
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
+
+        if (BEHAVIOR === "usage-limit-after-failed-command") {
+          emitUsageLimitAfterFailedCommand(thread.id, turnId);
+          break;
+        }
+
+        if (BEHAVIOR === "transient-then-terminal-usage-limit") {
+          emitTransientThenTerminalUsageLimit(thread.id, turnId);
+          break;
+        }
+
+        if (BEHAVIOR === "failed-command-then-authoritative-turn-error") {
+          emitFailedCommandWithAuthoritativeTurnError(thread.id, turnId);
+          break;
+        }
 
 	        if (BEHAVIOR === "model-requires-newer-codex") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });

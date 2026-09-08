@@ -36,6 +36,7 @@
  *   reviewText: string,
  *   reasoningSummary: string[],
  *   error: unknown,
+ *   turnError: unknown,
  *   messages: Array<{ lifecycle: string, phase: string | null, text: string }>,
  *   fileChanges: ThreadItem[],
  *   commandExecutions: ThreadItem[],
@@ -482,6 +483,7 @@ function createTurnCaptureState(threadId, options = {}) {
     reviewText: "",
     reasoningSummary: [],
     error: null,
+    turnError: null,
     messages: [],
     fileChanges: [],
     commandExecutions: [],
@@ -665,6 +667,12 @@ function extractErrorMessage(value) {
     }
   }
   return null;
+}
+
+// Prefer the root turn's authoritative terminal error, then the latest non-retrying top-level
+// error notification; retain state.error only as the diagnostic fallback when neither was observed.
+function turnFailureError(state) {
+  return state.turnError ?? state.error;
 }
 
 function labelForToolItem(item) {
@@ -998,6 +1006,11 @@ function applyTurnNotification(state, message, watchdog = null) {
         watchdog?.clearActiveTools();
       }
       state.error ??= message.params.error;
+      // Only the root thread can fail the turn, so only its errors are candidates for the terminal
+      // one — a subagent's error stays diagnostic, exactly as its turn/completed is ignored below.
+      if (message.params.willRetry !== true && (message.params.threadId ?? null) === state.threadId) {
+        state.turnError = message.params.error;
+      }
       emitProgress(state.onProgress, `Codex error: ${message.params.error.message}`, "failed");
       scheduleInferredCompletion(state);
       break;
@@ -1006,6 +1019,9 @@ function applyTurnNotification(state, message, watchdog = null) {
         state.activeSubagentTurns.delete(message.params.threadId);
         scheduleInferredCompletion(state);
         break;
+      }
+      if (message.params.turn?.error != null) {
+        state.turnError = message.params.turn.error;
       }
       emitProgress(
         state.onProgress,
@@ -1263,9 +1279,17 @@ function classifyTurnFailure(turnState, status) {
   }
   // A watchdog abort is a fact about the turn, not a string in the error, so it is read from the
   // turn state rather than matched out of the message.
+  const terminalError = turnFailureError(turnState);
   const failure = turnState.stalled === true
     ? { failureClass: STALLED, retryable: true, retryAfterMs: null }
-    : classifyFailureMessage(extractErrorMessage(turnState.error));
+    // codexErrorInfo has object-shaped variants as well as bare strings, and both mean Codex named
+    // the failure. Pass whatever it sent through untouched: flattening the object ones to null
+    // would read as "no code" and hand the answer back to the wording.
+    : classifyFailureMessage(
+        extractErrorMessage(terminalError),
+        Date.now(),
+        terminalError?.codexErrorInfo ?? null
+      );
   // Repeating is only safe when the turn left nothing behind, and pacing is guidance for a retry
   // that is actually on offer.
   const retryable = failure.retryable && turnProducedNothing(turnState);
@@ -1625,7 +1649,7 @@ export async function runAppServerReview(cwd, options = {}) {
     const { sourceThreadId, turnState } = reviewAttempt;
     const status = buildResultStatus(turnState);
     const failure = classifyTurnFailure(turnState, status);
-    const failureMessage = formatFailureMessage(extractErrorMessage(turnState.error), failure.failureClass);
+    const failureMessage = formatFailureMessage(extractErrorMessage(turnFailureError(turnState)), failure.failureClass);
 
     return {
       status,
@@ -1865,7 +1889,7 @@ export async function runAppServerTurn(cwd, options = {}) {
 
     const status = buildResultStatus(turnState);
     const failure = classifyTurnFailure(turnState, status);
-    const failureMessage = formatFailureMessage(extractErrorMessage(turnState.error), failure.failureClass);
+    const failureMessage = formatFailureMessage(extractErrorMessage(turnFailureError(turnState)), failure.failureClass);
 
     return {
       status,

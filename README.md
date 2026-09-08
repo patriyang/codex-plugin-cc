@@ -328,7 +328,8 @@ Either way the failure is machine-readable: `/codex:status` and `/codex:result` 
 | --- | --- | --- |
 | `capacity` | The model was at capacity and the backup was too, or there was no backup to fall back to. | `true` when the turn produced nothing, with a `retryAfterMs` floor of 60s |
 | `stalled` | The turn's watchdog interrupted it: a tool call or the model itself went silent past its budget. The run produced no verdict — this is what distinguishes an aborted review from one that completed and found nothing. | `true` only when the turn produced nothing at all; no pacing, since waiting is not what fixes it |
-| `state-drift` | A background review's repository moved between enqueue and execution. | `true`, no pacing |
+| `usage-limit` | Codex refused the turn because the account hit its ChatGPT usage limit. Read from Codex's own error code where it sends one, and from the message otherwise. | `true` when the turn produced nothing, with a `retryAfterMs` taken from the reset time in the message when Codex states one, and absent when it does not |
+| `state-drift` | A background review's repository moved between enqueue and execution. The companion `driftPhase` field says which side of execution it moved on. | `true`, no pacing |
 | `outdated-client` | The installed Codex CLI is too old for the selected model (for example `gpt-6-astra` on a CLI older than 0.153). Update Codex or pass `--model`. | `false` |
 | `null` | Anything else. Read `failureMessage`. | `false` |
 
@@ -380,6 +381,10 @@ For rescue, `--background` enqueues a tracked Codex job and the command waits fo
 `/codex:status` and `/codex:result <job-id>` inspect a tracked job from another turn, or recover a run whose turn ended before its result was read.
 
 A background review pins the target it resolved at enqueue time, along with the repository state that target points at. If the repository moves before the detached worker starts — you commit the changes it was going to review, switch branches, or the base branch is deleted — the job fails with `failureClass: "state-drift"` and `retryable: true` rather than reviewing whatever is there now. Re-running the review picks up the new state. This trades a rare visible failure for the far worse alternative: a clean review of a change nobody looked at.
+
+What counts as moving is the state the review actually read, not every ref it named. A branch review reads `merge-base(HEAD, base)..HEAD`, so its pinned state is the merge base, not the base branch's tip: commits landing on the base branch during the review leave the reviewed diff byte-identical and are not drift. A rebase, which does move the merge base, is.
+
+Drift is reported with a `driftPhase` alongside the failure class, because the two phases mean opposite things. `pre-execution` means the run aborted before Codex was invoked — there are no findings, and re-running is the whole recovery. `post-completion` means the review ran to completion and its findings are stored and rendered under a `⚠️ STALE REVIEW` banner, but the state they describe has since moved; they are worth reading and should be re-run before being acted on.
 
 ## Codex Integration
 

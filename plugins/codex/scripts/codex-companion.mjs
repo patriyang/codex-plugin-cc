@@ -535,7 +535,11 @@ async function executeReviewRun(request) {
       return;
     }
     const message = `Review target moved between enqueue and execution: ${drift}. Re-run the review.`;
-    throw Object.assign(new Error(message), { failureClass: STATE_DRIFT, retryable: true });
+    throw Object.assign(new Error(message), {
+      failureClass: STATE_DRIFT,
+      retryable: true,
+      driftPhase: "pre-execution"
+    });
   };
   // Drift only reclassifies a run that actually produced a review. A turn that failed on its own
   // (capacity, a stall) keeps its real failure class and retry pacing — a moved repository says
@@ -555,6 +559,7 @@ async function executeReviewRun(request) {
       failureClass: STATE_DRIFT,
       retryable: true,
       retryAfterMs: null,
+      driftPhase: "post-completion",
       errorMessage: `Review completed against repository state that has since moved: ${drift}. The findings were produced against the older state; the review should be re-run before acting on them.`
     };
   };

@@ -37,6 +37,14 @@ function tryResolveOid(cwd, ref) {
   return result.status === 0 ? result.stdout.trim() || null : null;
 }
 
+function tryResolveMergeBase(cwd, baseRef) {
+  const result = git(cwd, ["merge-base", "HEAD", baseRef]);
+  if (result.error) {
+    throw result.error;
+  }
+  return result.status === 0 ? result.stdout.trim() || null : null;
+}
+
 function hashNestedGitRepository(absolutePath) {
   if (!fs.existsSync(path.join(absolutePath, ".git"))) {
     return null;
@@ -377,6 +385,7 @@ export function captureRepoStateIdentity(cwd, target) {
 
   if (target.mode === "branch") {
     identity.baseOid = resolveOid(repoRoot, target.baseRef);
+    identity.mergeBaseOid = tryResolveMergeBase(repoRoot, target.baseRef);
   } else if (target.mode === "working-tree") {
     identity.worktreeDigest = captureWorkingTreeDigest(repoRoot);
   }
@@ -398,8 +407,22 @@ export function describeRepoStateDrift(cwd, target, expected) {
     if (!baseOid) {
       return `base ref ${target.baseRef} no longer resolves`;
     }
-    if (baseOid !== expected.baseOid) {
-      return `base ref ${target.baseRef} moved`;
+    // A pinned identity with no mergeBaseOid predates merge-base pinning; a null one means the
+    // repository had no common ancestor to pin. Neither leaves any merge-base evidence to compare,
+    // so both fall back to the base tip rather than passing the check for want of a comparison.
+    if (expected.mergeBaseOid === undefined || expected.mergeBaseOid === null) {
+      if (baseOid !== expected.baseOid) {
+        return `base ref ${target.baseRef} moved`;
+      }
+    } else {
+      // The reviewed branch range is anchored on the merge base, so base tip movement alone is irrelevant.
+      const mergeBaseOid = tryResolveMergeBase(repoRoot, target.baseRef);
+      if (mergeBaseOid === null && expected.mergeBaseOid !== null) {
+        return `review range against ${target.baseRef} no longer resolves`;
+      }
+      if (mergeBaseOid !== expected.mergeBaseOid) {
+        return `review range against ${target.baseRef} moved (merge base changed)`;
+      }
     }
   }
   if (target.mode === "working-tree" && captureWorkingTreeDigest(repoRoot) !== expected.worktreeDigest) {

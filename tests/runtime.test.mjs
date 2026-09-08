@@ -1246,6 +1246,75 @@ test("classifyFailureMessage recognizes capacity failures conservatively", () =>
   }
 });
 
+test("classifyFailureMessage recognizes usage limits and parses retry pacing", () => {
+  const message = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 9:01 PM.";
+  const now = new Date(2026, 8, 8, 20, 0, 0, 0).getTime();
+  const nextReset = new Date(now);
+  nextReset.setHours(21, 1, 0, 0);
+  if (nextReset.getTime() <= now) {
+    nextReset.setDate(nextReset.getDate() + 1);
+  }
+
+  assert.deepEqual(classifyFailureMessage(message, now), {
+    failureClass: "usage-limit",
+    retryable: true,
+    retryAfterMs: nextReset.getTime() - now
+  });
+
+  assert.deepEqual(classifyFailureMessage("You've hit your usage limit; try again in 45 minutes.", now), {
+    failureClass: "usage-limit",
+    retryable: true,
+    retryAfterMs: 45 * 60_000
+  });
+
+  assert.deepEqual(classifyFailureMessage("You've hit your usage limit.", now), {
+    failureClass: "usage-limit",
+    retryable: true,
+    retryAfterMs: null
+  });
+
+  assert.deepEqual(classifyFailureMessage("The selected model is at capacity. You've hit your usage limit."), {
+    failureClass: "capacity",
+    retryable: true,
+    retryAfterMs: CAPACITY_RETRY_AFTER_MS
+  });
+
+  // Codex names the failure in TurnError.codexErrorInfo, so the code decides even when the prose
+  // it came with says nothing recognizable -- and even when the prose points somewhere else.
+  assert.deepEqual(classifyFailureMessage("Rejected.", now, "usageLimitExceeded"), {
+    failureClass: "usage-limit",
+    retryable: true,
+    retryAfterMs: null
+  });
+
+  assert.deepEqual(classifyFailureMessage("The selected model is at capacity.", now, "usageLimitExceeded"), {
+    failureClass: "usage-limit",
+    retryable: true,
+    retryAfterMs: null
+  });
+
+  assert.deepEqual(classifyFailureMessage(message, now, "usageLimitExceeded"), {
+    failureClass: "usage-limit",
+    retryable: true,
+    retryAfterMs: nextReset.getTime() - now
+  });
+
+  // The converse of the rule: a code that is not a usage limit has already answered the question,
+  // so wording that happens to mention one must not override it.
+  assert.deepEqual(classifyFailureMessage(message, now, "badRequest"), {
+    failureClass: null,
+    retryable: false,
+    retryAfterMs: null
+  });
+
+  // Some CodexErrorInfo variants are objects rather than bare strings; those name the failure too.
+  assert.deepEqual(classifyFailureMessage(message, now, { httpConnectionFailed: { httpStatusCode: 503 } }), {
+    failureClass: null,
+    retryable: false,
+    retryAfterMs: null
+  });
+});
+
 test("fallback model resolution honors env, config, discovery, and none precedence", async () => {
   const repo = makeTempDir();
   initGitRepo(repo);
@@ -1330,6 +1399,110 @@ test("a capacity rejection retries on the designated backup model", () => {
   const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
   assert.equal(state.capacityRejections, 1);
   assert.equal(state.lastTurnStart.model, "gpt-5.6-terra");
+});
+
+test("a terminal usage-limit error outranks a failed command diagnostic in a background task", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const usageLimitMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 9:01 PM.";
+  installFakeCodex(binDir, "usage-limit-after-failed-command");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the usage limit"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.equal(JSON.parse(waitedStatus.stdout).job.status, "failed");
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.storedJob.failureClass, "usage-limit");
+  assert.equal(storedPayload.storedJob.result.failureClass, "usage-limit");
+  assert.equal(storedPayload.storedJob.result.failureMessage, usageLimitMessage);
+  assert.equal(storedPayload.storedJob.result.retryable, false);
+  assert.match(fs.readFileSync(storedPayload.storedJob.logFile, "utf8"), /gh pr view/);
+});
+
+test("a terminal usage-limit error outranks a transient retrying error", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const usageLimitMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 9:01 PM.";
+  installFakeCodex(binDir, "transient-then-terminal-usage-limit");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the usage limit"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.equal(JSON.parse(waitedStatus.stdout).job.status, "failed");
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.storedJob.failureClass, "usage-limit");
+  assert.equal(storedPayload.storedJob.result.failureClass, "usage-limit");
+  assert.equal(storedPayload.storedJob.result.failureMessage, usageLimitMessage);
+});
+
+test("an authoritative turn usage-limit error outranks a failed command diagnostic", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const usageLimitMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 9:01 PM.";
+  installFakeCodex(binDir, "failed-command-then-authoritative-turn-error");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the usage limit"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.equal(JSON.parse(waitedStatus.stdout).job.status, "failed");
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.storedJob.failureClass, "usage-limit");
+  assert.equal(storedPayload.storedJob.result.failureClass, "usage-limit");
+  assert.equal(storedPayload.storedJob.result.failureMessage, usageLimitMessage);
 });
 
 test("a capacity rejection with no designated backup model reports a retryable failure class", () => {
@@ -4444,6 +4617,7 @@ test("a background review refuses to review a repository that moved under its pi
   // A controller must be able to tell a moved-repository failure from a real
   // review failure without reading the message.
   assert.equal(job.failureClass, "state-drift");
+  assert.equal(job.driftPhase, "pre-execution");
   assert.equal(job.retryable, true);
 });
 
@@ -4483,6 +4657,7 @@ test("a native review retains its output when the working tree changes during th
   assert.equal(storedJob.status, "failed");
   assert.match(storedJob.errorMessage, /review completed.*state that has since moved/i);
   assert.equal(storedJob.failureClass, "state-drift");
+  assert.equal(storedJob.driftPhase, "post-completion");
   assert.equal(storedJob.retryable, true);
 
   // The turn completed, so its review text must survive the drift classification:
@@ -4637,6 +4812,54 @@ test("an inline-diff review returns its findings when the working tree changes d
   assert.match(codexState.lastTurnStart.prompt, /primary evidence/i);
   assert.match(codexState.lastTurnStart.prompt, /export const value = 2;/);
   assert.doesNotMatch(codexState.lastTurnStart.prompt, /export const value = 3;/);
+});
+
+test("a background branch review tolerates unrelated base-branch commits during the run", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "wait-for-review-release");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 1;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  run("git", ["checkout", "-b", "feature"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 2;\n");
+  run("git", ["add", "src.js"], { cwd: repo });
+  run("git", ["commit", "-m", "feature work"], { cwd: repo });
+
+  const target = {
+    mode: "branch",
+    label: "branch diff against main",
+    baseRef: "main",
+    explicit: false
+  };
+  const { processResult, storedJob } = await runStoredReviewJobWithMidRunChange(
+    repo,
+    binDir,
+    `review-branch-unrelated-base-${Date.now().toString(36)}`,
+    {
+      cwd: repo,
+      target,
+      stateIdentity: captureRepoStateIdentity(repo, target),
+      model: "gpt-5.5",
+      effort: null,
+      effortOverride: false,
+      focusText: "",
+      reviewName: "Review"
+    },
+    () => {
+      run("git", ["checkout", "main"], { cwd: repo });
+      fs.writeFileSync(path.join(repo, "unrelated.txt"), "unrelated base work\n");
+      run("git", ["add", "unrelated.txt"], { cwd: repo });
+      run("git", ["commit", "-m", "unrelated base work"], { cwd: repo });
+      run("git", ["checkout", "feature"], { cwd: repo });
+    }
+  );
+
+  assert.equal(processResult.code, 0, processResult.stderr);
+  assert.equal(storedJob.status, "completed");
+  assert.equal(storedJob.failureClass ?? null, null);
+  assert.doesNotMatch(storedJob.rendered, /STALE REVIEW/);
 });
 
 test("a background branch review reports a deleted base ref as state drift", async () => {

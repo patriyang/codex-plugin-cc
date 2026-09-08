@@ -140,7 +140,7 @@ Each finding is tagged with its dimension (`[correctness]`, `[conciseness]`, or 
 It uses the same review target selection as `/codex:review`, including `--base <ref>` for branch review.
 It also supports `--wait` and `--background`. Like `/codex:adversarial-review`, it can take extra focus text after the flags.
 
-By default `/codex:deep-review` uses `gpt-5.6-sol` with `high` reasoning effort. Override either per run with `--model <model|spark>` and `--effort <none|minimal|low|medium|high|xhigh|max|ultra>` (also accepted by `/codex:adversarial-review`). The native `/codex:review` path does not support `--effort`. Every review reports the model it ran under in its output, so the resolved config is checkable after the fact; `/codex:deep-review` and `/codex:adversarial-review` also report an `Effort:` line — the resolved effort, or `codex default` when none is pinned — while `/codex:review` reports no effort, because it sends none.
+By default `/codex:deep-review` uses `gpt-6-astra` with `high` reasoning effort. Override either per run with `--model <model|spark|astra>` and `--effort <none|minimal|low|medium|high|xhigh|max|ultra>` (also accepted by `/codex:adversarial-review`). The native `/codex:review` path does not support `--effort`. Every review reports the model it ran under in its output, so the resolved config is checkable after the fact; `/codex:deep-review` and `/codex:adversarial-review` also report an `Effort:` line — the resolved effort, or `codex default` when none is pinned — while `/codex:review` reports no effort, because it sends none.
 
 Use it when you want:
 
@@ -192,8 +192,8 @@ Ask Codex to redesign the database connection to be more resilient.
 
 **Notes:**
 
-- if you do not pass `--model` or `--effort`, `/codex:rescue` uses `gpt-5.5` with `high` reasoning effort. Other commands pin their own defaults — see [Common Configurations](#common-configurations).
-- if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
+- if you do not pass `--model` or `--effort`, `/codex:rescue` uses `gpt-6-astra` with `high` reasoning effort. Other commands pin their own defaults — see [Common Configurations](#common-configurations).
+- if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`, and `astra` to `gpt-6-astra`
 - follow-up rescue requests can continue the latest Codex task in the repo
 - for `task` and the review commands, flags must precede the prompt/focus text (anything after it is literal, not a flag); `/codex:status`, `/codex:result`, and `/codex:cancel` instead take their job id first and flags after.
 - a prompt whose *first* word is a flag name must be passed after a bare `--` (for example, `task -- --write access is missing`), otherwise it is consumed as a real flag.
@@ -219,7 +219,7 @@ Use it when you have:
 
 The plan can come from inline text, a file path, or the most recent plan-like content in the current Claude conversation. If no explicit plan is passed, the command asks you to confirm the plan it found before starting.
 
-It supports `--sequential`, `--single-shot`, `--background`, `--wait`, `--model <model|spark>`, and `--effort <none|minimal|low|medium|high|xhigh|max|ultra>`. If omitted, `/codex:implement` uses `gpt-5.6-luna` with `xhigh` reasoning effort; capacity blocks step effort up when the model supports the next level, otherwise they escalate to a stronger model.
+It supports `--sequential`, `--single-shot`, `--background`, `--wait`, `--model <model|spark|astra>`, and `--effort <none|minimal|low|medium|high|xhigh|max|ultra>`. If omitted, `/codex:implement` uses `gpt-6-astra` with `xhigh` reasoning effort; capacity blocks step effort up when the model supports the next level, otherwise they escalate to a stronger model.
 
 Examples:
 
@@ -329,6 +329,7 @@ Either way the failure is machine-readable: `/codex:status` and `/codex:result` 
 | `capacity` | The model was at capacity and the backup was too, or there was no backup to fall back to. | `true` when the turn produced nothing, with a `retryAfterMs` floor of 60s |
 | `stalled` | The turn's watchdog interrupted it: a tool call or the model itself went silent past its budget. The run produced no verdict — this is what distinguishes an aborted review from one that completed and found nothing. | `true` only when the turn produced nothing at all; no pacing, since waiting is not what fixes it |
 | `state-drift` | A background review's repository moved between enqueue and execution. | `true`, no pacing |
+| `outdated-client` | The installed Codex CLI is too old for the selected model (for example `gpt-6-astra` on a CLI older than 0.153). Update Codex or pass `--model`. | `false` |
 | `null` | Anything else. Read `failureMessage`. | `false` |
 
 #### Enabling review gate
@@ -390,13 +391,13 @@ Defaults are per command, not global. Use `--model` or `--effort` on a plugin co
 
 | Command | Default model | Default effort |
 | --- | --- | --- |
-| `/codex:rescue` (and delegated tasks) | `gpt-5.5` | `high` |
-| `/codex:review` | `gpt-5.5` | *(none sent — `--effort` is rejected)* |
-| `/codex:adversarial-review` | `gpt-5.5` | *(none sent — Codex's own default)* |
-| `/codex:deep-review` | `gpt-5.6-sol` | `high` |
-| `/codex:implement` | `gpt-5.6-luna` | `xhigh` |
+| `/codex:rescue` (and delegated tasks) | `gpt-6-astra` | `high` |
+| `/codex:review` | `gpt-6-astra` | *(none sent — `--effort` is rejected)* |
+| `/codex:adversarial-review` | `gpt-6-astra` | *(none sent — Codex's own default)* |
+| `/codex:deep-review` | `gpt-6-astra` | `high` |
+| `/codex:implement` | `gpt-6-astra` | `xhigh` |
 
-`gpt-5.5` / `high` is the runtime default that applies when a command pins nothing of its own. `/codex:deep-review` and `/codex:implement` pin their own model and effort, so they do not run on `gpt-5.5`. Passing `spark` to `--model` maps to `gpt-5.3-codex-spark`.
+`gpt-6-astra` / `high` is the runtime default that applies when a command pins nothing of its own. `/codex:deep-review` and `/codex:implement` pin their own model and effort at their call sites; `/codex:implement` raises the effort to `xhigh`. Passing `spark` to `--model` maps to `gpt-5.3-codex-spark`, and `astra` maps to `gpt-6-astra`. `gpt-6-astra` needs Codex CLI 0.153 or newer: an older CLI rejects it and the run reports `failureClass: "outdated-client"` with upgrade guidance instead of running.
 
 > **Note:** the plugin sends a model on every Codex thread it starts, so the `model` key in your `.codex/config.toml` never selects the model for a plugin command — the table above does. The `model_reasoning_effort` key still applies, but only to the commands that send no effort of their own (`/codex:review`, and `/codex:adversarial-review` when you do not pass `--effort`). An explicit `--model` / `--effort` overrides both. To change the runtime *default* without flags, you'd need to edit the plugin's `DEFAULT_CODEX_MODEL` / `DEFAULT_CODEX_REASONING_EFFORT`; the per-command defaults above are pinned separately at each command's own call site.
 

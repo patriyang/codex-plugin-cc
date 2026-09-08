@@ -648,10 +648,10 @@ test("review renders a no-findings result from app-server review/start", () => {
   assert.match(result.stdout, /No material issues found/);
 });
 
-function setupDeepReviewRepo() {
+function setupDeepReviewRepo(behavior = "review-ok") {
   const repo = makeTempDir();
   const binDir = makeTempDir();
-  installFakeCodex(binDir);
+  installFakeCodex(binDir, behavior);
   initGitRepo(repo);
   fs.mkdirSync(path.join(repo, "src"));
   fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 1;\n");
@@ -661,7 +661,7 @@ function setupDeepReviewRepo() {
   return { repo, binDir, statePath: path.join(binDir, "fake-codex-state.json") };
 }
 
-test("deep-review defaults to gpt-5.6-sol at high effort", () => {
+test("deep-review defaults to gpt-6-astra at high effort", () => {
   const { repo, binDir, statePath } = setupDeepReviewRepo();
 
   const result = run("node", [SCRIPT, "deep-review"], {
@@ -670,10 +670,10 @@ test("deep-review defaults to gpt-5.6-sol at high effort", () => {
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^Model: gpt-5\.6-sol$/m);
+  assert.match(result.stdout, /^Model: gpt-6-astra$/m);
   assert.match(result.stdout, /^Effort: high$/m);
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  assert.equal(state.lastTurnStart.model, "gpt-5.6-sol");
+  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
   assert.equal(state.lastTurnStart.effort, "high");
 });
 
@@ -705,7 +705,7 @@ test("adversarial-review reports the default model and Codex-selected effort", (
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^Model: gpt-5\.5$/m);
+  assert.match(result.stdout, /^Model: gpt-6-astra$/m);
   assert.match(result.stdout, /^Effort: codex default$/m);
 });
 
@@ -718,7 +718,7 @@ test("native review reports the default model without effort attribution", () =>
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^Model: gpt-5\.5$/m);
+  assert.match(result.stdout, /^Model: gpt-6-astra$/m);
   assert.doesNotMatch(result.stdout, /^Effort:/m);
 });
 
@@ -739,7 +739,7 @@ test("native review falls back after an empty capacity rejection and attributes 
   const payload = JSON.parse(jsonResult.stdout);
   assert.equal(payload.model, "gpt-5.6-terra");
   assert.deepEqual(payload.modelFallback, {
-    from: "gpt-5.5",
+    from: "gpt-6-astra",
     to: "gpt-5.6-terra",
     reason: "capacity"
   });
@@ -783,7 +783,7 @@ test("deep-review JSON reports the resolved model and effort", () => {
 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.model, "gpt-5.6-sol");
+  assert.equal(payload.model, "gpt-6-astra");
   assert.equal(payload.effort, "high");
 });
 
@@ -1323,7 +1323,7 @@ test("a capacity rejection retries on the designated backup model", () => {
 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.modelFallback.from, "gpt-5.5");
+  assert.equal(payload.modelFallback.from, "gpt-6-astra");
   assert.equal(payload.modelFallback.to, "gpt-5.6-terra");
   assert.equal(payload.modelFallback.reason, "capacity");
 
@@ -1373,7 +1373,7 @@ test("a failing capacity fallback runs only once and remains retryable", () => {
   assert.equal(payload.failureClass, "capacity");
   assert.equal(payload.retryable, true);
   assert.deepEqual(payload.modelFallback, {
-    from: "gpt-5.5",
+    from: "gpt-6-astra",
     to: "gpt-5.6-terra",
     reason: "capacity"
   });
@@ -1386,7 +1386,7 @@ test("a failing capacity fallback runs only once and remains retryable", () => {
     fs.readFileSync(path.join(resolveStateDir(repo), "state.json"), "utf8")
   );
   const jobLog = fs.readFileSync(companionState.jobs[0].logFile, "utf8");
-  assert.match(jobLog, /Model gpt-5\.5 is at capacity; retrying on gpt-5\.6-terra\./);
+  assert.match(jobLog, /Model gpt-6-astra is at capacity; retrying on gpt-5\.6-terra\./);
 });
 
 test("a retryable capacity failure tells the caller how long to wait before retrying", () => {
@@ -1453,7 +1453,7 @@ test("a capacity fallback failure reports the fallback turn's non-capacity error
   assert.equal(payload.retryable, false);
   assert.match(payload.failureMessage, /Authentication expired; run codex login/);
   assert.deepEqual(payload.modelFallback, {
-    from: "gpt-5.5",
+    from: "gpt-6-astra",
     to: "gpt-5.6-terra",
     reason: "capacity"
   });
@@ -1486,7 +1486,7 @@ test("a capacity failure after a command starts does not retry", () => {
   const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
   assert.equal(state.capacityRejections, 1);
   assert.equal(state.turnStarts, 1);
-  assert.equal(state.lastTurnStart.model, "gpt-5.5");
+  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
 });
 
 test("a fallback capacity failure after a command starts is not retryable", () => {
@@ -1508,7 +1508,7 @@ test("a fallback capacity failure after a command starts is not retryable", () =
   assert.equal(payload.failureClass, "capacity");
   assert.equal(payload.retryable, false);
   assert.deepEqual(payload.modelFallback, {
-    from: "gpt-5.5",
+    from: "gpt-6-astra",
     to: "gpt-5.6-terra",
     reason: "capacity"
   });
@@ -1541,7 +1541,7 @@ test("a capacity failure after producing output does not retry", () => {
 
   const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
   assert.equal(state.capacityRejections, 1);
-  assert.equal(state.lastTurnStart.model, "gpt-5.5");
+  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
 });
 
 test("review accepts the quoted raw argument style for built-in base-branch review", () => {
@@ -1564,7 +1564,7 @@ test("review accepts the quoted raw argument style for built-in base-branch revi
   assert.match(result.stdout, /Reviewed changes against main/);
   assert.match(result.stdout, /No material issues found/);
   const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
-  assert.equal(state.lastThreadStart.model, "gpt-5.5");
+  assert.equal(state.lastThreadStart.model, "gpt-6-astra");
 });
 
 test("adversarial review renders structured findings over app-server turn/start", () => {
@@ -2017,7 +2017,7 @@ test("task --help prints task usage without starting a turn or registering a job
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]\n");
+  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]\n");
   assert.equal(fs.existsSync(statePath), false);
   assert.equal(fs.existsSync(resolveStateDir(repo)), false);
 });
@@ -2034,7 +2034,7 @@ test("task prompt followed by --help as separate argv elements prints task usage
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]\n");
+  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]\n");
   assert.equal(fs.existsSync(statePath), false);
   assert.equal(fs.existsSync(resolveStateDir(repo)), false);
 });
@@ -2100,7 +2100,7 @@ test("subcommand --help prints only that subcommand's usage", () => {
 
   const cases = [
     ["status", "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]"],
-    ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
+    ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
     ["cancel", "  node scripts/codex-companion.mjs cancel [job-id] [--json]"]
   ];
 
@@ -2674,7 +2674,7 @@ test("task --fresh is treated as routing control and does not leak into the prom
   assert.equal(result.status, 0, result.stderr);
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(fakeState.lastTurnStart.prompt, "diagnose the flaky test");
-  assert.equal(fakeState.lastTurnStart.model, "gpt-5.5");
+  assert.equal(fakeState.lastTurnStart.model, "gpt-6-astra");
   assert.equal(fakeState.lastTurnStart.effort, "high");
 });
 
@@ -7337,4 +7337,156 @@ test("a task aborted by the idle watchdog does not report its preamble as the fi
   assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(idle\)/);
   assert.match(storedPayload.storedJob.rendered, /README\.md/);
   assert.doesNotMatch(storedPayload.job.summary ?? "", /applying only the requested edits/);
+});
+
+// --- gpt-6-astra support (#115) ---------------------------------------------
+
+const OUTDATED_CODEX_MESSAGE =
+  "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.";
+
+test("task defaults to gpt-6-astra at high effort", () => {
+  const { repo, binDir, statePath } = setupEffortRepo();
+
+  const result = run("node", [SCRIPT, "task", "reply ok"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
+  assert.equal(state.lastTurnStart.effort, "high");
+});
+
+test("task maps the astra alias to gpt-6-astra", () => {
+  const { repo, binDir, statePath } = setupEffortRepo();
+
+  const result = run("node", [SCRIPT, "task", "--model", "Astra", "reply ok"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
+});
+
+test("deep-review maps the astra alias to gpt-6-astra", () => {
+  const { repo, binDir, statePath } = setupDeepReviewRepo();
+
+  const result = run("node", [SCRIPT, "deep-review", "--model", "astra"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Model: gpt-6-astra$/m);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
+});
+
+test("task stays quiet when gpt-6-astra is asked for ultra effort", () => {
+  // Codex CLI 0.153.4 advertises low, medium, high, xhigh, max, ultra for
+  // gpt-6-astra, so the fixture catalog must carry the same list.
+  const { repo, binDir, statePath } = setupEffortRepo();
+
+  const result = run("node", [SCRIPT, "task", "--model", "gpt-6-astra", "--effort", "ultra", "reply ultra"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /does not advertise reasoning effort/);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
+  assert.equal(state.lastTurnStart.effort, "ultra");
+});
+
+test("classifyFailureMessage recognizes a model that needs a newer Codex", () => {
+  assert.deepEqual(classifyFailureMessage(OUTDATED_CODEX_MESSAGE), {
+    failureClass: "outdated-client",
+    retryable: false,
+    retryAfterMs: null
+  });
+  // Wording that only mentions upgrading in passing must not classify.
+  assert.deepEqual(classifyFailureMessage("Please upgrade your plan to continue."), {
+    failureClass: null,
+    retryable: false,
+    retryAfterMs: null
+  });
+});
+
+test("task reports outdated-client with upgrade guidance when Codex rejects the model", () => {
+  const { repo, binDir } = setupEffortRepo("model-requires-newer-codex");
+
+  const result = run("node", [SCRIPT, "task", "reply ok", "--json"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_FALLBACK_MODEL: "gpt-5.6-terra" }
+  });
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.failureClass, "outdated-client");
+  assert.equal(payload.retryable, false);
+  assert.equal(payload.retryAfterMs, null);
+  // Not a capacity rejection: no backup-model retry.
+  assert.equal(payload.modelFallback, null);
+  assert.match(payload.failureMessage, /requires a newer version of Codex/);
+  assert.match(payload.failureMessage, /npm install -g @openai\/codex@latest/);
+});
+
+test("deep-review reports outdated-client with upgrade guidance when Codex rejects the model", () => {
+  const { repo, binDir } = setupDeepReviewRepo("model-requires-newer-codex");
+
+  const result = run("node", [SCRIPT, "deep-review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  const output = `${result.stdout}\n${result.stderr}`;
+  assert.match(output, /Failure class: outdated-client/);
+  assert.match(output, /npm install -g @openai\/codex@latest/);
+});
+
+test("task warns when gpt-6-astra is asked for an effort it does not advertise", () => {
+  // gpt-6-astra has no `none`/`minimal` level, so this is the proof that the
+  // fixture catalog actually carries an entry for it (the quiet `ultra` case
+  // above would also be quiet for an unknown model).
+  const { repo, binDir } = setupEffortRepo();
+
+  const result = run("node", [SCRIPT, "task", "--model", "gpt-6-astra", "--effort", "minimal", "reply minimal"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /gpt-6-astra does not advertise reasoning effort "minimal"/);
+  assert.match(result.stderr, /low, medium, high, xhigh, max, ultra/);
+});
+
+test("native review reports outdated-client with upgrade guidance when Codex rejects the model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "model-requires-newer-codex");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+  const env = buildEnv(binDir);
+
+  const jsonResult = run("node", [SCRIPT, "review", "--json"], { cwd: repo, env });
+  assert.notEqual(jsonResult.status, 0);
+  const payload = JSON.parse(jsonResult.stdout);
+  assert.equal(payload.failureClass, "outdated-client");
+  assert.equal(payload.retryable, false);
+  assert.match(payload.failureMessage, /requires a newer version of Codex/);
+  assert.match(payload.failureMessage, /npm install -g @openai\/codex@latest/);
+
+  const renderedResult = run("node", [SCRIPT, "review"], { cwd: repo, env });
+  assert.notEqual(renderedResult.status, 0);
+  assert.match(renderedResult.stdout, /Failure class: outdated-client/);
+  assert.match(renderedResult.stdout, /requires a newer version of Codex/);
+  assert.match(renderedResult.stdout, /npm install -g @openai\/codex@latest/);
 });

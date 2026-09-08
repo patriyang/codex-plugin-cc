@@ -50,7 +50,7 @@ import path from "node:path";
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
-import { CAPACITY, STALLED, classifyFailureMessage } from "./failure-class.mjs";
+import { CAPACITY, STALLED, classifyFailureMessage, formatFailureMessage } from "./failure-class.mjs";
 import { resolveWorktreeWritableRoots } from "./git.mjs";
 import { binaryAvailable } from "./process.mjs";
 import { getConfig } from "./state.mjs";
@@ -1625,6 +1625,7 @@ export async function runAppServerReview(cwd, options = {}) {
     const { sourceThreadId, turnState } = reviewAttempt;
     const status = buildResultStatus(turnState);
     const failure = classifyTurnFailure(turnState, status);
+    const failureMessage = formatFailureMessage(extractErrorMessage(turnState.error), failure.failureClass);
 
     return {
       status,
@@ -1639,6 +1640,7 @@ export async function runAppServerReview(cwd, options = {}) {
       reasoningSummary: turnState.reasoningSummary,
       turn: turnState.finalTurn,
       error: turnState.error,
+      failureMessage,
       stderr: cleanCodexStderr(client.stderr)
     };
   });
@@ -1863,6 +1865,7 @@ export async function runAppServerTurn(cwd, options = {}) {
 
     const status = buildResultStatus(turnState);
     const failure = classifyTurnFailure(turnState, status);
+    const failureMessage = formatFailureMessage(extractErrorMessage(turnState.error), failure.failureClass);
 
     return {
       status,
@@ -1876,6 +1879,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       reasoningSummary: turnState.reasoningSummary,
       turn: turnState.finalTurn,
       error: turnState.error,
+      failureMessage,
       stderr: cleanCodexStderr(client.stderr),
       effortWarning,
       fileChanges: turnState.fileChanges,

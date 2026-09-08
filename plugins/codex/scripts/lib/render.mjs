@@ -365,12 +365,20 @@ export function renderNativeReviewResult(result, meta) {
   appendFailureClassification(lines, result);
   lines.push("");
 
+  const failureMessage = typeof result.failureMessage === "string" ? result.failureMessage.trim() : "";
   if (stdout) {
     lines.push(stdout);
   } else if (result.status === 0) {
     lines.push("Codex review completed without any stdout output.");
   } else {
     lines.push("Codex review failed.");
+  }
+
+  // The app-server reports a rejected turn through an error notification, not
+  // process stderr, so a failed native review would otherwise render nothing
+  // but "failed" plus its class.
+  if (failureMessage && result.status !== 0) {
+    lines.push("", failureMessage);
   }
 
   if (stderr) {

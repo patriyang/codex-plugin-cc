@@ -7464,3 +7464,29 @@ test("task warns when gpt-6-astra is asked for an effort it does not advertise",
   assert.match(result.stderr, /gpt-6-astra does not advertise reasoning effort "minimal"/);
   assert.match(result.stderr, /low, medium, high, xhigh, max, ultra/);
 });
+
+test("native review reports outdated-client with upgrade guidance when Codex rejects the model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "model-requires-newer-codex");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+  const env = buildEnv(binDir);
+
+  const jsonResult = run("node", [SCRIPT, "review", "--json"], { cwd: repo, env });
+  assert.notEqual(jsonResult.status, 0);
+  const payload = JSON.parse(jsonResult.stdout);
+  assert.equal(payload.failureClass, "outdated-client");
+  assert.equal(payload.retryable, false);
+  assert.match(payload.failureMessage, /requires a newer version of Codex/);
+  assert.match(payload.failureMessage, /npm install -g @openai\/codex@latest/);
+
+  const renderedResult = run("node", [SCRIPT, "review"], { cwd: repo, env });
+  assert.notEqual(renderedResult.status, 0);
+  assert.match(renderedResult.stdout, /Failure class: outdated-client/);
+  assert.match(renderedResult.stdout, /requires a newer version of Codex/);
+  assert.match(renderedResult.stdout, /npm install -g @openai\/codex@latest/);
+});

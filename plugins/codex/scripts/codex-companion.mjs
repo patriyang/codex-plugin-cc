@@ -589,6 +589,7 @@ async function executeReviewRun(request) {
       model: effectiveModel ?? null,
       effort: request.effort ?? null,
       failureClass: result.failureClass,
+      failureMessage: result.status === 0 ? null : result.failureMessage ?? result.error?.message ?? null,
       modelFallback: result.modelFallback ?? null,
       retryable: result.retryable,
       retryAfterMs: result.retryAfterMs,
@@ -606,6 +607,7 @@ async function executeReviewRun(request) {
         status: result.status,
         stdout: result.reviewText,
         stderr: result.stderr,
+        failureMessage: result.status === 0 ? null : result.failureMessage ?? result.error?.message ?? null,
         failureClass: result.failureClass,
         retryable: result.retryable,
         retryAfterMs: result.retryAfterMs

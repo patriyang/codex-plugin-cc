@@ -412,6 +412,68 @@ function emitUsageLimitAfterFailedCommand(threadId, turnId) {
   send({ method: "turn/completed", params: { threadId, turn: buildTurn(turnId, "failed") } });
 }
 
+function emitTransientThenTerminalUsageLimit(threadId, turnId) {
+  send({ method: "turn/started", params: { threadId, turn: buildTurn(turnId) } });
+  send({
+    method: "error",
+    params: {
+      threadId,
+      turnId,
+      willRetry: true,
+      error: { message: "Transient upstream failure before retrying." }
+    }
+  });
+  send({
+    method: "error",
+    params: {
+      threadId,
+      turnId,
+      error: { message: USAGE_LIMIT_MESSAGE }
+    }
+  });
+  send({ method: "turn/completed", params: { threadId, turn: buildTurn(turnId, "failed") } });
+}
+
+function emitFailedCommandWithAuthoritativeTurnError(threadId, turnId) {
+  const failedOutput = "error connecting to api.github.com\\ncheck your internet connection or https://githubstatus.com";
+  send({ method: "turn/started", params: { threadId, turn: buildTurn(turnId) } });
+  send({
+    method: "item/started",
+    params: {
+      threadId,
+      turnId,
+      item: {
+        type: "commandExecution",
+        id: "cmd_" + turnId,
+        command: "gh pr view",
+        status: "inProgress"
+      }
+    }
+  });
+  send({
+    method: "item/completed",
+    params: {
+      threadId,
+      turnId,
+      item: {
+        type: "commandExecution",
+        id: "cmd_" + turnId,
+        command: "gh pr view",
+        status: "failed",
+        exitCode: 1,
+        aggregatedOutput: failedOutput
+      }
+    }
+  });
+  send({
+    method: "turn/completed",
+    params: {
+      threadId,
+      turn: buildTurn(turnId, "failed", { message: USAGE_LIMIT_MESSAGE })
+    }
+  });
+}
+
 function waitsForReviewRelease() {
   return BEHAVIOR === "wait-for-review-release" || BEHAVIOR === "fail-after-review-release";
 }
@@ -796,6 +858,16 @@ rl.on("line", (line) => {
 
         if (BEHAVIOR === "usage-limit-after-failed-command") {
           emitUsageLimitAfterFailedCommand(thread.id, turnId);
+          break;
+        }
+
+        if (BEHAVIOR === "transient-then-terminal-usage-limit") {
+          emitTransientThenTerminalUsageLimit(thread.id, turnId);
+          break;
+        }
+
+        if (BEHAVIOR === "failed-command-then-authoritative-turn-error") {
+          emitFailedCommandWithAuthoritativeTurnError(thread.id, turnId);
           break;
         }
 

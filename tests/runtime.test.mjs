@@ -1402,6 +1402,74 @@ test("a terminal usage-limit error outranks a failed command diagnostic in a bac
   assert.match(fs.readFileSync(storedPayload.storedJob.logFile, "utf8"), /gh pr view/);
 });
 
+test("a terminal usage-limit error outranks a transient retrying error", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const usageLimitMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 9:01 PM.";
+  installFakeCodex(binDir, "transient-then-terminal-usage-limit");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the usage limit"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.equal(JSON.parse(waitedStatus.stdout).job.status, "failed");
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.storedJob.failureClass, "usage-limit");
+  assert.equal(storedPayload.storedJob.result.failureClass, "usage-limit");
+  assert.equal(storedPayload.storedJob.result.failureMessage, usageLimitMessage);
+});
+
+test("an authoritative turn usage-limit error outranks a failed command diagnostic", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const usageLimitMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 9:01 PM.";
+  installFakeCodex(binDir, "failed-command-then-authoritative-turn-error");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the usage limit"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  assert.equal(JSON.parse(waitedStatus.stdout).job.status, "failed");
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.storedJob.failureClass, "usage-limit");
+  assert.equal(storedPayload.storedJob.result.failureClass, "usage-limit");
+  assert.equal(storedPayload.storedJob.result.failureMessage, usageLimitMessage);
+});
+
 test("a capacity rejection with no designated backup model reports a retryable failure class", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

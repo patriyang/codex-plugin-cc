@@ -669,8 +669,8 @@ function extractErrorMessage(value) {
   return null;
 }
 
-// A failed tool can claim state.error before the terminal turn error arrives; keep that diagnostic,
-// but derive failure classification and messaging from the terminal error when one exists.
+// Prefer the root turn's authoritative terminal error, then the latest non-retrying top-level
+// error notification; retain state.error only as the diagnostic fallback when neither was observed.
 function turnFailureError(state) {
   return state.turnError ?? state.error;
 }
@@ -1006,7 +1006,9 @@ function applyTurnNotification(state, message, watchdog = null) {
         watchdog?.clearActiveTools();
       }
       state.error ??= message.params.error;
-      state.turnError ??= message.params.error;
+      if (message.params.willRetry !== true) {
+        state.turnError = message.params.error;
+      }
       emitProgress(state.onProgress, `Codex error: ${message.params.error.message}`, "failed");
       scheduleInferredCompletion(state);
       break;
@@ -1015,6 +1017,9 @@ function applyTurnNotification(state, message, watchdog = null) {
         state.activeSubagentTurns.delete(message.params.threadId);
         scheduleInferredCompletion(state);
         break;
+      }
+      if (message.params.turn?.error != null) {
+        state.turnError = message.params.turn.error;
       }
       emitProgress(
         state.onProgress,

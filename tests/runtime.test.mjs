@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
-import test, { after } from "node:test";
+import test, { after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -209,48 +209,76 @@ async function runStoredReviewJobWithMidRunChange(repo, binDir, jobId, request, 
   return { processResult, storedJob };
 }
 
-after(async () => {
-  for (const dir of trackedTempDirs()) {
-    let session = null;
+// Only the temp dirs created since the previous pass are probed: `loadBrokerSession` resolves the
+// workspace root with a `git rev-parse` spawn per candidate, so re-scanning every tracked dir on
+// every pass costs seconds per test once a few hundred dirs exist.
+let reapedTempDirCount = 0;
+
+async function reapSpawnedBrokers() {
+  const tempDirs = trackedTempDirs();
+  const freshTempDirs = tempDirs.slice(reapedTempDirCount);
+  reapedTempDirCount = tempDirs.length;
+  for (const dir of freshTempDirs) {
+    // A broker is keyed on its workspace root, which some tests place one level below the temp
+    // dir (a linked worktree, a quoted repo name), so probe the immediate children too.
+    const candidateDirs = [dir];
     try {
-      session = loadBrokerSession(dir);
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          candidateDirs.push(path.join(dir, entry.name));
+        }
+      }
     } catch {
-      session = null;
+      // The temp dir may already be gone.
     }
-    if (!session || (!session.endpoint && !session.pid)) {
-      continue;
-    }
-    // Ask the broker to shut down gracefully first so it closes its own `codex app-server` child;
-    // a SIGKILL would orphan that child and re-leak the app-server half.
-    if (session.endpoint) {
-      await sendBrokerShutdown(session.endpoint).catch(() => {});
-    }
-    // Only SIGTERM the recorded PID if the broker is still reachable on its (unique) endpoint —
-    // proof it's genuinely our live broker. A stale broker.json can hold an already-exited broker's
-    // PID that the OS may have recycled, so never kill a recorded PID blindly.
-    const stillReachable = session.endpoint
-      ? await waitForBrokerEndpoint(session.endpoint, 100).catch(() => false)
-      : false;
-    teardownBrokerSession({
-      endpoint: session.endpoint ?? null,
-      pidFile: session.pidFile ?? null,
-      logFile: session.logFile ?? null,
-      sessionDir: session.sessionDir ?? null,
-      pid: stillReachable ? session.pid ?? null : null,
-      // Backstop if the graceful shutdown didn't land. SIGTERM (not SIGKILL) lets the broker's
-      // signal handler close the app-server child. Guarded on reachability above.
-      killProcess: stillReachable
-        ? (pid) => {
-            try {
-              process.kill(pid, "SIGTERM");
-            } catch {
-              // already gone
+    for (const candidateDir of candidateDirs) {
+      let session = null;
+      try {
+        session = loadBrokerSession(candidateDir);
+      } catch {
+        session = null;
+      }
+      if (!session || (!session.endpoint && !session.pid)) {
+        continue;
+      }
+      // Ask the broker to shut down gracefully first so it closes its own `codex app-server` child;
+      // a SIGKILL would orphan that child and re-leak the app-server half.
+      if (session.endpoint) {
+        await sendBrokerShutdown(session.endpoint).catch(() => {});
+      }
+      // Only SIGTERM the recorded PID if the broker is still reachable on its (unique) endpoint —
+      // proof it's genuinely our live broker. A stale broker.json can hold an already-exited broker's
+      // PID that the OS may have recycled, so never kill a recorded PID blindly.
+      const stillReachable = session.endpoint
+        ? await waitForBrokerEndpoint(session.endpoint, 100).catch(() => false)
+        : false;
+      teardownBrokerSession({
+        endpoint: session.endpoint ?? null,
+        pidFile: session.pidFile ?? null,
+        logFile: session.logFile ?? null,
+        sessionDir: session.sessionDir ?? null,
+        pid: stillReachable ? session.pid ?? null : null,
+        // Backstop if the graceful shutdown didn't land. SIGTERM (not SIGKILL) lets the broker's
+        // signal handler close the app-server child. Guarded on reachability above.
+        killProcess: stillReachable
+          ? (pid) => {
+              try {
+                process.kill(pid, "SIGTERM");
+              } catch {
+                // already gone
+              }
             }
-          }
-        : null
-    });
+          : null
+      });
+    }
   }
-});
+}
+
+// Reap after each test, not only at the end of the file: with a single end-of-file hook, brokers
+// accumulated to ~117 concurrent processes over a full run (#124). Per-test reaping is safe because
+// workspaces are per-test, top-level tests run sequentially, and no broker is shared across tests.
+afterEach(reapSpawnedBrokers);
+after(reapSpawnedBrokers);
 
 test("app-server request times out when the peer never replies", async (t) => {
   const workspace = makeTempDir();
@@ -2692,38 +2720,35 @@ test("write task in linked worktree carries the git common dir and disabled MCP 
   };
   installFakeCodex(binDir);
 
-  try {
-    initGitRepo(repo);
-    fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
-    run("git", ["add", "README.md"], { cwd: repo });
-    run("git", ["commit", "-m", "init"], { cwd: repo });
-    run("git", ["worktree", "add", "-b", "linked-runtime-test", worktree], { cwd: repo });
+  // No manual cleanup here: removing the worktree before the per-test broker reaper runs would
+  // orphan the broker it spawned (#124); the tracked temp dirs are removed at process exit.
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  run("git", ["worktree", "add", "-b", "linked-runtime-test", worktree], { cwd: repo });
 
-    const result = run("node", [SCRIPT, "task", "--write", "fix the failing test"], { cwd: worktree, env });
+  const result = run("node", [SCRIPT, "task", "--write", "fix the failing test"], { cwd: worktree, env });
 
-    assert.equal(result.status, 0, result.stderr);
-    const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
-    assert.equal(state.lastTurnStart.sandboxPolicy?.type, "workspaceWrite");
-    assert.deepEqual(state.lastThreadStart.config, {
-      "mcp_servers.codegraph.enabled": false,
-      "mcp_servers.hermes-vault.enabled": false,
-      "sandbox_workspace_write.writable_roots": [fs.realpathSync(path.join(repo, ".git"))]
-    });
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state.lastTurnStart.sandboxPolicy?.type, "workspaceWrite");
+  assert.deepEqual(state.lastThreadStart.config, {
+    "mcp_servers.codegraph.enabled": false,
+    "mcp_servers.hermes-vault.enabled": false,
+    "sandbox_workspace_write.writable_roots": [fs.realpathSync(path.join(repo, ".git"))]
+  });
 
-    const resume = run("node", [SCRIPT, "task", "--resume", "--write", "follow up"], { cwd: worktree, env });
+  const resume = run("node", [SCRIPT, "task", "--resume", "--write", "follow up"], { cwd: worktree, env });
 
-    assert.equal(resume.status, 0, resume.stderr);
-    const resumedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-    assert.equal(resumedState.lastTurnStart.sandboxPolicy?.type, "workspaceWrite");
-    assert.deepEqual(resumedState.lastThreadResume.config, {
-      "mcp_servers.codegraph.enabled": false,
-      "mcp_servers.hermes-vault.enabled": false,
-      "sandbox_workspace_write.writable_roots": [fs.realpathSync(path.join(repo, ".git"))]
-    });
-  } finally {
-    fs.rmSync(repo, { recursive: true, force: true });
-    fs.rmSync(worktreeParent, { recursive: true, force: true });
-  }
+  assert.equal(resume.status, 0, resume.stderr);
+  const resumedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(resumedState.lastTurnStart.sandboxPolicy?.type, "workspaceWrite");
+  assert.deepEqual(resumedState.lastThreadResume.config, {
+    "mcp_servers.codegraph.enabled": false,
+    "mcp_servers.hermes-vault.enabled": false,
+    "sandbox_workspace_write.writable_roots": [fs.realpathSync(path.join(repo, ".git"))]
+  });
 });
 
 test("task disables named MCP servers in thread/start config", () => {

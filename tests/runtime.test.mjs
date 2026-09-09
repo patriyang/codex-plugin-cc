@@ -11,6 +11,7 @@ import { initGitRepo, makeTempDir, run, spawnDeadPid, trackedTempDirs, writeExec
 import {
   ensureBrokerSession,
   loadBrokerSession,
+  resolveSignalableBrokerPid,
   saveBrokerSession,
   sendBrokerShutdown,
   teardownBrokerSession,
@@ -21,7 +22,7 @@ import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mj
 import { resolveFallbackModel, runAppServerTurn } from "../plugins/codex/scripts/lib/codex.mjs";
 import { CAPACITY_RETRY_AFTER_MS, classifyFailureMessage } from "../plugins/codex/scripts/lib/failure-class.mjs";
 import { captureRepoStateIdentity } from "../plugins/codex/scripts/lib/git.mjs";
-import { getProcessStartTime } from "../plugins/codex/scripts/lib/process.mjs";
+import { getProcessStartTime, terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
 import { splitRawArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
 import {
   resolveClaudeSessionPath,
@@ -211,12 +212,47 @@ async function runStoredReviewJobWithMidRunChange(repo, binDir, jobId, request, 
 
 // Only the temp dirs created since the previous pass are probed: `loadBrokerSession` resolves the
 // workspace root with a `git rev-parse` spawn per candidate, so re-scanning every tracked dir on
-// every pass costs seconds per test once a few hundred dirs exist.
+// every pass costs seconds per test once a few hundred dirs exist. The end-of-file pass rescans
+// everything once, so a broker published after its dir was first probed (a background worker still
+// starting when its test finished) is still retired at suite exit.
 let reapedTempDirCount = 0;
 
-async function reapSpawnedBrokers() {
+// After a graceful shutdown the broker replies before it has closed its app-server child, so the
+// socket can still accept for a moment. Give it a bounded window to disappear before deciding the
+// shutdown did not land.
+const BROKER_SHUTDOWN_SETTLE_MS = 2000;
+
+function probeBrokerEndpoint(endpoint) {
+  return new Promise((resolve) => {
+    let socket;
+    try {
+      socket = net.createConnection({ path: parseBrokerEndpoint(endpoint).path });
+    } catch {
+      resolve(false);
+      return;
+    }
+    socket.on("connect", () => {
+      socket.end();
+      resolve(true);
+    });
+    socket.on("error", () => resolve(false));
+  });
+}
+
+async function waitForBrokerEndpointGone(endpoint, timeoutMs) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (!(await probeBrokerEndpoint(endpoint))) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
+}
+
+async function reapSpawnedBrokers({ rescanAll = false } = {}) {
   const tempDirs = trackedTempDirs();
-  const freshTempDirs = tempDirs.slice(reapedTempDirCount);
+  const freshTempDirs = rescanAll ? tempDirs : tempDirs.slice(reapedTempDirCount);
   reapedTempDirCount = tempDirs.length;
   for (const dir of freshTempDirs) {
     // A broker is keyed on its workspace root, which some tests place one level below the temp
@@ -243,32 +279,22 @@ async function reapSpawnedBrokers() {
       }
       // Ask the broker to shut down gracefully first so it closes its own `codex app-server` child;
       // a SIGKILL would orphan that child and re-leak the app-server half.
+      let gone = !session.endpoint;
       if (session.endpoint) {
         await sendBrokerShutdown(session.endpoint).catch(() => {});
+        gone = await waitForBrokerEndpointGone(session.endpoint, BROKER_SHUTDOWN_SETTLE_MS);
       }
-      // Only SIGTERM the recorded PID if the broker is still reachable on its (unique) endpoint —
-      // proof it's genuinely our live broker. A stale broker.json can hold an already-exited broker's
-      // PID that the OS may have recycled, so never kill a recorded PID blindly.
-      const stillReachable = session.endpoint
-        ? await waitForBrokerEndpoint(session.endpoint, 100).catch(() => false)
-        : false;
       teardownBrokerSession({
         endpoint: session.endpoint ?? null,
         pidFile: session.pidFile ?? null,
         logFile: session.logFile ?? null,
         sessionDir: session.sessionDir ?? null,
-        pid: stillReachable ? session.pid ?? null : null,
-        // Backstop if the graceful shutdown didn't land. SIGTERM (not SIGKILL) lets the broker's
-        // signal handler close the app-server child. Guarded on reachability above.
-        killProcess: stillReachable
-          ? (pid) => {
-              try {
-                process.kill(pid, "SIGTERM");
-              } catch {
-                // already gone
-              }
-            }
-          : null
+        // Backstop if the graceful shutdown didn't land, shaped like the SessionEnd hook's teardown:
+        // only a pid whose recorded start time still matches is signalled (a stale broker.json can
+        // hold a recycled pid), and the whole tree goes so the app-server child is not orphaned
+        // (on Windows `process.kill` would terminate the broker alone without its signal handler).
+        pid: gone ? null : resolveSignalableBrokerPid(session),
+        killProcess: gone ? null : terminateProcessTree
       });
     }
   }
@@ -277,8 +303,8 @@ async function reapSpawnedBrokers() {
 // Reap after each test, not only at the end of the file: with a single end-of-file hook, brokers
 // accumulated to ~117 concurrent processes over a full run (#124). Per-test reaping is safe because
 // workspaces are per-test, top-level tests run sequentially, and no broker is shared across tests.
-afterEach(reapSpawnedBrokers);
-after(reapSpawnedBrokers);
+afterEach(() => reapSpawnedBrokers());
+after(() => reapSpawnedBrokers({ rescanAll: true }));
 
 test("app-server request times out when the peer never replies", async (t) => {
   const workspace = makeTempDir();

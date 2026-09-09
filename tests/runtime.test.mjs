@@ -44,11 +44,16 @@ const SCRIPT = path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs");
 const STOP_HOOK = path.join(PLUGIN_ROOT, "scripts", "stop-review-gate-hook.mjs");
 const SESSION_HOOK = path.join(PLUGIN_ROOT, "scripts", "session-lifecycle-hook.mjs");
 
+// These are deadlines for a hung run, not latency budgets: passing waits return as soon as
+// their condition holds, and machines under load have been measured about 6x slower (#122).
+const REVIEW_MARKER_TIMEOUT_MS = 20000;
+const STORED_REVIEW_JOB_EXIT_TIMEOUT_MS = 45000;
+
 delete process.env.CLAUDE_PLUGIN_DATA;
 delete process.env.CODEX_COMPANION_PLUGIN_DATA;
 delete process.env.CODEX_COMPANION_SESSION_ID;
 
-async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
+async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50, label } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const value = await predicate();
@@ -56,6 +61,9 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
       return value;
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  if (label !== undefined) {
+    throw new Error(`Timed out waiting for ${label} after ${timeoutMs}ms.`);
   }
   throw new Error("Timed out waiting for condition.");
 }
@@ -165,7 +173,7 @@ function startStoredReviewJob(repo, binDir, jobId, request, env = buildEnv(binDi
   writeJobFile(repo, jobId, queuedJob);
   upsertJob(repo, queuedJob);
 
-  return waitForChildExit(child, 15000);
+  return waitForChildExit(child, STORED_REVIEW_JOB_EXIT_TIMEOUT_MS);
 }
 
 async function runStoredReviewJob(repo, binDir, jobId, request) {
@@ -186,7 +194,11 @@ async function runStoredReviewJobWithMidRunChange(repo, binDir, jobId, request, 
   const processResultPromise = startStoredReviewJob(repo, binDir, jobId, request, env);
 
   try {
-    await waitFor(() => fs.existsSync(startedPath), { timeoutMs: 5000, intervalMs: 10 });
+    await waitFor(() => fs.existsSync(startedPath), {
+      timeoutMs: REVIEW_MARKER_TIMEOUT_MS,
+      intervalMs: 10,
+      label: "the fake Codex review-started marker"
+    });
     change();
   } finally {
     fs.writeFileSync(releasePath, "release\n");

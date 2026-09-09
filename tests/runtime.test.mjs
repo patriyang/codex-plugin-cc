@@ -218,11 +218,18 @@ async function runStoredReviewJobWithMidRunChange(repo, binDir, jobId, request, 
 let reapedTempDirCount = 0;
 
 // After a graceful shutdown the broker replies before it has closed its app-server child, so the
-// socket can still accept for a moment. Give it a bounded window to disappear before deciding the
-// shutdown did not land.
+// socket can still accept for a moment. The whole graceful sequence (shutdown request plus the
+// wait for the endpoint to disappear) shares one deadline: a wedged broker that accepts but never
+// answers must not hang the hook, it must fall through to the identity-checked tree kill below.
 const BROKER_SHUTDOWN_SETTLE_MS = 2000;
 
-function probeBrokerEndpoint(endpoint) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Resolves true while the endpoint accepts connections. A connect that neither succeeds nor fails
+// before the deadline is reported as reachable: something is still listening there.
+function probeBrokerEndpoint(endpoint, timeoutMs) {
   return new Promise((resolve) => {
     let socket;
     try {
@@ -231,21 +238,35 @@ function probeBrokerEndpoint(endpoint) {
       resolve(false);
       return;
     }
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve(true);
+    }, Math.max(timeoutMs, 1));
     socket.on("connect", () => {
+      clearTimeout(timer);
       socket.end();
       resolve(true);
     });
-    socket.on("error", () => resolve(false));
+    socket.on("error", () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
   });
 }
 
-async function waitForBrokerEndpointGone(endpoint, timeoutMs) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (!(await probeBrokerEndpoint(endpoint))) {
+// Sends broker/shutdown and waits for the endpoint to stop accepting, all within `timeoutMs`.
+// Returns true once the endpoint is gone, false when the deadline passed with it still reachable.
+async function shutdownBrokerGracefully(endpoint, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  const remaining = () => Math.max(0, deadline - Date.now());
+  // A broker that accepts the connection but never answers leaves this pending; the race moves
+  // on, and the tree kill that follows closes the broker's side so the pending socket settles.
+  await Promise.race([sendBrokerShutdown(endpoint).catch(() => {}), sleep(remaining())]);
+  while (remaining() > 0) {
+    if (!(await probeBrokerEndpoint(endpoint, remaining()))) {
       return true;
     }
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await sleep(Math.min(25, remaining()));
   }
   return false;
 }
@@ -279,11 +300,9 @@ async function reapSpawnedBrokers({ rescanAll = false } = {}) {
       }
       // Ask the broker to shut down gracefully first so it closes its own `codex app-server` child;
       // a SIGKILL would orphan that child and re-leak the app-server half.
-      let gone = !session.endpoint;
-      if (session.endpoint) {
-        await sendBrokerShutdown(session.endpoint).catch(() => {});
-        gone = await waitForBrokerEndpointGone(session.endpoint, BROKER_SHUTDOWN_SETTLE_MS);
-      }
+      const gone = session.endpoint
+        ? await shutdownBrokerGracefully(session.endpoint, BROKER_SHUTDOWN_SETTLE_MS)
+        : true;
       teardownBrokerSession({
         endpoint: session.endpoint ?? null,
         pidFile: session.pidFile ?? null,

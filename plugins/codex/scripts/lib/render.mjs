@@ -408,6 +408,15 @@ export function renderTaskResult(parsedResult, meta) {
     lines.push("", "Files already modified by this run:", "", ...touchedFiles.map((file) => `- ${file}`));
   }
 
+  // A read-only task is sandboxed against writes, so its commands cannot have edited
+  // anything -- warning about unlisted shell edits there would be actively misleading.
+  if (meta?.write === true && typeof parsedResult?.commandCount === "number" && parsedResult.commandCount >= 1) {
+    lines.push(
+      "",
+      "Caution: edits applied through shell commands other than apply_patch are not listed; git status in the workspace is authoritative."
+    );
+  }
+
   if (partialOutput.trim()) {
     lines.push("", "Partial output (not the final report):", "", "```text", partialOutput, "```");
   }

@@ -1446,6 +1446,7 @@ test("a terminal usage-limit error outranks a failed command diagnostic in a bac
   assert.equal(storedPayload.storedJob.result.failureClass, "usage-limit");
   assert.equal(storedPayload.storedJob.result.failureMessage, usageLimitMessage);
   assert.equal(storedPayload.storedJob.result.retryable, false);
+  assert.deepEqual(storedPayload.storedJob.result.touchedFiles, []);
   assert.match(fs.readFileSync(storedPayload.storedJob.logFile, "utf8"), /gh pr view/);
 });
 
@@ -7572,6 +7573,99 @@ test("a task aborted by the idle watchdog does not report its preamble as the fi
   assert.match(storedPayload.storedJob.rendered, /Codex turn stalled \(idle\)/);
   assert.match(storedPayload.storedJob.rendered, /README\.md/);
   assert.doesNotMatch(storedPayload.job.summary ?? "", /applying only the requested edits/);
+});
+
+test("a dead run's touchedFiles covers edits applied through apply_patch in the shell (#121)", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "idle-hung-turn-after-shell-edit");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "1500",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "300"
+  };
+  const launched = run("node", [SCRIPT, "task", "--write", "--background", "--json", "apply the edits"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const result = JSON.parse(stored.stdout).storedJob.result;
+
+  // The recovery hint has to name what the dead run left behind, whichever edit path applied it.
+  assert.ok(
+    result.touchedFiles.some((file) => file.endsWith("README.md")),
+    JSON.stringify(result.touchedFiles)
+  );
+  assert.ok(
+    result.touchedFiles.some((file) => file.endsWith(path.join("docs", "NOTES.md"))),
+    JSON.stringify(result.touchedFiles)
+  );
+  // A patch that failed to apply names its target too, but nothing was written.
+  assert.ok(
+    !result.touchedFiles.some((file) => file.includes("NEVER-APPLIED.md")),
+    JSON.stringify(result.touchedFiles)
+  );
+  // A compound command's single exit status cannot attribute the patch either way.
+  assert.ok(
+    !result.touchedFiles.some((file) => file.includes("COMPOUND-UNKNOWN.md")),
+    JSON.stringify(result.touchedFiles)
+  );
+});
+
+test("a shell edit that hangs before completing still warns the recovering caller (#121)", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "idle-hung-turn-during-shell-edit");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_TURN_STALL_TIMEOUT_MS: "1500",
+    CODEX_TOOL_STALL_TIMEOUT_MS: "300"
+  };
+  const launched = run("node", [SCRIPT, "task", "--write", "--background", "--json", "rewrite the readme"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "250", "--json"],
+    { cwd: repo, env }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+
+  const stored = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  const result = storedPayload.storedJob.result;
+
+  // A free-form shell edit is not attributable, so no path is claimed...
+  assert.deepEqual(result.touchedFiles, []);
+  // ...but the run did execute a command, so the report must not read as "nothing touched".
+  assert.equal(result.commandCount, 1);
+  assert.match(storedPayload.storedJob.rendered, /shell commands other than apply_patch are not listed/);
 });
 
 // --- gpt-6-astra support (#115) ---------------------------------------------

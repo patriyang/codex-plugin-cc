@@ -29,6 +29,7 @@
  *   lastActivityAt: number | null,
  *   activityCount: number,
  *   itemActivityCount: number,
+ *   observedCommandIds: Set<string>,
  *   stallCleanup: Promise<void> | null,
  *   stalled: boolean,
  *   activeTools: Map<string, { threadId: string | null, itemId: string | null, toolClass: string, label: string, inactivityTimeoutMs: number, deadlineTimer: ReturnType<typeof setTimeout> | null, armedAt: number | null }>,
@@ -260,15 +261,72 @@ function extractTurnId(message) {
   return null;
 }
 
-function collectTouchedFiles(fileChanges) {
+function extractApplyPatchPaths(commandExecution, workspaceRoot) {
+  const command = commandExecution?.command;
+  if (typeof command !== "string" || !command.includes("*** Begin Patch")) {
+    return [];
+  }
+
+  // A patch that did not apply leaves the file untouched, but its headers still name
+  // the targets -- harvesting those would tell a recovering caller that work landed
+  // when none did, which is worse for the hint than omitting them.
+  const exitCode = commandExecution?.exitCode;
+  if (isFailedItemStatus(commandExecution?.status) || (typeof exitCode === "number" && exitCode !== 0)) {
+    return [];
+  }
+
+  // One exit status cannot describe a compound command. `apply_patch ... && npm test`
+  // would report untouched files when the patch failed but the check passed, and hide
+  // real ones when the patch applied but the check failed. Only attribute paths when
+  // apply_patch is the sole operation; anything else falls back to the caution. The
+  // operator scan deliberately looks only outside the patch body, since diff content
+  // legitimately contains `&&`, `;` and `|`.
+  const bodyStart = command.indexOf("*** Begin Patch");
+  const endMarker = "*** End Patch";
+  const bodyEnd = command.indexOf(endMarker);
+  const prefix = command.slice(0, bodyStart);
+  const suffix = bodyEnd === -1 ? "" : command.slice(bodyEnd + endMarker.length);
+  if (!prefix.includes("apply_patch") || /(?:&&|\|\||[;|])/.test(prefix) || /(?:&&|\|\||[;|])/.test(suffix)) {
+    return [];
+  }
+
+  const commandCwd = typeof commandExecution?.cwd === "string" ? commandExecution.cwd.trim() : "";
+  const workspaceCwd = typeof workspaceRoot === "string" ? workspaceRoot.trim() : "";
+  const baseDirectory = commandCwd || workspaceCwd;
+  const paths = [];
+
+  for (const line of command.split(/\r?\n/)) {
+    const match = line.match(/^\*\*\* (?:Add File|Update File|Delete File|Move to):\s*(.*?)\s*$/);
+    if (!match) {
+      continue;
+    }
+
+    const filePath = match[1].trim();
+    if (!filePath) {
+      continue;
+    }
+    paths.push(path.isAbsolute(filePath) || !baseDirectory ? filePath : path.resolve(baseDirectory, filePath));
+  }
+
+  return paths;
+}
+
+function collectTouchedFiles(fileChanges, commandExecutions, workspaceRoot) {
   const paths = new Set();
-  for (const fileChange of fileChanges) {
-    for (const change of fileChange.changes ?? []) {
-      if (change.path) {
+  for (const fileChange of Array.isArray(fileChanges) ? fileChanges : []) {
+    for (const change of Array.isArray(fileChange?.changes) ? fileChange.changes : []) {
+      if (change?.path) {
         paths.add(change.path);
       }
     }
   }
+
+  for (const commandExecution of Array.isArray(commandExecutions) ? commandExecutions : []) {
+    for (const filePath of extractApplyPatchPaths(commandExecution, workspaceRoot)) {
+      paths.add(filePath);
+    }
+  }
+
   return [...paths];
 }
 
@@ -476,6 +534,7 @@ function createTurnCaptureState(threadId, options = {}) {
     lastActivityAt: null,
     activityCount: 0,
     itemActivityCount: 0,
+    observedCommandIds: new Set(),
     stallCleanup: null,
     stalled: false,
     activeTools: new Map(),
@@ -932,8 +991,17 @@ function recordItem(state, item, lifecycle, threadId = null) {
     return;
   }
 
-  if (item.type === "commandExecution" && lifecycle === "completed") {
-    state.commandExecutions.push(item);
+  if (item.type === "commandExecution") {
+    // A command that starts, writes, and then hangs never emits item/completed -- the
+    // watchdog finalizes the turn first. Track it from the start so the caution still
+    // fires; paths stay sourced from completed patches only, since an unfinished one
+    // has an unknown outcome and a false "already modified" is worse than silence.
+    if (item.id) {
+      state.observedCommandIds.add(item.id);
+    }
+    if (lifecycle === "completed") {
+      state.commandExecutions.push(item);
+    }
   }
 }
 
@@ -1907,8 +1975,9 @@ export async function runAppServerTurn(cwd, options = {}) {
       stderr: cleanCodexStderr(client.stderr),
       effortWarning,
       fileChanges: turnState.fileChanges,
-      touchedFiles: collectTouchedFiles(turnState.fileChanges),
-      commandExecutions: turnState.commandExecutions
+      touchedFiles: collectTouchedFiles(turnState.fileChanges, turnState.commandExecutions, cwd),
+      commandExecutions: turnState.commandExecutions,
+      commandCount: Math.max(turnState.observedCommandIds.size, turnState.commandExecutions.length)
     };
   });
 }

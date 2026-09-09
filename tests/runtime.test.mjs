@@ -254,14 +254,40 @@ function probeBrokerEndpoint(endpoint, timeoutMs) {
   });
 }
 
+// Sends broker/shutdown on a socket this helper owns, so a broker that accepts but never answers
+// cannot hold the handle past the deadline: the socket is destroyed either on the reply or when
+// the timer fires, whichever comes first.
+function requestBrokerShutdown(endpoint, timeoutMs) {
+  return new Promise((resolve) => {
+    let socket;
+    try {
+      socket = net.createConnection({ path: parseBrokerEndpoint(endpoint).path });
+    } catch {
+      resolve();
+      return;
+    }
+    const finish = () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve();
+    };
+    const timer = setTimeout(finish, Math.max(timeoutMs, 1));
+    socket.setEncoding("utf8");
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify({ id: 1, method: "broker/shutdown", params: {} })}\n`);
+    });
+    socket.on("data", finish);
+    socket.on("error", finish);
+    socket.on("close", finish);
+  });
+}
+
 // Sends broker/shutdown and waits for the endpoint to stop accepting, all within `timeoutMs`.
 // Returns true once the endpoint is gone, false when the deadline passed with it still reachable.
 async function shutdownBrokerGracefully(endpoint, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   const remaining = () => Math.max(0, deadline - Date.now());
-  // A broker that accepts the connection but never answers leaves this pending; the race moves
-  // on, and the tree kill that follows closes the broker's side so the pending socket settles.
-  await Promise.race([sendBrokerShutdown(endpoint).catch(() => {}), sleep(remaining())]);
+  await requestBrokerShutdown(endpoint, remaining());
   while (remaining() > 0) {
     if (!(await probeBrokerEndpoint(endpoint, remaining()))) {
       return true;

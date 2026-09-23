@@ -772,7 +772,7 @@ function setupDeepReviewRepo(behavior = "review-ok") {
   return { repo, binDir, statePath: path.join(binDir, "fake-codex-state.json") };
 }
 
-test("deep-review defaults to gpt-5.6-sol at high effort", () => {
+test("deep-review defaults to gpt-6-sol at high effort", () => {
   const { repo, binDir, statePath } = setupDeepReviewRepo();
 
   const result = run("node", [SCRIPT, "deep-review"], {
@@ -781,10 +781,10 @@ test("deep-review defaults to gpt-5.6-sol at high effort", () => {
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^Model: gpt-5\.6-sol$/m);
+  assert.match(result.stdout, /^Model: gpt-6-sol$/m);
   assert.match(result.stdout, /^Effort: high$/m);
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  assert.equal(state.lastTurnStart.model, "gpt-5.6-sol");
+  assert.equal(state.lastTurnStart.model, "gpt-6-sol");
   assert.equal(state.lastTurnStart.effort, "high");
 });
 
@@ -894,7 +894,7 @@ test("deep-review JSON reports the resolved model and effort", () => {
 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.model, "gpt-5.6-sol");
+  assert.equal(payload.model, "gpt-6-sol");
   assert.equal(payload.effort, "high");
 });
 
@@ -2302,7 +2302,7 @@ test("task --help prints task usage without starting a turn or registering a job
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]\n");
+  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark|astra|sol|luna>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]\n");
   assert.equal(fs.existsSync(statePath), false);
   assert.equal(fs.existsSync(resolveStateDir(repo)), false);
 });
@@ -2319,7 +2319,7 @@ test("task prompt followed by --help as separate argv elements prints task usage
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]\n");
+  assert.equal(result.stdout, "Usage:\n  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark|astra|sol|luna>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]\n");
   assert.equal(fs.existsSync(statePath), false);
   assert.equal(fs.existsSync(resolveStateDir(repo)), false);
 });
@@ -2385,7 +2385,7 @@ test("subcommand --help prints only that subcommand's usage", () => {
 
   const cases = [
     ["status", "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]"],
-    ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
+    ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark|astra|sol|luna>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
     ["cancel", "  node scripts/codex-companion.mjs cancel [job-id] [--json]"]
   ];
 
@@ -2992,14 +2992,14 @@ test("task accepts max and ultra efforts and rejects invalid efforts", () => {
   run("git", ["commit", "-m", "init"], { cwd: repo });
 
   for (const effort of ["max", "ultra"]) {
-    const result = run("node", [SCRIPT, "task", "--model", "gpt-5.6-sol", "--effort", effort, `reply ${effort}`], {
+    const result = run("node", [SCRIPT, "task", "--model", "gpt-6-sol", "--effort", effort, `reply ${effort}`], {
       cwd: repo,
       env: buildEnv(binDir)
     });
 
     assert.equal(result.status, 0, `${effort}: ${result.stderr}`);
     const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-    assert.equal(fakeState.lastTurnStart.model, "gpt-5.6-sol");
+    assert.equal(fakeState.lastTurnStart.model, "gpt-6-sol");
     assert.equal(fakeState.lastTurnStart.effort, effort);
   }
 
@@ -7795,6 +7795,21 @@ test("task maps the astra alias to gpt-6-astra", () => {
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(state.lastTurnStart.model, "gpt-6-astra");
 });
+
+for (const [alias, model] of [["sol", "gpt-6-sol"], ["luna", "gpt-6-luna"]]) {
+  test(`task maps the ${alias} alias to ${model}`, () => {
+    const { repo, binDir, statePath } = setupEffortRepo();
+
+    const result = run("node", [SCRIPT, "task", "--model", alias, "reply ok"], {
+      cwd: repo,
+      env: buildEnv(binDir)
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(state.lastTurnStart.model, model);
+  });
+}
 
 test("deep-review maps the astra alias to gpt-6-astra", () => {
   const { repo, binDir, statePath } = setupDeepReviewRepo();

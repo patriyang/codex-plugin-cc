@@ -93,15 +93,17 @@ const DEFAULT_CODEX_REASONING_EFFORT = "low";
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 const MODEL_ALIASES = new Map([
   ["spark", "gpt-5.3-codex-spark"],
-  ["astra", "gpt-6-astra"]
+  ["astra", "gpt-6-astra"],
+  ["sol", "gpt-6-sol"],
+  ["luna", "gpt-6-luna"]
 ]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const SUBCOMMAND_USAGE = new Map([
   ["setup", "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--fallback-model <model>|--clear-fallback-model] [--json]"],
   ["review", "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]"],
-  ["adversarial-review", "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
-  ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
-  ["task", "  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark|astra>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]"],
+  ["adversarial-review", "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark|astra|sol|luna>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
+  ["deep-review", "  node scripts/codex-companion.mjs deep-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|spark|astra|sol|luna>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [focus text]"],
+  ["task", "  node scripts/codex-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark|astra|sol|luna>] [--effort <none|minimal|low|medium|high|xhigh|max|ultra>] [prompt]"],
   ["transfer", "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]"],
   ["status", "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]"],
   ["result", "  node scripts/codex-companion.mjs result [job-id] [--json]"],
@@ -1494,7 +1496,7 @@ async function main() {
     case "deep-review":
       await handleReviewCommand(argv, {
         reviewName: "Deep Review",
-        defaultModel: "gpt-5.6-sol",
+        defaultModel: "gpt-6-sol",
         defaultEffort: "high"
       });
       break;

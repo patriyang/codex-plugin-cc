@@ -62,6 +62,7 @@ function saveState(state) {
 // VALID_REASONING_EFFORTS set so tests can exercise an unadvertised pair.
 const MODEL_CATALOG = [
   { model: "gpt-6-astra", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], isDefault: true },
+  { model: "gpt-6.1-sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], isDefault: false },
   { model: "gpt-6-sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], isDefault: false },
   { model: "gpt-6-luna", efforts: ["low", "medium", "high", "xhigh", "max"], isDefault: false },
   { model: "gpt-5.6-sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], isDefault: false },

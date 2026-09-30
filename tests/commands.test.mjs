@@ -122,7 +122,7 @@ test("deep review command auto-decides execution mode and uses a tracked backgro
   assert.match(source, /\[--model <model\|spark\|astra\|sol\|luna>\] \[--effort <none\|minimal\|low\|medium\|high\|xhigh\|max\|ultra>\]/);
   // README documents the deep-review defaults so command + docs cannot drift.
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
-  assert.match(readme, /`\/codex:deep-review` uses `gpt-6-sol` with `high` reasoning effort/);
+  assert.match(readme, /`\/codex:deep-review` uses `gpt-6\.1-sol` with `high` reasoning effort/);
 });
 
 test("implement command defaults to gpt-6-luna at max effort", () => {
@@ -382,7 +382,7 @@ test("README documents per-command model/effort defaults, not one global default
   // The runtime default only applies to commands that pin nothing of their own.
   assert.match(runtime, /const DEFAULT_CODEX_MODEL = "gpt-6-astra";/);
   assert.match(runtime, /const DEFAULT_CODEX_REASONING_EFFORT = "low";/);
-  assert.match(runtime, /defaultModel: "gpt-6-sol"/);
+  assert.match(runtime, /defaultModel: "gpt-6\.1-sol"/);
   assert.match(runtime, /defaultEffort: "high"/);
 
   // Every command row in the defaults table.
@@ -397,12 +397,13 @@ test("README documents per-command model/effort defaults, not one global default
     readme,
     /\| `\/codex:adversarial-review` \| `gpt-6-astra` \| \*\(none sent — Codex's own default\)\* \|/
   );
-  assert.match(readme, /\| `\/codex:deep-review` \| `gpt-6-sol` \| `high` \|/);
+  assert.match(readme, /\| `\/codex:deep-review` \| `gpt-6\.1-sol` \| `high` \|/);
   assert.match(readme, /\| `\/codex:implement` \| `gpt-6-luna` \| `max` \|/);
 
   // The alias mapping and the minimum-CLI note live next to the table.
   assert.match(readme, /Passing `spark` to `--model` maps to `gpt-5\.3-codex-spark`, `astra` maps to `gpt-6-astra`, `sol` maps to `gpt-6-sol`, and `luna` maps to `gpt-6-luna`/);
   assert.match(readme, /`gpt-6-astra` needs Codex CLI 0\.153 or newer/);
+  assert.match(readme, /`gpt-6\.1-sol`, the `\/codex:deep-review` default, needs Codex CLI 0\.159 or newer/);
   assert.match(readme, /\| `outdated-client` \| The installed Codex CLI is too old for the selected model/);
 
   // The old "one global default" claim must not come back.

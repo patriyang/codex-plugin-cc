@@ -3284,10 +3284,15 @@ test("in-process completion inference waits for a tool item that arrived while t
 
   const previousEnv = {
     PATH: process.env.PATH,
+    CODEX_COMPANION_APP_SERVER_ENDPOINT: process.env.CODEX_COMPANION_APP_SERVER_ENDPOINT,
     CODEX_TEST_TOOL_ITEM_RELEASE: process.env.CODEX_TEST_TOOL_ITEM_RELEASE,
     CODEX_TEST_TOOL_ITEM_SENT: process.env.CODEX_TEST_TOOL_ITEM_SENT
   };
   process.env.PATH = buildEnv(binDir).PATH;
+  // A broker endpoint with no listener makes runAppServerTurn fall back to a direct app-server, so
+  // the fixture's stdout is the client's own pipe and its flush marker proves the tool item is
+  // readable by the client — no broker hop to wait out.
+  process.env.CODEX_COMPANION_APP_SERVER_ENDPOINT = `unix:${path.join(markerDir, "no-broker.sock")}`;
   process.env.CODEX_TEST_TOOL_ITEM_RELEASE = releasePath;
   process.env.CODEX_TEST_TOOL_ITEM_SENT = sentPath;
   t.after(() => {
@@ -3315,17 +3320,12 @@ test("in-process completion inference waits for a tool item that arrived while t
       starved = true;
       // The final answer has armed the 250ms inference timer. Only now release the tool item, so it
       // cannot share a read with the final answer, and starve the loop until the fixture has flushed
-      // it and the timer has expired, as a loaded runner would (#128). The grace after the flush
-      // covers the broker's forwarding hop.
+      // it and the timer has expired, as a loaded runner would (#128).
       fs.writeFileSync(releasePath, "release\n");
       const startedAt = Date.now();
-      let sentAt = null;
       while (Date.now() - startedAt < 10_000) {
-        if (sentAt === null && fs.existsSync(sentPath)) {
-          sentAt = Date.now();
-        }
-        if (sentAt !== null && Date.now() - sentAt >= 500 && Date.now() - startedAt >= 400) {
-          toolItemSent = true;
+        toolItemSent ||= fs.existsSync(sentPath);
+        if (toolItemSent && Date.now() - startedAt >= 400) {
           break;
         }
       }
@@ -3333,6 +3333,7 @@ test("in-process completion inference waits for a tool item that arrived while t
   });
 
   assert.ok(toolItemSent, "fixture never flushed the released tool item");
+  assert.equal(loadBrokerSession(repo), null, "turn should have run on a direct app-server");
   assert.equal(result.status, 0, result.error?.message);
   const toolFailed = messages.indexOf("Tool codegraph/codegraph_explore failed.");
   const inferred = messages.findIndex((message) => message?.startsWith("Turn completion inferred"));

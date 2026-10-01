@@ -3273,6 +3273,49 @@ test("task infers completion when a tool item completes with an error after the 
   assert.match(result.stderr, /Turn completion inferred after the main thread finished and subagent work drained\./);
 });
 
+test("in-process completion inference waits for a tool item that arrived while the event loop was starved", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "tool-item-after-final-answer-chunk");
+  initGitRepo(repo);
+
+  const previousPath = process.env.PATH;
+  process.env.PATH = buildEnv(binDir).PATH;
+  t.after(() => {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  });
+
+  const messages = [];
+  let starved = false;
+  const result = await runAppServerTurn(repo, {
+    prompt: "review one last optional tool result",
+    sandbox: "read-only",
+    onProgress: (update) => {
+      const message = typeof update === "string" ? update : update?.message;
+      messages.push(message);
+      if (!starved && message?.startsWith("Assistant message captured")) {
+        starved = true;
+        // The final answer has armed the 250ms inference timer. Starve the loop past it while the
+        // fixture's delayed tool item lands in the socket, as a loaded runner would (#128).
+        const blockUntil = Date.now() + 1000;
+        while (Date.now() < blockUntil) {
+          // Deliberately starve the event loop.
+        }
+      }
+    }
+  });
+
+  assert.equal(result.status, 0, result.error?.message);
+  const toolFailed = messages.indexOf("Tool codegraph/codegraph_explore failed.");
+  const inferred = messages.findIndex((message) => message?.startsWith("Turn completion inferred"));
+  assert.ok(toolFailed !== -1, messages.join("\n"));
+  assert.ok(inferred > toolFailed, messages.join("\n"));
+});
+
 test("task using the shared broker still completes when Codex spawns subagents", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

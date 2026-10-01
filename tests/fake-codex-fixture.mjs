@@ -1360,6 +1360,36 @@ rl.on("line", (line) => {
 	              }
 	            }
 	          });
+	        } else if (BEHAVIOR === "tool-item-after-final-answer-chunk") {
+	          // Same items as errored-tool-completion-after-final-answer, but the tool item is written
+	          // after a short delay so it always reaches the client in a later read than the final
+	          // answer (issue #128).
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "agentMessage", id: "msg_" + turnId, text: payload, phase: "final_answer" }
+	            }
+	          });
+	          const toolItem = {
+	            type: "mcpToolCall",
+	            id: "mcp_" + turnId,
+	            server: "codegraph",
+	            tool: "codegraph_explore"
+	          };
+	          setTimeout(() => {
+	            send({ method: "item/started", params: { threadId: thread.id, turnId, item: { ...toolItem, status: "inProgress" } } });
+	            send({
+	              method: "item/completed",
+	              params: {
+	                threadId: thread.id,
+	                turnId,
+	                item: { ...toolItem, status: "failed", error: { message: "codegraph_explore failed from item completion" } }
+	              }
+	            });
+	          }, 50);
 	        } else if (BEHAVIOR === "errored-tool-before-final-answer") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          send({

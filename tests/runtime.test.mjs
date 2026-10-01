@@ -3276,39 +3276,63 @@ test("task infers completion when a tool item completes with an error after the 
 test("in-process completion inference waits for a tool item that arrived while the event loop was starved", async (t) => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
+  const markerDir = makeTempDir();
+  const releasePath = path.join(markerDir, "tool-item-release");
+  const sentPath = path.join(markerDir, "tool-item-sent");
   installFakeCodex(binDir, "tool-item-after-final-answer-chunk");
   initGitRepo(repo);
 
-  const previousPath = process.env.PATH;
+  const previousEnv = {
+    PATH: process.env.PATH,
+    CODEX_TEST_TOOL_ITEM_RELEASE: process.env.CODEX_TEST_TOOL_ITEM_RELEASE,
+    CODEX_TEST_TOOL_ITEM_SENT: process.env.CODEX_TEST_TOOL_ITEM_SENT
+  };
   process.env.PATH = buildEnv(binDir).PATH;
+  process.env.CODEX_TEST_TOOL_ITEM_RELEASE = releasePath;
+  process.env.CODEX_TEST_TOOL_ITEM_SENT = sentPath;
   t.after(() => {
-    if (previousPath === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = previousPath;
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
     }
   });
 
   const messages = [];
   let starved = false;
+  let toolItemSent = false;
   const result = await runAppServerTurn(repo, {
     prompt: "review one last optional tool result",
     sandbox: "read-only",
     onProgress: (update) => {
       const message = typeof update === "string" ? update : update?.message;
       messages.push(message);
-      if (!starved && message?.startsWith("Assistant message captured")) {
-        starved = true;
-        // The final answer has armed the 250ms inference timer. Starve the loop past it while the
-        // fixture's delayed tool item lands in the socket, as a loaded runner would (#128).
-        const blockUntil = Date.now() + 1000;
-        while (Date.now() < blockUntil) {
-          // Deliberately starve the event loop.
+      if (starved || !message?.startsWith("Assistant message captured")) {
+        return;
+      }
+      starved = true;
+      // The final answer has armed the 250ms inference timer. Only now release the tool item, so it
+      // cannot share a read with the final answer, and starve the loop until the fixture has flushed
+      // it and the timer has expired, as a loaded runner would (#128). The grace after the flush
+      // covers the broker's forwarding hop.
+      fs.writeFileSync(releasePath, "release\n");
+      const startedAt = Date.now();
+      let sentAt = null;
+      while (Date.now() - startedAt < 10_000) {
+        if (sentAt === null && fs.existsSync(sentPath)) {
+          sentAt = Date.now();
+        }
+        if (sentAt !== null && Date.now() - sentAt >= 500 && Date.now() - startedAt >= 400) {
+          toolItemSent = true;
+          break;
         }
       }
     }
   });
 
+  assert.ok(toolItemSent, "fixture never flushed the released tool item");
   assert.equal(result.status, 0, result.error?.message);
   const toolFailed = messages.indexOf("Tool codegraph/codegraph_explore failed.");
   const inferred = messages.findIndex((message) => message?.startsWith("Turn completion inferred"));

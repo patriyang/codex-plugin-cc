@@ -70,6 +70,11 @@ async function waitForProcessExit(pid, timeoutMs = 5000) {
 }
 
 test("createBrokerSessionDir keeps a long Unix socket path under the platform limit", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("exercises the POSIX TMPDIR and unix-socket path");
+    return;
+  }
+
   const longTmpDir = makeLongTmpDir(t);
   setTmpDir(t, longTmpDir);
 
@@ -85,23 +90,26 @@ test("createBrokerSessionDir keeps a long Unix socket path under the platform li
   assert.ok(Buffer.byteLength(socketPath) <= 103);
   assert.ok(sessionDir.startsWith("/tmp/cxc-"));
 
-  if (process.platform !== "win32") {
-    const server = net.createServer();
-    let listening = false;
-    t.after(async () => {
-      if (listening) {
-        await new Promise((resolve) => server.close(resolve));
-      }
-    });
-    await new Promise((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(socketPath, resolve);
-    });
-    listening = true;
-  }
+  const server = net.createServer();
+  let listening = false;
+  t.after(async () => {
+    if (listening) {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+  listening = true;
 });
 
 test("createBrokerSessionDir keeps using a short TMPDIR", (t) => {
+  if (process.platform === "win32") {
+    t.skip("exercises the POSIX TMPDIR and unix-socket path");
+    return;
+  }
+
   // Distinct from the /tmp fallback, so landing under it proves the fallback was not taken.
   const shortTmpDir = fs.mkdtempSync("/tmp/cxt-");
   removeDirAfter(t, shortTmpDir);
@@ -114,6 +122,11 @@ test("createBrokerSessionDir keeps using a short TMPDIR", (t) => {
 });
 
 test("ensureBrokerSession starts a broker under a long TMPDIR", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("exercises the POSIX TMPDIR and unix-socket path");
+    return;
+  }
+
   const longTmpDir = makeLongTmpDir(t);
   setTmpDir(t, longTmpDir);
   const workspace = makeTempDir();

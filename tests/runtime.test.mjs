@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run, spawnDeadPid, trackedTempDirs, writeExecutable } from "./helpers.mjs";
 import {
+  createBrokerSessionDir,
   ensureBrokerSession,
   loadBrokerSession,
   resolveSignalableBrokerPid,
@@ -81,7 +82,9 @@ async function waitForProcessExit(pid) {
 }
 
 async function startTestBroker(t, onRequest, { allowHalfOpen = false } = {}) {
-  const socketPath = path.join(makeTempDir(), "app-server.sock");
+  // Same directory choice as the real broker, so a long TMPDIR cannot push the path past sun_path.
+  const socketDir = createBrokerSessionDir();
+  const socketPath = path.join(socketDir, "broker.sock");
   const sockets = new Set();
   const server = net.createServer({ allowHalfOpen }, (socket) => {
     sockets.add(socket);
@@ -114,6 +117,7 @@ async function startTestBroker(t, onRequest, { allowHalfOpen = false } = {}) {
       socket.destroy();
     }
     await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(socketDir, { recursive: true, force: true });
   });
 
   return `unix:${socketPath}`;

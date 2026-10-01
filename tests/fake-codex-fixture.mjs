@@ -77,6 +77,14 @@ const MODEL_CATALOG = [
 // own default so a plain run hits it without passing --model.
 const CAPACITY_BOUND_MODEL = "gpt-6-astra";
 const OUTDATED_CODEX_MESSAGE = "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.";
+const CHATGPT_ACCOUNT_UNSUPPORTED_MODEL_MESSAGE = JSON.stringify({
+  type: "error",
+  status: 400,
+  error: {
+    type: "invalid_request_error",
+    message: "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+  }
+});
 const USAGE_LIMIT_MESSAGE = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 9:01 PM.";
 
 function buildModelListResult() {
@@ -874,14 +882,17 @@ rl.on("line", (line) => {
           break;
         }
 
-	        if (BEHAVIOR === "model-requires-newer-codex") {
+	        if (BEHAVIOR === "model-requires-newer-codex" || BEHAVIOR === "model-unsupported-chatgpt-account") {
+	          const errorMessage = BEHAVIOR === "model-unsupported-chatgpt-account"
+	            ? CHATGPT_ACCOUNT_UNSUPPORTED_MODEL_MESSAGE
+	            : OUTDATED_CODEX_MESSAGE;
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          send({
 	            method: "error",
 	            params: {
 	              threadId: thread.id,
 	              turnId,
-	              error: { message: OUTDATED_CODEX_MESSAGE }
+	              error: { message: errorMessage }
 	            }
 	          });
 	          send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "failed") } });

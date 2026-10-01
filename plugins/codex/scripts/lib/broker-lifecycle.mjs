@@ -13,9 +13,19 @@ import { resolveStateDir, withBrokerPersistenceLock } from "./state.mjs";
 export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
 export const LOG_FILE_ENV = "CODEX_COMPANION_APP_SERVER_LOG_FILE";
 const BROKER_STATE_FILE = "broker.json";
+const MAX_UNIX_SOCKET_PATH_BYTES = 103; // macOS sun_path is 104 bytes, including the terminating NUL.
 
-export function createBrokerSessionDir(prefix = "cxc-") {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+export function createBrokerSessionDir(prefix = "cxc-", platform = process.platform) {
+  const tempDir = os.tmpdir();
+  if (platform !== "win32") {
+    const candidateDir = path.join(tempDir, `${prefix}XXXXXX`);
+    const socketPath = parseBrokerEndpoint(createBrokerEndpoint(candidateDir, platform)).path;
+    if (Buffer.byteLength(socketPath) > MAX_UNIX_SOCKET_PATH_BYTES) {
+      return fs.mkdtempSync(path.join("/tmp", prefix));
+    }
+  }
+
+  return fs.mkdtempSync(path.join(tempDir, prefix));
 }
 
 function connectToEndpoint(endpoint) {
@@ -163,7 +173,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
     }
   }
 
-  const sessionDir = createBrokerSessionDir();
+  const sessionDir = createBrokerSessionDir("cxc-", options.platform);
   const endpointFactory = options.createBrokerEndpoint ?? createBrokerEndpoint;
   const endpoint = endpointFactory(sessionDir, options.platform);
   const pidFile = path.join(sessionDir, "broker.pid");

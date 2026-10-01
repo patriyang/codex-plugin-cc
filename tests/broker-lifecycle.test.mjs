@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import test from "node:test";
@@ -8,10 +10,12 @@ import { spawn } from "node:child_process";
 import { makeTempDir, writeExecutable } from "./helpers.mjs";
 import {
   clearBrokerSession,
+  createBrokerSessionDir,
   ensureBrokerSession,
   loadBrokerSession,
   saveBrokerSession
 } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+import { createBrokerEndpoint, parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
 import { getProcessStartTime, isProcessAlive } from "../plugins/codex/scripts/lib/process.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
@@ -19,6 +23,31 @@ delete process.env.CLAUDE_PLUGIN_DATA;
 delete process.env.CODEX_COMPANION_PLUGIN_DATA;
 delete process.env.CODEX_COMPANION_SESSION_ID;
 process.env.CLAUDE_PLUGIN_DATA = makeTempDir();
+
+function setTmpDir(t, tmpDir) {
+  const originalTmpDir = process.env.TMPDIR;
+  process.env.TMPDIR = tmpDir;
+  t.after(() => {
+    if (originalTmpDir === undefined) {
+      delete process.env.TMPDIR;
+    } else {
+      process.env.TMPDIR = originalTmpDir;
+    }
+  });
+}
+
+function makeLongTmpDir(t) {
+  const root = makeTempDir();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const padding = "padding".repeat(20);
+  const longTmpDir = path.join(root, padding, padding);
+  fs.mkdirSync(longTmpDir, { recursive: true });
+  return longTmpDir;
+}
+
+function removeDirAfter(t, dir) {
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+}
 
 function brokerStateFile(cwd) {
   return path.join(resolveStateDir(cwd), "broker.json");
@@ -39,6 +68,94 @@ async function waitForProcessExit(pid, timeoutMs = 5000) {
   }
   throw new Error(`Timed out waiting for process ${pid} to exit.`);
 }
+
+test("createBrokerSessionDir keeps a long Unix socket path under the platform limit", async (t) => {
+  const longTmpDir = makeLongTmpDir(t);
+  setTmpDir(t, longTmpDir);
+
+  const wouldBeSocketPath = parseBrokerEndpoint(
+    createBrokerEndpoint(path.join(os.tmpdir(), "cxc-XXXXXX"), "darwin")
+  ).path;
+  assert.ok(Buffer.byteLength(wouldBeSocketPath) > 103);
+
+  const sessionDir = createBrokerSessionDir("cxc-", "darwin");
+  removeDirAfter(t, sessionDir);
+  const socketPath = parseBrokerEndpoint(createBrokerEndpoint(sessionDir, "darwin")).path;
+
+  assert.ok(Buffer.byteLength(socketPath) <= 103);
+  assert.ok(sessionDir.startsWith("/tmp/cxc-"));
+
+  if (process.platform !== "win32") {
+    const server = net.createServer();
+    let listening = false;
+    t.after(async () => {
+      if (listening) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    listening = true;
+  }
+});
+
+test("createBrokerSessionDir keeps using a short TMPDIR", (t) => {
+  // Distinct from the /tmp fallback, so landing under it proves the fallback was not taken.
+  const shortTmpDir = fs.mkdtempSync("/tmp/cxt-");
+  removeDirAfter(t, shortTmpDir);
+  setTmpDir(t, shortTmpDir);
+
+  const sessionDir = createBrokerSessionDir();
+  removeDirAfter(t, sessionDir);
+
+  assert.equal(path.dirname(sessionDir), os.tmpdir());
+});
+
+test("ensureBrokerSession starts a broker under a long TMPDIR", async (t) => {
+  const longTmpDir = makeLongTmpDir(t);
+  setTmpDir(t, longTmpDir);
+  const workspace = makeTempDir();
+  removeDirAfter(t, workspace);
+  const fakeBrokerDir = makeTempDir();
+  removeDirAfter(t, fakeBrokerDir);
+  const fakeBroker = path.join(fakeBrokerDir, "fake-broker.mjs");
+
+  writeExecutable(
+    fakeBroker,
+    `import fs from "node:fs";
+import net from "node:net";
+import process from "node:process";
+
+const args = process.argv.slice(2);
+const endpoint = args[args.indexOf("--endpoint") + 1];
+const pidFile = args[args.indexOf("--pid-file") + 1];
+const socketPath = endpoint.startsWith("unix:") ? endpoint.slice("unix:".length) : endpoint;
+fs.writeFileSync(pidFile, String(process.pid));
+net.createServer().listen(socketPath);
+`
+  );
+
+  const session = await ensureBrokerSession(workspace, {
+    scriptPath: fakeBroker,
+    timeoutMs: 2000,
+    platform: "darwin"
+  });
+  if (session) {
+    t.after(async () => {
+      try {
+        process.kill(session.pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+      await waitForProcessExit(session.pid).catch(() => {});
+      fs.rmSync(session.sessionDir, { recursive: true, force: true });
+    });
+  }
+
+  assert.notEqual(session, null);
+});
 
 test("clearBrokerSession does not remove a newer broker session", () => {
   const workspace = makeTempDir();

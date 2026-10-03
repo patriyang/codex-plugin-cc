@@ -86,7 +86,11 @@ export function classifyFailureMessage(message, now = Date.now(), codexErrorInfo
     };
   }
 
-  if (/requires a newer version of codex/i.test(message)) {
+  // This is how an older CLI rejects a request for a newer model; it also covers models the account cannot use, so guidance includes --model.
+  if (
+    /requires a newer version of codex/i.test(message) ||
+    /model is not supported when using Codex with a ChatGPT account/i.test(message)
+  ) {
     return { failureClass: OUTDATED_CLIENT, retryable: false, retryAfterMs: null };
   }
 

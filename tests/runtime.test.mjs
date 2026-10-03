@@ -21,7 +21,7 @@ import {
 import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
 import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import { resolveFallbackModel, runAppServerTurn } from "../plugins/codex/scripts/lib/codex.mjs";
-import { CAPACITY_RETRY_AFTER_MS, classifyFailureMessage } from "../plugins/codex/scripts/lib/failure-class.mjs";
+import { CAPACITY_RETRY_AFTER_MS, classifyFailureMessage, formatFailureMessage } from "../plugins/codex/scripts/lib/failure-class.mjs";
 import { captureRepoStateIdentity } from "../plugins/codex/scripts/lib/git.mjs";
 import { getProcessStartTime, terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
 import { splitRawArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
@@ -7840,6 +7840,8 @@ test("a shell edit that hangs before completing still warns the recovering calle
 
 const OUTDATED_CODEX_MESSAGE =
   "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.";
+const CHATGPT_ACCOUNT_UNSUPPORTED_MODEL_MESSAGE =
+  `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}`;
 
 test("task defaults to gpt-6-astra at low effort", () => {
   const { repo, binDir, statePath } = setupEffortRepo();
@@ -7926,6 +7928,16 @@ test("classifyFailureMessage recognizes a model that needs a newer Codex", () =>
     retryable: false,
     retryAfterMs: null
   });
+
+  assert.deepEqual(classifyFailureMessage(CHATGPT_ACCOUNT_UNSUPPORTED_MODEL_MESSAGE), {
+    failureClass: "outdated-client",
+    retryable: false,
+    retryAfterMs: null
+  });
+  assert.match(
+    formatFailureMessage(CHATGPT_ACCOUNT_UNSUPPORTED_MODEL_MESSAGE, "outdated-client"),
+    /npm install -g @openai\/codex@latest.*pass --model to pick a model this Codex version supports\.$/
+  );
 });
 
 test("task reports outdated-client with upgrade guidance when Codex rejects the model", () => {
@@ -7944,6 +7956,25 @@ test("task reports outdated-client with upgrade guidance when Codex rejects the 
   // Not a capacity rejection: no backup-model retry.
   assert.equal(payload.modelFallback, null);
   assert.match(payload.failureMessage, /requires a newer version of Codex/);
+  assert.match(payload.failureMessage, /npm install -g @openai\/codex@latest/);
+});
+
+test("task reports outdated-client with upgrade guidance when a ChatGPT account rejects the model", () => {
+  const { repo, binDir } = setupEffortRepo("model-unsupported-chatgpt-account");
+
+  const result = run("node", [SCRIPT, "task", "--model", "gpt-6.1-sol", "reply ok", "--json"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_FALLBACK_MODEL: "gpt-5.6-terra" }
+  });
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.failureClass, "outdated-client");
+  assert.equal(payload.retryable, false);
+  assert.equal(payload.retryAfterMs, null);
+  // Not a capacity rejection: no backup-model retry.
+  assert.equal(payload.modelFallback, null);
+  assert.match(payload.failureMessage, /model is not supported when using Codex with a ChatGPT account/);
   assert.match(payload.failureMessage, /npm install -g @openai\/codex@latest/);
 });
 

@@ -39,11 +39,12 @@ jobs:
       - name: Run build
         run: npm run build
 
-  # The `ci` job above is the only required status check. This one exists because it
-  # was the *uncovered* platforms that produced #75: two cancel tests failed on
-  # macOS/Node 26 while CI stayed green, and the same suite ran ~6x slower there — a
-  # divergence nothing in CI could have caught. Kept separate (and not required) so a
-  # platform-specific red reports the difference without blocking merges on it.
+  # This job exists because it was the *uncovered* platforms that produced #75: two
+  # cancel tests failed on macOS/Node 26 while CI stayed green, and the same suite ran
+  # ~6x slower there — a divergence nothing in CI could have caught. It is a separate
+  # job, not a matrix over `ci`, because the ruleset requires a check named exactly
+  # `CI`. Both legs are also required status checks, so a red on either blocks merge:
+  # `Platform matrix (macos-latest, 26)` and `Platform matrix (ubuntu-latest, 26)`.
   platform-matrix:
     name: Platform matrix
     runs-on: ${{ matrix.os }}

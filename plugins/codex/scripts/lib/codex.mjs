@@ -25,6 +25,7 @@
  *   pendingCollaborations: Set<string>,
  *   activeSubagentTurns: Set<string>,
  *   completionTimer: ReturnType<typeof setTimeout> | null,
+ *   completionImmediate: ReturnType<typeof setImmediate> | null,
  *   activityTimer: ReturnType<typeof setTimeout> | null,
  *   lastActivityAt: number | null,
  *   activityCount: number,
@@ -530,6 +531,7 @@ function createTurnCaptureState(threadId, options = {}) {
     pendingCollaborations: new Set(),
     activeSubagentTurns: new Set(),
     completionTimer: null,
+    completionImmediate: null,
     activityTimer: null,
     lastActivityAt: null,
     activityCount: 0,
@@ -554,6 +556,10 @@ function clearCompletionTimer(state) {
   if (state.completionTimer) {
     clearTimeout(state.completionTimer);
     state.completionTimer = null;
+  }
+  if (state.completionImmediate) {
+    clearImmediate(state.completionImmediate);
+    state.completionImmediate = null;
   }
 }
 
@@ -671,25 +677,34 @@ function completeTurn(state, turn = null, options = {}) {
   state.resolveCompletion(state);
 }
 
-function scheduleInferredCompletion(state) {
-  if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
-    return;
-  }
+function inferredCompletionBlocked(state) {
+  return state.completed
+    || state.finalTurn
+    || !state.finalAnswerSeen
+    || state.pendingCollaborations.size > 0
+    || state.activeSubagentTurns.size > 0
+    || state.activeTools.size > 0;
+}
 
-  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0 || state.activeTools.size > 0) {
+function scheduleInferredCompletion(state) {
+  if (inferredCompletionBlocked(state)) {
     return;
   }
 
   clearCompletionTimer(state);
   state.completionTimer = setTimeout(() => {
     state.completionTimer = null;
-    if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
+    if (inferredCompletionBlocked(state)) {
       return;
     }
-    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0 || state.activeTools.size > 0) {
-      return;
-    }
-    completeTurn(state, null, { inferred: true });
+    // Let poll process queued I/O before check-phase completion if the event loop stalled (#128).
+    state.completionImmediate = setImmediate(() => {
+      state.completionImmediate = null;
+      if (inferredCompletionBlocked(state)) {
+        return;
+      }
+      completeTurn(state, null, { inferred: true });
+    });
   }, 250);
   state.completionTimer.unref?.();
 }

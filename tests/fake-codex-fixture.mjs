@@ -1371,6 +1371,49 @@ rl.on("line", (line) => {
 	              }
 	            }
 	          });
+	        } else if (BEHAVIOR === "tool-item-after-final-answer-chunk") {
+	          // Same items as errored-tool-completion-after-final-answer, but the tool item is held until
+	          // the client has read the final answer (the test creates the release marker from its
+	          // progress callback), so it always reaches the client in a later read (issue #128). The
+	          // sent marker is written once the tool item has been flushed to stdout.
+	          const releasePath = process.env.CODEX_TEST_TOOL_ITEM_RELEASE;
+	          const sentPath = process.env.CODEX_TEST_TOOL_ITEM_SENT;
+	          if (!releasePath || !sentPath) {
+	            throw new Error(BEHAVIOR + " requires tool item marker paths");
+	          }
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/completed",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "agentMessage", id: "msg_" + turnId, text: payload, phase: "final_answer" }
+	            }
+	          });
+	          const toolItem = {
+	            type: "mcpToolCall",
+	            id: "mcp_" + turnId,
+	            server: "codegraph",
+	            tool: "codegraph_explore"
+	          };
+	          const releaseInterval = setInterval(() => {
+	            if (!fs.existsSync(releasePath)) {
+	              return;
+	            }
+	            clearInterval(releaseInterval);
+	            const started = { method: "item/started", params: { threadId: thread.id, turnId, item: { ...toolItem, status: "inProgress" } } };
+	            const completed = {
+	              method: "item/completed",
+	              params: {
+	                threadId: thread.id,
+	                turnId,
+	                item: { ...toolItem, status: "failed", error: { message: "codegraph_explore failed from item completion" } }
+	              }
+	            };
+	            process.stdout.write(JSON.stringify(started) + "\\n" + JSON.stringify(completed) + "\\n", () => {
+	              fs.writeFileSync(sentPath, "sent\\n");
+	            });
+	          }, 10);
 	        } else if (BEHAVIOR === "errored-tool-before-final-answer") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          send({

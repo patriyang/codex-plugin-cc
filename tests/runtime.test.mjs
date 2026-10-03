@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run, spawnDeadPid, trackedTempDirs, writeExecutable } from "./helpers.mjs";
 import {
+  createBrokerSessionDir,
   ensureBrokerSession,
   loadBrokerSession,
   resolveSignalableBrokerPid,
@@ -81,7 +82,9 @@ async function waitForProcessExit(pid) {
 }
 
 async function startTestBroker(t, onRequest, { allowHalfOpen = false } = {}) {
-  const socketPath = path.join(makeTempDir(), "app-server.sock");
+  // Same directory choice as the real broker, so a long TMPDIR cannot push the path past sun_path.
+  const socketDir = createBrokerSessionDir();
+  const socketPath = path.join(socketDir, "broker.sock");
   const sockets = new Set();
   const server = net.createServer({ allowHalfOpen }, (socket) => {
     sockets.add(socket);
@@ -114,6 +117,7 @@ async function startTestBroker(t, onRequest, { allowHalfOpen = false } = {}) {
       socket.destroy();
     }
     await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(socketDir, { recursive: true, force: true });
   });
 
   return `unix:${socketPath}`;
@@ -3271,6 +3275,74 @@ test("task infers completion when a tool item completes with an error after the 
   assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
   assert.match(result.stderr, /Tool codegraph\/codegraph_explore failed\./);
   assert.match(result.stderr, /Turn completion inferred after the main thread finished and subagent work drained\./);
+});
+
+test("in-process completion inference waits for a tool item that arrived while the event loop was starved", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const markerDir = makeTempDir();
+  const releasePath = path.join(markerDir, "tool-item-release");
+  const sentPath = path.join(markerDir, "tool-item-sent");
+  installFakeCodex(binDir, "tool-item-after-final-answer-chunk");
+  initGitRepo(repo);
+
+  const previousEnv = {
+    PATH: process.env.PATH,
+    CODEX_COMPANION_APP_SERVER_ENDPOINT: process.env.CODEX_COMPANION_APP_SERVER_ENDPOINT,
+    CODEX_TEST_TOOL_ITEM_RELEASE: process.env.CODEX_TEST_TOOL_ITEM_RELEASE,
+    CODEX_TEST_TOOL_ITEM_SENT: process.env.CODEX_TEST_TOOL_ITEM_SENT
+  };
+  process.env.PATH = buildEnv(binDir).PATH;
+  // A broker endpoint with no listener makes runAppServerTurn fall back to a direct app-server, so
+  // the fixture's stdout is the client's own pipe and its flush marker proves the tool item is
+  // readable by the client — no broker hop to wait out.
+  process.env.CODEX_COMPANION_APP_SERVER_ENDPOINT = `unix:${path.join(markerDir, "no-broker.sock")}`;
+  process.env.CODEX_TEST_TOOL_ITEM_RELEASE = releasePath;
+  process.env.CODEX_TEST_TOOL_ITEM_SENT = sentPath;
+  t.after(() => {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+
+  const messages = [];
+  let starved = false;
+  let toolItemSent = false;
+  const result = await runAppServerTurn(repo, {
+    prompt: "review one last optional tool result",
+    sandbox: "read-only",
+    onProgress: (update) => {
+      const message = typeof update === "string" ? update : update?.message;
+      messages.push(message);
+      if (starved || !message?.startsWith("Assistant message captured")) {
+        return;
+      }
+      starved = true;
+      // The final answer has armed the 250ms inference timer. Only now release the tool item, so it
+      // cannot share a read with the final answer, and starve the loop until the fixture has flushed
+      // it and the timer has expired, as a loaded runner would (#128).
+      fs.writeFileSync(releasePath, "release\n");
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 10_000) {
+        toolItemSent ||= fs.existsSync(sentPath);
+        if (toolItemSent && Date.now() - startedAt >= 400) {
+          break;
+        }
+      }
+    }
+  });
+
+  assert.ok(toolItemSent, "fixture never flushed the released tool item");
+  assert.equal(loadBrokerSession(repo), null, "turn should have run on a direct app-server");
+  assert.equal(result.status, 0, result.error?.message);
+  const toolFailed = messages.indexOf("Tool codegraph/codegraph_explore failed.");
+  const inferred = messages.findIndex((message) => message?.startsWith("Turn completion inferred"));
+  assert.ok(toolFailed !== -1, messages.join("\n"));
+  assert.ok(inferred > toolFailed, messages.join("\n"));
 });
 
 test("task using the shared broker still completes when Codex spawns subagents", () => {
